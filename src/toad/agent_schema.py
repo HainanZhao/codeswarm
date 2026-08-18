@@ -24,7 +24,7 @@ class Command(TypedDict):
 
 
 class Agent(TypedDict):
-    """Describes an agent which Toad can connect to. Currently only Agent Client Protocol is supported.
+    """Describes an agent which Taiji can connect to. Currently only Agent Client Protocol is supported.
 
     This information is stoed within TOML files, where the filename is the "identity" key plus the extension ".toml"
 

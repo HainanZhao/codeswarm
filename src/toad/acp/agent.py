@@ -168,6 +168,12 @@ class Agent(AgentBase):
 
         self._token_usage: TokenUsage | None = None
         self._context_usage: ContextUsage | None = None
+        self._last_response_parts: list[str] = []
+
+    @property
+    def last_response(self) -> str:
+        """Text emitted by the most recent ACP prompt."""
+        return "".join(self._last_response_parts)
 
     @property
     def command(self) -> str | None:
@@ -289,6 +295,7 @@ class Agent(AgentBase):
                 "sessionUpdate": "agent_message_chunk",
                 "content": {"type": type, "text": text},
             }:
+                self._last_response_parts.append(text)
                 self.post_message(messages.Update(type, text))
 
             case {
@@ -698,7 +705,7 @@ class Agent(AgentBase):
                     details = ""
                 self.post_message(AgentFail(reason, details))
 
-        self.post_message(AgentReady())
+        self.post_message(AgentReady(self))
 
     async def send_prompt(self, prompt: str) -> str | None:
         """Send a prompt to the agent.
@@ -816,6 +823,7 @@ class Agent(AgentBase):
             The stop reason.
 
         """
+        self._last_response_parts = []
         with self.request():
             session_prompt = api.session_prompt(prompt, self.session_id)
         try:

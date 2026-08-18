@@ -110,6 +110,9 @@ class MainScreen(Screen, can_focus=False):
         agent_session_title: str | None = None,
         session_pk: int | None = None,
         initial_prompt: str | None = None,
+        second_agent: Agent | None = None,
+        first_agent: int = 0,
+        max_rounds: int = 100,
     ) -> None:
         super().__init__()
         self.set_reactive(MainScreen.project_path, project_path)
@@ -118,6 +121,9 @@ class MainScreen(Screen, can_focus=False):
         self._agent_session_title = agent_session_title
         self._session_pk = session_pk
         self._initial_prompt = initial_prompt
+        self._second_agent = second_agent
+        self._first_agent = first_agent
+        self._max_rounds = max_rounds
 
     def watch_title(self, title: str) -> None:
         self.app.update_terminal_title()
@@ -155,6 +161,9 @@ class MainScreen(Screen, can_focus=False):
                 self._agent_session_id,
                 self._session_pk,
                 initial_prompt=self._initial_prompt,
+                second_agent=self._second_agent,
+                first_agent=self._first_agent,
+                max_rounds=self._max_rounds,
             ).data_bind(
                 project_path=MainScreen.project_path,
                 column=MainScreen.column,

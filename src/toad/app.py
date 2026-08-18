@@ -265,8 +265,8 @@ class ToadApp(App, inherit_bindings=False):
     scrollbar: reactive[str] = reactive("normal")
     last_ctrl_c_time = reactive(0.0)
     update_required: reactive[bool] = reactive(False)
-    terminal_title: var[str] = var("Toad")
-    terminal_title_icon: var[str] = var("🐸")
+    terminal_title: var[str] = var("Taiji")
+    terminal_title_icon: var[str] = var("☯")
     terminal_title_flash = var(0)
     terminal_title_blink = var(False)
     project_dir = var(Path)
@@ -281,8 +281,12 @@ class ToadApp(App, inherit_bindings=False):
         agent_data: AgentData | None = None,
         project_dir: str | None = None,
         mode: str | None = None,
+        second_agent_data: AgentData | None = None,
+        first_agent: int = 0,
+        setup_prompt: bool = False,
+        max_rounds: int = 100,
     ) -> None:
-        """Toad app.
+        """Taiji app.
 
         Args:
             agent_data: Agent data to run.
@@ -294,6 +298,10 @@ class ToadApp(App, inherit_bindings=False):
             self, "settings_changed"
         )
         self.agent_data = agent_data
+        self.second_agent_data = second_agent_data
+        self.first_agent = first_agent
+        self.setup_prompt = setup_prompt
+        self.max_rounds = max_rounds
 
         self._initial_mode = mode
         self.version_meta: VersionMeta | None = None
@@ -317,11 +325,11 @@ class ToadApp(App, inherit_bindings=False):
 
     @property
     def settings_path(self) -> Path:
-        return paths.get_config() / "toad.json"
+        return paths.get_config() / "taiji.json"
 
     @property
     def db_path(self) -> Path:
-        return paths.get_state() / "toad.db"
+        return paths.get_state() / "taiji.db"
 
     @property
     def _background_screens(self) -> list[Screen]:
@@ -363,7 +371,7 @@ class ToadApp(App, inherit_bindings=False):
             anon_id = str(uuid.uuid4())
             self.settings.set("anon_id", anon_id)
             self._save_settings()
-            self.call_later(self.capture_event, "toad-install")
+            self.call_later(self.capture_event, "taiji-install")
         return anon_id
 
     @property
@@ -539,7 +547,7 @@ class ToadApp(App, inherit_bindings=False):
         notification = Notify()
         notification.message = message
         notification.title = title
-        notification.application_name = "🐸 Toad" if toad.os == "macos" else "Toad"
+        notification.application_name = "Taiji"
         if sound and self.settings.get("notifications.enable_sounds", bool):
             sound_path = str(files("toad.data").joinpath(f"sounds/{sound}.wav"))
             notification.audio = sound_path
@@ -653,12 +661,21 @@ class ToadApp(App, inherit_bindings=False):
         return session_details
 
     async def on_mount(self) -> None:
-        self.capture_event("toad-run")
+        self.capture_event("taiji-run")
         self.anon_id  # Created on frst reference
         if mode := self._initial_mode:
             self.switch_mode(mode)
         else:
             await self.new_session_screen(self.get_main_screen)
+
+        if self.setup_prompt:
+            self.notify(
+                "No Claude, Codex, or Gemini ACP agent was detected. "
+                "Choose an agent in the store to configure Taiji.",
+                title="Taiji setup",
+                severity="warning",
+                timeout=10,
+            )
 
         self.update_terminal_title()
         self.set_timer(1, self.run_version_check)
@@ -670,7 +687,7 @@ class ToadApp(App, inherit_bindings=False):
         try:
             import setproctitle
 
-            setproctitle.setproctitle("toad")
+            setproctitle.setproctitle("taiji")
         except Exception:
             pass
 
@@ -696,7 +713,7 @@ class ToadApp(App, inherit_bindings=False):
                     version_meta.upgrade_message,
                     style="magenta",
                     border_style="dim green",
-                    title="🐸 [bold green not dim]Update available![/] 🐸",
+                    title="☯ [bold green not dim]Update available![/] ☯",
                     expand=False,
                     padding=(1, 2),
                 )
@@ -725,7 +742,13 @@ class ToadApp(App, inherit_bindings=False):
         from toad.screens.main import MainScreen
 
         project_path = Path(self.project_dir or "./").resolve().absolute()
-        return MainScreen(project_path, self.agent_data).data_bind(
+        return MainScreen(
+            project_path,
+            self.agent_data,
+            second_agent=self.second_agent_data,
+            first_agent=self.first_agent,
+            max_rounds=self.max_rounds,
+        ).data_bind(
             column=ToadApp.column,
             column_width=ToadApp.column_width,
             scrollbar=ToadApp.scrollbar,
@@ -821,6 +844,8 @@ class ToadApp(App, inherit_bindings=False):
         session_pk: int | None = None,
         project_path: Path | None = None,
         initial_prompt: str | None = None,
+        second_agent_identity: str | None = None,
+        first_agent: int = 0,
     ) -> None:
         from toad.screens.main import MainScreen
         from toad.agent_schema import Agent
@@ -842,6 +867,13 @@ class ToadApp(App, inherit_bindings=False):
             except KeyError:
                 self.notify("Agent not found", title="Launch agent", severity="error")
                 return
+        second_agent = None
+        if second_agent_identity:
+            agents = await read_agents()
+            second_agent = agents.get(second_agent_identity)
+            if second_agent is None:
+                self.notify("Second agent not found", title="Launch agent", severity="error")
+                return
         if project_path is None:
             project_path = Path(self.project_dir or os.getcwd())
 
@@ -852,6 +884,8 @@ class ToadApp(App, inherit_bindings=False):
                 agent_session_id,
                 session_pk=session_pk,
                 initial_prompt=initial_prompt,
+                second_agent=second_agent,
+                first_agent=first_agent,
             ).data_bind(
                 column=ToadApp.column,
                 column_width=ToadApp.column_width,

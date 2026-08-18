@@ -73,7 +73,7 @@ class DefaultCommandGroup(click.Group):
 @click.option("-v", "--version", is_flag=True, help="Show version and exit.")
 @click.pass_context
 def main(ctx, version):
-    """🐸 Toad — AI for your terminal."""
+    """Taiji — AI for your terminal."""
     if version:
         from toad import get_version
 
@@ -89,6 +89,21 @@ def main(ctx, version):
 @main.command("run")
 @click.argument("project_dir", metavar="PATH", required=False, default=".")
 @click.option("-a", "--agent", metavar="AGENT", default="")
+@click.option("--agent2", metavar="AGENT", default="", help="Second ACP agent for an automated relay.")
+@click.option(
+    "--first-agent",
+    type=click.Choice(["1", "2"]),
+    default="1",
+    show_default=True,
+    help="Which configured agent receives the initial prompt.",
+)
+@click.option(
+    "--max-rounds",
+    type=click.IntRange(min=1),
+    default=100,
+    show_default=True,
+    help="Maximum automated relay turns before stopping.",
+)
 @click.option(
     "-p",
     "--port",
@@ -111,29 +126,55 @@ def main(ctx, version):
     default=None,
     help="Public URL to use in conjunction with --serve",
 )
-@click.option("-s", "--serve", is_flag=True, help="Serve Toad as a web application")
+@click.option("-s", "--serve", is_flag=True, help="Serve Taiji as a web application")
 def run(
     port: int,
     host: str,
     serve: bool,
     project_dir: str = ".",
     agent: str = "1",
+    agent2: str = "",
+    first_agent: str = "1",
+    max_rounds: int = 100,
     public_url: str | None = None,
 ):
-    """Run an installed agent (same as `toad PATH`)."""
+    """Run an installed agent."""
 
     check_directory(project_dir)
+    setup_prompt = False
 
     if agent:
         import asyncio
 
         agent_data = asyncio.run(get_agent_data(agent))
+        second_agent_data = asyncio.run(get_agent_data(agent2)) if agent2 else None
+        if agent2 and second_agent_data is None:
+            raise click.ClickException(f"Agent not found: {agent2}")
+        first_agent_index = int(first_agent) - 1
+        if first_agent_index == 1 and second_agent_data is None:
+            raise click.ClickException("--first-agent 2 requires --agent2")
     else:
-        agent_data = None
+        import asyncio
+
+        from toad import paths
+        from toad.agents import AgentReadError, detect_preferred_agents
+
+        setup_prompt = not (paths.get_config() / "taiji.json").exists()
+        try:
+            detected = asyncio.run(detect_preferred_agents())
+        except AgentReadError:
+            detected = []
+        agent_data = detected[0] if detected else None
+        second_agent_data = detected[1] if len(detected) > 1 else None
+        first_agent_index = 0
 
     app = ToadApp(
         mode=None if agent_data else "store",
         agent_data=agent_data,
+        second_agent_data=second_agent_data,
+        first_agent=first_agent_index,
+        setup_prompt=(setup_prompt and agent_data is None),
+        max_rounds=max_rounds,
         project_dir=project_dir,
     )
     if serve:
@@ -156,7 +197,7 @@ def run(
             title=serve_command,
             public_url=public_url,
         )
-        set_process_title("toad --serve")
+        set_process_title("taiji --serve")
         server.serve()
     else:
         app.run()
@@ -189,7 +230,7 @@ def run(
     default="localhost",
     help="Host to use in conjunction with --serve",
 )
-@click.option("-s", "--serve", is_flag=True, help="Serve Toad as a web application")
+@click.option("-s", "--serve", is_flag=True, help="Serve Taiji as a web application")
 def acp(
     command: str,
     host: str,
@@ -239,7 +280,7 @@ def acp(
             port=port,
             title=serve_command,
         )
-        set_process_title("toad acp --serve")
+        set_process_title("taiji acp --serve")
         server.serve()
 
     else:
@@ -248,7 +289,7 @@ def acp(
         app.run_on_exit()
 
     print("")
-    print("[bold magenta]Thanks for trying out Toad!")
+    print("[bold magenta]Thanks for trying out Taiji!")
     print("Please head to Discussions to share your experiences (good or bad).")
     print("https://github.com/batrachianai/toad/discussions")
 
@@ -269,9 +310,9 @@ def replay(path: str) -> None:
 
     Run it in place of a command line to run an ACP agent:
 
-    toad acp "toad replay toad.log"
+    taiji acp "taiji replay taiji.log"
 
-    This will replay the agents output, and Toad will update the conversation as it would a real agent.
+    This will replay the agents output, and Taiji will update the conversation as it would a real agent.
     """
     import time
 
@@ -296,13 +337,13 @@ def replay(path: str) -> None:
     help="Public URL for textual_serve Server (e.g. https://example.com)",
 )
 def serve(port: int, host: str, public_url: str | None = None) -> None:
-    """Serve Toad as a web application."""
+    """Serve Taiji as a web application."""
     from textual_serve.server import Server
 
     server = Server(
-        sys.argv[0], host=host, port=port, title="Toad", public_url=public_url
+        sys.argv[0], host=host, port=port, title="Taiji", public_url=public_url
     )
-    set_process_title("toad serve")
+    set_process_title("taiji serve")
     server.serve()
 
 

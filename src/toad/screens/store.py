@@ -392,7 +392,7 @@ class StoreScreen(Screen):
     def get_info(self) -> Content:
         toad_version = toad.get_version()
         content = Content.assemble(
-            Content.from_markup("🐸 Toad"),
+            Content.from_markup("Taiji"),
             pill(f"v{toad_version}", "$primary-muted", "$text-primary"),
             ("\nThe universal interface for AI in your terminal", "$text-success"),
             (
@@ -446,7 +446,7 @@ class StoreScreen(Screen):
                     for agent in recommended_agents:
                         yield AgentItem(agent)
                     yield widgets.Static(
-                        "[$text-warning]Your agent here[/] — support development of Toad by [@click=screen.url('https://github.com/sponsors/willmcgugan')]sponsoring[/] this project",
+                        "[$text-warning]Your agent here[/] — support development of Taiji by [@click=screen.url('https://github.com/sponsors/willmcgugan')]sponsoring[/] this project",
                         classes="sponsor-me",
                     )
 

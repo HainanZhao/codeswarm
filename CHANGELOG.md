@@ -12,6 +12,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Style tweak for compact prompt
 - Fix for overly wide question text
 
+## [0.6.23] - 2026-08-17
+
+### Changed
+
+- Increased the default automated relay safety limit to 100 turns.
+
+## [0.6.22] - 2026-08-17
+
+### Added
+
+- Added non-blocking local detection for Claude, Codex, and Gemini ACP agents.
+- Added first-run setup guidance when no preferred agent is detected.
+- Added the configurable `--max-rounds` relay safety limit.
+
+## [0.6.21] - 2026-08-17
+
+### Added
+
+- Added two-agent ACP relay conversations with human queuing, direct agent
+  tags, pause/resume controls, bounded relay context, and `[TAIJI:STOP]`
+  termination.
+- Published the Taiji CLI distribution as `taiji-cli`.
+
 ## [0.6.20] - 2016-05-22
 
 ### Added

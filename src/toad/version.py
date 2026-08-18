@@ -5,7 +5,7 @@ VERSION_TOML_URL = "https://www.batrachian.ai/toad.toml"
 
 
 class VersionMeta(NamedTuple):
-    """Information about the current version of Toad."""
+    """Information about the current version of Taiji."""
 
     version: str
     upgrade_message: str
@@ -17,7 +17,7 @@ class VersionCheckFailed(Exception):
 
 
 async def check_version() -> tuple[bool, VersionMeta]:
-    """Check for a new version of Toad.
+    """Check for a new version of Taiji.
 
     Returns:
         A tuple containing a boolean that indicates if there is a newer version,

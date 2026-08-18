@@ -39,6 +39,7 @@ from toad import jsonrpc, messages
 from toad import paths
 from toad.agent_schema import Agent as AgentData
 from toad.acp import messages as acp_messages
+from toad.acp.duplex import DuplexConversation
 from toad.app import ToadApp
 from toad.acp import protocol as acp_protocol
 from toad.answer import Answer
@@ -76,7 +77,7 @@ AGENT_FAIL_HELP = {
 
 Check that the agent is installed and up-to-date.
 
-Note that some agents require an ACP adapter to be installed to work with Toad.
+Note that some agents require an ACP adapter to be installed to work with Taiji.
 
 - Exit the app, and run `toad` again
 - Select the agent and hit ENTER
@@ -115,7 +116,7 @@ The agent reported an internal error:
 $ERROR
 ```
 
-This is likely an issue with the agent, and not Toad.
+This is likely an issue with the agent, and not Taiji.
 
 - Try the prompt again
 - Report the issue to the Agent developer
@@ -307,6 +308,12 @@ class Conversation(containers.Vertical):
             tooltip="Cancel agent's turn",
         ),
         Binding(
+            "ctrl+shift+p",
+            "toggle_pause",
+            "Pause/Resume",
+            tooltip="Pause or resume all agents",
+        ),
+        Binding(
             "ctrl+f",
             "focus_terminal",
             "Focus",
@@ -322,8 +329,8 @@ class Conversation(containers.Vertical):
         Binding(
             "ctrl+c",
             "interrupt",
-            "Interrupt",
-            tooltip="Interrupt running command",
+            "Interrupt/Pause",
+            tooltip="Interrupt a command or pause/resume all agents",
         ),
     ]
 
@@ -350,6 +357,7 @@ class Conversation(containers.Vertical):
     modes: var[dict[str, Mode]] = var({}, bindings=True)
     current_mode: var[Mode | None] = var(None)
     turn: var[Literal["agent", "client"] | None] = var(None, bindings=True)
+    relay_paused: var[bool] = var(False)
     status: var[str | Content] = var("")
     column: var[bool] = var(False, toggle_class="-column")
 
@@ -362,6 +370,9 @@ class Conversation(containers.Vertical):
         agent_session_id: str | None = None,
         session_pk: int | None = None,
         initial_prompt: str | None = None,
+        second_agent: AgentData | None = None,
+        first_agent: int = 0,
+        max_rounds: int = 100,
     ) -> None:
         super().__init__()
 
@@ -376,6 +387,13 @@ class Conversation(containers.Vertical):
         self._agent_thought: AgentThought | None = None
         self._last_escape_time: float = monotonic()
         self._agent_data = agent
+        self._second_agent_data = second_agent
+        if first_agent not in (0, 1):
+            raise ValueError("first_agent must be 0 or 1")
+        self._first_agent = first_agent
+        if max_rounds < 1:
+            raise ValueError("max_rounds must be positive")
+        self._max_rounds = max_rounds
         self._agent_session_id = agent_session_id
         self._session_pk = session_pk
         self._agent_fail = False
@@ -398,6 +416,9 @@ class Conversation(containers.Vertical):
         self._directory_watcher: DirectoryWatcher | None = None
 
         self._initial_prompt = initial_prompt
+        self._second_agent: AgentBase | None = None
+        self._duplex: DuplexConversation | None = None
+        self._ready_agents: set[int] = set()
 
         self._post_lock = asyncio.Lock()
 
@@ -710,7 +731,12 @@ class Conversation(containers.Vertical):
         return None
 
     @on(AgentReady)
-    async def on_agent_ready(self) -> None:
+    async def on_agent_ready(self, message: AgentReady) -> None:
+        if message.agent is not None:
+            self._ready_agents.add(id(message.agent))
+            expected = 2 if self._second_agent_data is not None else 1
+            if len(self._ready_agents) < expected:
+                return
         self.session_start_time = monotonic()
         if self.agent is not None:
             content = Content.assemble(self.agent.get_info(), " connected")
@@ -726,8 +752,9 @@ class Conversation(containers.Vertical):
     async def on_unmount(self) -> None:
         if self._directory_watcher is not None:
             self._directory_watcher.stop()
-        if self.agent is not None:
-            await self.agent.stop()
+        for agent in (self.agent, self._second_agent):
+            if agent is not None:
+                await agent.stop()
 
         if self._agent_data is not None and self.session_start_time is not None:
             session_time = monotonic() - self.session_start_time
@@ -810,17 +837,117 @@ class Conversation(containers.Vertical):
             await self.prompt_history.append(event.body)
             self.prompt_history_index = 0
             if text.startswith("/") and await self.slash_command(text):
-                # Toad has processed the slash command.
+                # Taiji has processed the slash command.
                 return
             await self.post(UserInput(text))
             self.window.scroll_end(animate=False)
+            direct_target = self._parse_agent_tag(text)
+            if direct_target is not None and self._duplex is not None:
+                agent_index, direct_prompt = direct_target
+                if self.relay_paused:
+                    self._duplex.enqueue_direct(agent_index, direct_prompt)
+                    self.flash("Queued while agents are paused", style="success")
+                    return
+                if self.turn == "agent":
+                    self._duplex.enqueue_direct(agent_index, direct_prompt)
+                    self.flash("Queued for the tagged agent", style="success")
+                    return
+                self._loading = await self.post(Loading("Please wait..."), loading=True)
+                await asyncio.sleep(0)
+                self.send_direct_prompt_to_agent(agent_index, direct_prompt)
+                return
+            if self._duplex is not None and self.turn == "agent":
+                self._duplex.enqueue_human(text)
+                self.flash("Queued for the next agent", style="success")
+                return
+            if self._duplex is not None and self.relay_paused:
+                self._duplex.enqueue_human(text)
+                self.flash("Queued while agents are paused", style="success")
+                return
             self._loading = await self.post(Loading("Please wait..."), loading=True)
             await asyncio.sleep(0)
             self.send_prompt_to_agent(text)
 
+    def _parse_agent_tag(self, prompt: str) -> tuple[int, str] | None:
+        """Parse ``@agent: instruction`` without confusing file mentions."""
+        if self._second_agent_data is None or not prompt.startswith("@"):
+            return None
+        tag, separator, body = prompt.partition(":")
+        if not separator or not body.strip():
+            return None
+        tag = tag[1:].strip().lower()
+        agents = (self._agent_data, self._second_agent_data)
+        for index, agent in enumerate(agents):
+            if agent is None:
+                continue
+            names = {
+                agent["short_name"].lower(),
+                agent["identity"].lower(),
+                agent["name"].lower().replace(" ", "-"),
+            }
+            suffix = ("yin", "yang")[index]
+            names.update(f"{name}-{suffix}" for name in tuple(names))
+            if tag in names:
+                return index, body.strip()
+        return None
+
+    def _agent_display_name(self, agent: AgentBase) -> str:
+        """Return a stable chat label, disambiguating duplicate names."""
+        name = str(agent.get_info())
+        if self._duplex is None:
+            return name
+        try:
+            index = self._duplex.agents.index(agent)
+        except ValueError:
+            return name
+        suffix = ("Yin", "Yang")[index]
+        return f"{name} · {suffix}"
+
+    @work
+    async def send_direct_prompt_to_agent(self, agent_index: int, prompt: str) -> None:
+        if self._duplex is None:
+            return
+        self.busy_count += 1
+        self.turn = "agent"
+        try:
+            agent = self._duplex.agents[agent_index]
+            await self._label_duplex_turn_start(0, agent)
+            stop_reason = await agent.send_prompt(prompt)
+        finally:
+            self.busy_count -= 1
+        self.call_later(self.agent_turn_over, stop_reason)
+
     @work
     async def send_prompt_to_agent(self, prompt: str) -> None:
-        if self.agent is not None:
+        if self._duplex is not None:
+            self.busy_count += 1
+            try:
+                self.turn = "agent"
+                result = await self._duplex.run(prompt, first_agent=self._first_agent)
+                if result.reason == "max_rounds":
+                    from toad.widgets.markdown_note import MarkdownNote
+
+                    await self.post(
+                        MarkdownNote(
+                            "The two-agent relay stopped after reaching its "
+                            f"{result.rounds}-round safety limit.",
+                            classes="-stop-reason",
+                        )
+                    )
+                elif result.reason == "paused":
+                    from toad.widgets.markdown_note import MarkdownNote
+
+                    await self.post(
+                        MarkdownNote(
+                            "All agents are paused. Queued work will resume when "
+                            "you resume the relay.",
+                            classes="-stop-reason",
+                        )
+                    )
+            finally:
+                self.busy_count -= 1
+            self.call_later(self.agent_turn_over, "end_turn")
+        elif self.agent is not None:
             stop_reason: str | None = None
             self.busy_count += 1
             try:
@@ -1044,6 +1171,9 @@ class Conversation(containers.Vertical):
         return terminal
 
     async def action_interrupt(self) -> None:
+        if self._duplex is not None and (self.turn == "agent" or self.relay_paused):
+            self.action_toggle_pause()
+            return
         terminal = self._terminal
         if terminal is not None and not terminal.is_finalized:
             await self.shell.interrupt()
@@ -1320,7 +1450,7 @@ class Conversation(containers.Vertical):
 
     def _build_slash_commands(self) -> list[SlashCommand]:
         slash_commands = [
-            SlashCommand("/toad:about", "About Toad"),
+            SlashCommand("/toad:about", "About Taiji"),
             SlashCommand(
                 "/toad:clear",
                 "Clear conversation window",
@@ -1342,9 +1472,10 @@ class Conversation(containers.Vertical):
             ),
             SlashCommand(
                 "/toad:testimonial",
-                "Tweet a testimonial regarding Toad",
+                "Tweet a testimonial regarding Taiji",
                 "<what you think of toad>",
             ),
+            SlashCommand("/taiji:pause", "Pause or resume all agents"),
         ]
 
         slash_commands.extend(self.agent_slash_commands)
@@ -1385,8 +1516,26 @@ class Conversation(containers.Vertical):
                     self._session_pk,
                 )
                 await self.agent.start(self)
+                if self._second_agent_data is not None:
+                    self._second_agent = Agent(
+                        self.project_path,
+                        self._second_agent_data,
+                        None,
+                    )
+                    await self._second_agent.start(self)
+                    self._duplex = DuplexConversation(
+                        (self.agent, self._second_agent),
+                        max_rounds=self._max_rounds,
+                        on_turn_start=self._label_duplex_turn_start,
+                        on_turn=self._label_duplex_turn,
+                    )
                 self.post_message(
-                    messages.SessionUpdate("New Session", self.agent_title)
+                    messages.SessionUpdate(
+                        "New Session",
+                        self.agent_title
+                        if self._second_agent_data is None
+                        else f"{self.agent_title} ↔ {self._second_agent_data['name']}",
+                    )
                 )
 
             self.call_after_refresh(start_agent)
@@ -1396,6 +1545,32 @@ class Conversation(containers.Vertical):
 
         self.update_title()
         self.window.anchor()
+
+    async def _label_duplex_turn(
+        self, round_number: int, agent: AgentBase, response: str
+    ) -> None:
+        """Add a compact marker so automated turns are identifiable in the TUI."""
+        from toad.widgets.markdown_note import MarkdownNote
+
+        await self.post(
+            MarkdownNote(
+                f"*Completed automated turn {round_number}: {self._agent_display_name(agent)}*",
+                classes="-stop-reason",
+            )
+        )
+
+    async def _label_duplex_turn_start(
+        self, round_number: int, agent: AgentBase
+    ) -> None:
+        """Identify the agent before its streamed response begins."""
+        from toad.widgets.markdown_note import MarkdownNote
+
+        await self.post(
+            MarkdownNote(
+                f"### ☯ {self._agent_display_name(agent)} — turn {round_number}",
+                classes="-agent-identity",
+            )
+        )
 
     def _settings_changed(self, setting_item: tuple[str, str]) -> None:
         key, value = setting_item
@@ -1719,14 +1894,36 @@ class Conversation(containers.Vertical):
     @work
     async def action_cancel(self) -> None:
         if monotonic() - self._last_escape_time < 3:
-            if (agent := self.agent) is not None:
-                if await agent.cancel():
-                    self.flash("Turn cancelled", style="success")
-                else:
-                    self.flash("Agent declined to cancel. Please wait.", style="error")
+            agents = [agent for agent in (self.agent, self._second_agent) if agent]
+            cancelled = any([await agent.cancel() for agent in agents])
+            if cancelled:
+                self.flash("Turn cancelled", style="success")
+            else:
+                self.flash("Agent declined to cancel. Please wait.", style="error")
         else:
             self.flash("Press [b]esc[/] again to cancel agent's turn")
             self._last_escape_time = monotonic()
+
+    @work
+    async def action_toggle_pause(self) -> None:
+        """Pause or resume the complete two-agent relay."""
+        if self._duplex is None:
+            self.flash("Pause is available in two-agent mode", style="warning")
+            return
+        if self.relay_paused:
+            self.relay_paused = False
+            self._duplex.resume()
+            self.flash("Agents resumed", style="success")
+            self.send_prompt_to_agent(
+                "Resume the collaboration from the current shared workspace."
+            )
+            return
+
+        self.relay_paused = True
+        self._duplex.pause()
+        for agent in self._duplex.agents:
+            await agent.cancel()
+        self.flash("All agents paused", style="warning")
 
     def focus_prompt(self, reset_cursor: bool = True, scroll_end: bool = True) -> None:
         """Focus the prompt input.
@@ -1831,7 +2028,7 @@ class Conversation(containers.Vertical):
         )
         console.print(render)
         path = platformdirs.user_pictures_dir()
-        svg_filename = generate_datetime_filename("Toad", ".svg", None)
+        svg_filename = generate_datetime_filename("Taiji", ".svg", None)
         svg_path = os.path.expanduser(os.path.join(path, svg_filename))
         console.save_svg(svg_path)
         import webbrowser
@@ -1858,16 +2055,19 @@ class Conversation(containers.Vertical):
         self.refresh_bindings()
 
     async def slash_command(self, text: str) -> bool:
-        """Give Toad the opertunity to process slash commands.
+        """Give Taiji the opertunity to process slash commands.
 
         Args:
             text: The prompt, including the slash in the first position.
 
         Returns:
-            `True` if Toad has processed the slash command, `False` if it should
+            `True` if Taiji has processed the slash command, `False` if it should
                 be forwarded to the agent.
         """
         command, _, parameters = text[1:].partition(" ")
+        if command == "taiji:pause":
+            self.action_toggle_pause()
+            return True
         if command == "toad:about":
             from toad import about
             from toad.widgets.markdown_note import MarkdownNote
@@ -1911,6 +2111,8 @@ class Conversation(containers.Vertical):
         elif command == "toad:session-close":
             if self.turn == "agent" and self.agent is not None:
                 await self.agent.cancel()
+                if self._second_agent is not None:
+                    await self._second_agent.cancel()
             if self.screen.id is not None:
                 self.post_message(messages.SessionClose(self.screen.id))
                 return True
@@ -1927,11 +2129,11 @@ class Conversation(containers.Vertical):
         elif command == "toad:testimonial":
             if self.agent_title is not None:
                 default_testimonial = (
-                    f"I'm running {self.agent_title} in the terminal with Toad."
+                    f"I'm running {self.agent_title} in the terminal with Taiji."
                 )
             else:
                 default_testimonial = (
-                    "Try Toad, the universal interface for AI in your terminal"
+                    "Try Taiji, the universal interface for AI in your terminal"
                 )
 
             testimonial = parameters or default_testimonial

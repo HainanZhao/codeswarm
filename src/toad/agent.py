@@ -9,6 +9,10 @@ from textual.message import Message
 class AgentReady(Message):
     """Agent is ready."""
 
+    def __init__(self, agent: "AgentBase | None" = None) -> None:
+        super().__init__()
+        self.agent = agent
+
 
 @dataclass
 class AgentFail(Message):

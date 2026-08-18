@@ -1,7 +1,7 @@
-# Toad notes
+# Taiji notes
 
 This is notes.md in the root of the repository.
-I'm using this file to keep track of what works in Toad and what doesn't.
+I'm using this file to keep track of what works in Taiji and what doesn't.
 
 
 ## What works

@@ -70,7 +70,7 @@ class AgentModal(ModalScreen):
                 if "install_acp" in commands:
                     yield widgets.Static(
                         Content(
-                            f"{agent['name']} requires an ACP adapter to work with Toad. Install from the actions list."
+                            f"{agent['name']} requires an ACP adapter to work with Taiji. Install from the actions list."
                         ),
                         classes="acp-warning",
                     )

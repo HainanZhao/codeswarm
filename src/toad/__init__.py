@@ -1,8 +1,8 @@
 from typing import Literal, Mapping
 import platform
 
-NAME = "toad"
-TITLE = "Toad"
+NAME = "taiji"
+TITLE = "Taiji"
 
 type OS = Literal["linux", "macos", "windows", "*"]
 
@@ -30,7 +30,7 @@ def get_os_matrix(matrix: Mapping[OS, str]) -> str | None:
 
 
 def get_version() -> str:
-    """Get the current version of Toad.
+    """Get the current version of Taiji.
 
     Returns:
         str: Version string, e.g "1.2.3"
@@ -38,7 +38,7 @@ def get_version() -> str:
     from importlib.metadata import version
 
     try:
-        return version("batrachian-toad")
+        return version("taiji-cli")
     except Exception:
         try:
             return version("toad")

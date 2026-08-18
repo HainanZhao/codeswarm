@@ -9,11 +9,11 @@ from toad import get_version
 
 ABOUT_TEMPLATE = Template(
     """\
-# About Toad v${TOAD_VERSION}
+# About Taiji v${TOAD_VERSION}
 
 © Will McGugan.
                           
-Toad is licensed under the terms of the [GNU AFFERO GENERAL PUBLIC LICENSE](https://www.gnu.org/licenses/agpl-3.0.txt).
+Taiji is licensed under the terms of the [GNU AFFERO GENERAL PUBLIC LICENSE](https://www.gnu.org/licenses/agpl-3.0.txt).
 
 
 ## Config
@@ -45,7 +45,7 @@ $CONFIG
 
 | Library | Version |
 | --- | --- | 
-| Toad | $TOAD_VERSION |
+| Taiji | $TOAD_VERSION |
 | Textual | $TEXTUAL_VERSION |
 | Rich | $RICH_VERSION |
                           

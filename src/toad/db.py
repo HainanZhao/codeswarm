@@ -32,10 +32,10 @@ class Session(TypedDict):
 
 
 class DB:
-    """Toads database, for anything that isn't strictly configuration."""
+    """Taiji database, for anything that isn't strictly configuration."""
 
     def __init__(self):
-        self.path = paths.get_state() / "toad.db"
+        self.path = paths.get_state() / "taiji.db"
 
     def open(self) -> aiosqlite.Connection:
         return aiosqlite.connect(self.path)

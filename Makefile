@@ -1,5 +1,5 @@
 
-run := uv run toad
+run := uv run taiji
 
 .PHONY: run
 run:
