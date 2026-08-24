@@ -333,8 +333,11 @@ class SessionCoordinatorTests(unittest.TestCase):
             await coordinator.start(object())
 
             self.assertEqual(
-                coordinator.parse_agent_tag("@codex-2: inspect this"),
+                coordinator.parse_agent_tag("#codex-2: inspect this"),
                 (1, "inspect this"),
+            )
+            self.assertIsNone(
+                coordinator.parse_agent_tag("@codex-2: inspect this")
             )
             self.assertIsNone(coordinator.parse_agent_tag("@src/main.py"))
 
@@ -389,13 +392,13 @@ class SessionCoordinatorTests(unittest.TestCase):
 
             self.assertEqual(
                 coordinator.display_name(coordinator.agent_at(0)),
-                "Claude (@claude-1)",
+                "Claude (#claude-1)",
             )
             self.assertEqual(
                 coordinator.display_name(coordinator.agent_at(1)),
-                "Claude (@claude-2)",
+                "Claude (#claude-2)",
             )
-            self.assertEqual(coordinator.agent_tag(0), "@claude-1")
+            self.assertEqual(coordinator.agent_tag(0), "#claude-1")
 
         asyncio.run(scenario())
 
@@ -427,7 +430,7 @@ class SessionCoordinatorTests(unittest.TestCase):
             self.assertFalse(coordinator.roster[1].active)
             self.assertTrue(coordinator.roster[2].active)
             self.assertTrue(coordinator.relay_active)
-            self.assertIsNone(coordinator.parse_agent_tag("@codex-2: no"))
+            self.assertIsNone(coordinator.parse_agent_tag("#codex-2: no"))
 
         asyncio.run(scenario())
 

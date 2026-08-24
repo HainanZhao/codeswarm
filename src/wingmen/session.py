@@ -296,8 +296,8 @@ class SessionCoordinator:
         return None
 
     def parse_agent_tag(self, prompt: str) -> tuple[int, str] | None:
-        """Parse ``@agent: instruction`` without confusing file mentions."""
-        if not self.relay_active or not prompt.startswith("@"):
+        """Parse ``#agent: instruction`` for a direct relay turn."""
+        if not self.relay_active or not prompt.startswith("#"):
             return None
         tag, separator, body = prompt.partition(":")
         if not separator or not body.strip():
@@ -349,7 +349,7 @@ class SessionCoordinator:
             for candidate in self.roster
         )
         suffix = f"-{index + 1}" if duplicate_count > 1 else ""
-        return f"@{short_name}{suffix}"
+        return f"#{short_name}{suffix}"
 
     def agent_at(self, index: int) -> AgentBase:
         if self.relay is None:

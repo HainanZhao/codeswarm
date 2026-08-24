@@ -1588,7 +1588,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 )
             if len(self.session.roster) > 1:
                 lines.append(
-                    "\nAddress one directly with the displayed `@tag: instruction`."
+                    "\nAddress one directly with the displayed `#tag: instruction`."
                 )
             await self.post(MarkdownNote("\n".join(lines), classes="-agent-identity"))
             return
@@ -2051,7 +2051,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 Terminal workspace for collaborating with one or more coding agents.
 
 - The roster is shown beside the prompt; the filled marker is speaking.
-- Send a normal message to continue the relay, or `@agent: message` to address one agent.
+- Send a normal message to continue the relay, or `#agent: message` to address one agent.
 - `/agent list` shows the active roster.
 
 Wingmen is licensed under the [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.txt).""",

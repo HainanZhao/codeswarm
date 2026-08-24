@@ -48,9 +48,9 @@ connection and speaker state:
 - A normal follow-up entered while an agent is working is queued back to that
   agent. After it handles all queued follow-ups, the relay advances and gives
   the next agent the latest response as context.
-- `@agent: message` addresses one agent only. That response is not relayed.
+- `#agent: message` addresses one agent only. That response is not relayed.
 - Duplicate agent names show their exact addresses, such as
-  `Claude (@claude-1)` and `Claude (@claude-2)`.
+  `Claude (#claude-1)` and `Claude (#claude-2)`.
 - The first agent answering a human message cannot stop the relay; another agent
   always gets the chance to review it. If that reviewer has nothing meaningful
   to correct or add, it may acknowledge with an emoji and Wingmen's internal
@@ -147,7 +147,7 @@ agent; an unknown slash command shows an error instead of becoming a prompt.
 Use the short name shown by `/agent list`:
 
 ```text
-@claude: inspect the failing test
+#claude: inspect the failing test
 ```
 
 A direct instruction goes only to the named agent. Its answer text is not
@@ -334,7 +334,7 @@ Gemini CLI. Some agents also require an ACP adapter.
 ### Only One Agent Responds
 
 Run `/agent list` and confirm that at least 2 roster members are active. A
-message beginning with `@agent:` intentionally targets only that agent and does
+message beginning with `#agent:` intentionally targets only that agent and does
 not relay its response.
 
 ### An Agent Keeps Working on the Wrong Task

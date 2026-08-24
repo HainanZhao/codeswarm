@@ -21,7 +21,7 @@ adapter-specific protocol extensions.
   hidden and is not forwarded.
 - A trailing stop marker from the final steered response keeps its existing
   meaning and ends automated collaboration.
-- Explicit `@agent` messages remain private direct turns and retain their
+- Explicit `#agent` messages remain private direct turns and retain their
   existing priority and routing behavior.
 - Paused relays retain queued input. The active-agent association is preserved
   until the relay resumes.

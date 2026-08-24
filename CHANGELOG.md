@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- Direct agent messages now use `#agent: instruction`; `@` is reserved for
+  file attachments.
+
 ### Added
 
 - `wingwomen` as an alias for the `wingmen` command.

@@ -29,7 +29,7 @@
 - Untagged human messages submitted while an agent is working are queued back
   to that same agent, in FIFO order, before the relay advances. The next agent
   receives the active agent's latest response as context.
-- Tagged messages such as `@claude: inspect this` bypass alternation and target
+- Tagged messages such as `#claude: inspect this` bypass alternation and target
   only that agent. Duplicate names use `-1`, `-2`, `-3`, … suffixes (roster
   index + 1).
 - `[WINGMEN:STOP]` is the safe word, but only an agent reviewing a different

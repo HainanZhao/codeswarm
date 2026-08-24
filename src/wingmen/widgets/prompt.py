@@ -287,9 +287,8 @@ See on-screen instructions for details.
                     self.selection = Selection((y, start), (y, end))
                     break
 
-            # A leading @ is reserved for direct agent tags such as
-            # ``@claude:``. File references remain available after text or
-            # whitespace without opening a competing picker over the tag.
+            # ``@`` starts file references. Direct agent tags use ``#claude:``
+            # and therefore never compete with the attachment picker.
             if x > 1 and x <= len(line) and line[x - 1] == "@":
                 remaining_line = line[x + 1 :]
                 if not remaining_line or remaining_line[0].isspace():
