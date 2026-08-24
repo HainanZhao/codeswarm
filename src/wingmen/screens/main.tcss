@@ -103,16 +103,16 @@ Conversation {
             padding: 0 1;
 
             &.-agent-tone-0 {
-                background: $agent-tone-0 24%;
+                background: $agent-tone-0 42%;
             }
             &.-agent-tone-1 {
-                background: $agent-tone-1 24%;
+                background: $agent-tone-1 42%;
             }
             &.-agent-tone-2 {
-                background: $agent-tone-2 24%;
+                background: $agent-tone-2 42%;
             }
             &.-agent-tone-3 {
-                background: $agent-tone-3 24%;
+                background: $agent-tone-3 42%;
             }
         }
 
@@ -126,9 +126,13 @@ Conversation {
             #tool-activity-summary {
                 height: 1;
                 width: 1fr;
-                margin: 0 1 0 1;
+                margin: 0 1 0 0;
                 color: $text-secondary;
                 text-overflow: ellipsis;
+            }
+
+            ToolCall {
+                margin: 0 !important;
             }
 
             &:focus {

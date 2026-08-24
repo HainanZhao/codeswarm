@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `wingwomen` as an alias for the `wingmen` command.
+
+### Fixed
+
+- Clicking an agent header no longer crashes the conversation view.
+- Agent header backgrounds now use a stronger per-agent accent fill.
+
+## [0.6.24] - 2026-08-24
+
+### Added
+
 - The two-agent relay now supports an unlimited-size roster. `-a/--agent` is
   repeatable (`wingmen run -a claude -a codex -a gemini`); `/agent
   list|add <agent>|drop <n>` changes the roster inside a running session.
@@ -75,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tool-history summaries and focused tool-call boxes now align with their
+  agent response content.
 - The CLI no longer called the removed exit hook, and screen startup no longer
   queried the conversation before it was mounted.
 - ACP shutdown now terminates and awaits subprocess tasks; relay peers stop in

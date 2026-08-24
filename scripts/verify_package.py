@@ -1,4 +1,4 @@
-"""Verify that a freshly built wheel exposes only the Wingmen entry point."""
+"""Verify that a freshly built wheel exposes Wingmen's console entry points."""
 
 from __future__ import annotations
 
@@ -58,10 +58,14 @@ def main() -> None:
             check=True,
         )
         python = install_dir / "bin" / "python"
-        executable = install_dir / "bin" / "wingmen"
+        executables = [
+            install_dir / "bin" / "wingmen",
+            install_dir / "bin" / "wingwomen",
+        ]
         run(["uv", "pip", "install", "--python", str(python), str(wheel)], check=True)
-        run([str(executable), "--version"], check=True)
-        run([str(executable), "--help"], check=True)
+        for executable in executables:
+            run([str(executable), "--version"], check=True)
+            run([str(executable), "--help"], check=True)
         smoke = (
             "import asyncio\n"
             "from wingmen.app import WingmenApp\n"
@@ -72,11 +76,14 @@ def main() -> None:
         )
         run([str(python), "-c", smoke], check=True)
 
-    expected = "wingmen = wingmen.cli:main"
-    if expected not in entry_points or "toad" in entry_points:
+    expected = {
+        "wingmen = wingmen.cli:main",
+        "wingwomen = wingmen.cli:main",
+    }
+    if not expected.issubset(entry_points.splitlines()) or "toad" in entry_points:
         raise SystemExit(
-            "wheel has invalid console scripts; expected only "
-            f"{expected!r}, got:\n{entry_points}"
+            "wheel has invalid console scripts; expected "
+            f"{sorted(expected)!r}, got:\n{entry_points}"
         )
 
 

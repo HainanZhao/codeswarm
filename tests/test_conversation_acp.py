@@ -816,6 +816,48 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_clicking_an_agent_header_does_not_select_response_content(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        claude = _RosterAgent("Claude")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.ai",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                claude,  # type: ignore[arg-type]
+                            )
+                        ]
+                        conversation.begin_agent_output(claude)  # type: ignore[arg-type]
+                        response = await conversation.post_agent_response("A reply")
+                        await pilot.pause(0.1)
+
+                        self.assertIsNotNone(response)
+                        assert response is not None
+                        header = response.parent.query_one("#agent-message-header")
+                        event = Mock(widget=header)
+                        with patch.object(
+                            conversation.screen,
+                            "get_selected_text",
+                            return_value="",
+                        ):
+                            conversation.on_click(event)
+
+                        self.assertIs(conversation.cursor_block, response.parent)
+                        self.assertIsNone(response.get_cursor_block())
+
+        asyncio.run(scenario())
+
     def test_tool_activity_and_reply_share_one_attributed_agent_turn(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
@@ -867,6 +909,56 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             list(turn.children).index(turn.query_one(ToolCall).parent),
                             list(turn.children).index(turn.query_one(AgentResponse)),
                         )
+
+        asyncio.run(scenario())
+
+    def test_tool_history_aligns_with_its_agent_response_content(self) -> None:
+        """Tool history should not add an indent inside an agent message."""
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        claude = _RosterAgent("Claude")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.ai",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                claude,  # type: ignore[arg-type]
+                            )
+                        ]
+                        conversation._active_relay_agent = claude  # type: ignore[assignment]
+                        tool_message = acp_messages.ToolCall(
+                            {
+                                "sessionUpdate": "tool_call",
+                                "toolCallId": "read-conversation",
+                                "status": "in_progress",
+                                "title": "Read conversation.py",
+                            }
+                        )
+                        tool_message.agent = claude  # type: ignore[attr-defined,assignment]
+
+                        conversation.post_message(tool_message)
+                        await pilot.pause(0.1)
+
+                        turn = conversation.query_one(AgentMessage)
+                        summary = turn.query_one("#tool-activity-summary")
+                        self.assertEqual(summary.region.x, turn.content_region.x)
+
+                        activity = turn.query_one(AgentToolActivity)
+                        activity.focus()
+                        await pilot.pause()
+                        tool = turn.query_one(ToolCall)
+                        self.assertEqual(tool.region.x, turn.content_region.x)
 
         asyncio.run(scenario())
 
@@ -1121,7 +1213,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                 header.styles.background.rgb,
                                 Color.parse(expected_color).rgb,
                             )
-                            self.assertAlmostEqual(header.styles.background.a, 0.24)
+                            self.assertAlmostEqual(header.styles.background.a, 0.42)
                             available_width = (
                                 response.parent.size.width
                                 - response.parent.styles.padding.left

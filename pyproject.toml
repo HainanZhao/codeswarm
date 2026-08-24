@@ -1,6 +1,6 @@
 [project]
 name = "wingmen"
-version = "0.6.23"
+version = "0.6.24"
 description = "A focused terminal workspace for collaborating with ACP coding agents."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,6 +22,7 @@ dependencies = [
 
 [project.scripts]
 wingmen = "wingmen.cli:main"
+wingwomen = "wingmen.cli:main"
 
 [build-system]
 requires = ["hatchling==1.28.0"]

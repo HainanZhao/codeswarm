@@ -268,7 +268,12 @@ class AgentMessage(containers.Vertical):
                 # container, not one of its selectable rendered blocks.
                 self.response.block_cursor_clear()
                 return
-            self.response.block_select(widget)
+            if self.response in widget.ancestors:
+                self.response.block_select(widget)
+            else:
+                # Headers and tool history belong to the attributed turn,
+                # but are not selectable response content.
+                self.response.block_cursor_clear()
 
     def get_block_content(self, destination: str) -> str | None:
         if self.response is None:
