@@ -26,6 +26,8 @@
 - Each agent receives the ordered public human and agent-message updates it has
   not seen since its previous turn. Only streamed message text enters this
   journal; tool calls, thoughts, terminal output, and UI history stay local.
+- Each agent's first prompt includes a brief roster introduction identifying
+  itself and its active collaborators.
 - Untagged human messages submitted while an agent is working are queued back
   to that same agent, in FIFO order, before the relay advances. The next agent
   receives the active agent's latest response as context.

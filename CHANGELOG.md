@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `wingwomen` as an alias for the `wingmen` command.
+- Each agent's first prompt now identifies its Wingmen roster collaborators.
 - New ACP sessions receive concise operating instructions: avoid speculation,
   answer questions without starting work, and stay within explicitly requested
   scope.

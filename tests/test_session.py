@@ -27,6 +27,7 @@ class FakeAgent(AgentBase):
         self.name = name
         self.started_with: list[Any] = []
         self.prompts: list[str] = []
+        self.roster_introductions: list[str] = []
         self.stopped = False
         self.last_response = ""
 
@@ -44,8 +45,42 @@ class FakeAgent(AgentBase):
     async def stop(self) -> None:
         self.stopped = True
 
+    def set_roster_introduction(self, introduction: str) -> None:
+        self.roster_introductions.append(introduction)
+
 
 class SessionCoordinatorTests(unittest.TestCase):
+    def test_start_introduces_each_agent_to_the_roster(self) -> None:
+        async def scenario() -> None:
+            owner = agent_data("claude.ai", "Claude", "claude")
+            peer = agent_data("openai.com", "Codex", "codex")
+            created: list[FakeAgent] = []
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                agent = FakeAgent(project_root, data["name"])
+                created.append(agent)
+                return agent
+
+            coordinator = SessionCoordinator(
+                Path("."), owner, peers=(peer,), agent_factory=factory
+            )
+            await coordinator.start(object())
+
+            self.assertEqual(len(created), 2)
+            self.assertIn("You are Claude", created[0].roster_introductions[0])
+            self.assertIn("Codex", created[0].roster_introductions[0])
+            self.assertIn("You are Codex", created[1].roster_introductions[0])
+            self.assertIn("Claude", created[1].roster_introductions[0])
+
+        asyncio.run(scenario())
+
     def test_idle_gemini_failure_restarts_once_in_the_same_roster_slot(self) -> None:
         async def scenario() -> None:
             owner = agent_data("claude.ai", "Claude", "claude")

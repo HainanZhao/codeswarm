@@ -128,6 +128,9 @@ class AgentLifecycleTests(unittest.TestCase):
             )
             agent = Agent(Path.cwd(), data, None)
             agent.session_id = "new-session"
+            agent.set_roster_introduction(
+                "You are Test agent. Your collaborators are Claude and Gemini."
+            )
 
             with (
                 patch(
@@ -140,6 +143,7 @@ class AgentLifecycleTests(unittest.TestCase):
 
             first_prompt = build_prompt.call_args_list[0].args[1]
             self.assertIn("Do not speculate", first_prompt)
+            self.assertIn("Your collaborators are Claude and Gemini", first_prompt)
             self.assertIn("explicit user instructions", first_prompt)
             self.assertIn("Inspect the failing test", first_prompt)
             self.assertEqual(build_prompt.call_args_list[1].args[1], "Summarize it")

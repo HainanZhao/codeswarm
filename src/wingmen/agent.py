@@ -72,5 +72,8 @@ class AgentBase(ABC):
     def get_info(self) -> Content:
         return Content("")
 
+    def set_roster_introduction(self, introduction: str) -> None:
+        """Provide one-time Wingmen context before the first prompt."""
+
     async def stop(self) -> None:
         """Stop the agent (gracefully exit the process)"""

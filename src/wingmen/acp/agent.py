@@ -240,6 +240,7 @@ class Agent(AgentBase):
         self._thought_displayed_chars = 0
         self._thought_display_truncated = False
         self._operating_instructions_sent = False
+        self._roster_introduction = ""
         # Keep a short suffix while streaming so a stop token split across
         # ACP chunks never reaches the conversation UI.
         self._response_display_tail = ""
@@ -1111,12 +1112,22 @@ class Agent(AgentBase):
             prompt: Prompt text.
         """
         if not self._operating_instructions_sent:
-            prompt = f"{OPERATING_INSTRUCTIONS}\n\nUser request:\n{prompt}"
+            roster_context = (
+                f"\n\n{self._roster_introduction}"
+                if self._roster_introduction
+                else ""
+            )
+            prompt = (
+                f"{OPERATING_INSTRUCTIONS}{roster_context}\n\nUser request:\n{prompt}"
+            )
             self._operating_instructions_sent = True
         prompt_content_blocks = await asyncio.to_thread(
             build_prompt, self.project_root_path, prompt
         )
         return await self.acp_session_prompt(prompt_content_blocks)
+
+    def set_roster_introduction(self, introduction: str) -> None:
+        self._roster_introduction = introduction.strip()
 
     async def acp_initialize(self):
         """Initialize agent."""

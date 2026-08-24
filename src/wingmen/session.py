@@ -180,6 +180,31 @@ class SessionCoordinator:
             raise
 
         self._build_relay(on_turn_start=on_turn_start, on_turn=on_turn)
+        self._introduce_roster()
+
+    def _introduce_roster(self) -> None:
+        """Give each agent a concise introduction to its active collaborators."""
+        agents = self.active_agents
+        for agent in agents:
+            name = self.display_name(agent)
+            collaborators = [
+                self.display_name(candidate)
+                for candidate in agents
+                if candidate is not agent
+            ]
+            if collaborators:
+                roster = ", ".join(collaborators)
+                introduction = (
+                    "## Wingmen conversation roster\n\n"
+                    f"You are {name}. Your collaborators are {roster}. "
+                    "Wingmen shares agent replies sequentially."
+                )
+            else:
+                introduction = (
+                    "## Wingmen conversation roster\n\n"
+                    f"You are {name}, the only agent in this conversation."
+                )
+            agent.set_roster_introduction(introduction)
 
     def _build_relay(
         self,
@@ -273,6 +298,7 @@ class SessionCoordinator:
             entry.agent = replacement
             if self.relay is not None:
                 self.relay.agents[index] = cast(AgentLike, replacement)
+            self._introduce_roster()
             return replacement
         return None
 
@@ -431,6 +457,7 @@ class SessionCoordinator:
             index = self.relay.add_agent(cast(AgentLike, agent))
             if index != len(self.roster) - 1:
                 raise RuntimeError("relay and roster indices diverged")
+        self._introduce_roster()
 
     async def drop(self, index: int) -> RosterEntry:
         """Tombstone and stop a peer; roster index zero is protected."""
