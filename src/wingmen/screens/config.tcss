@@ -1,0 +1,96 @@
+ConfigScreen {
+    align: center middle;
+    background: $background 85%;
+
+    #config-dialog {
+        width: 76;
+        max-width: 90%;
+        height: 85%;
+        max-height: 36;
+        border: round $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #config-title {
+        text-style: bold;
+        color: $text-primary;
+    }
+
+    #config-description {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    #config-settings {
+        height: 1fr;
+        padding-right: 1;
+    }
+
+    .config-group {
+        color: $text-accent;
+        text-style: bold;
+        margin: 1 0 0 0;
+    }
+
+    ConfigRow {
+        height: 3;
+        align: left middle;
+        padding: 0 1;
+    }
+
+    .setting-label {
+        width: 1fr;
+    }
+
+    #config-roster-options {
+        width: 100%;
+        height: auto;
+        padding: 0 1;
+    }
+
+    .config-roster-agent {
+        width: 100%;
+        /* A Textual Checkbox has a one-row label inside a two-row tall
+           border. Height 1 clips the entire label and check mark. */
+        height: 3;
+        color: $text-primary;
+    }
+
+    .config-roster-agent.-on {
+        background: $success 8%;
+    }
+
+    #config-roster-order-actions {
+        height: auto;
+        margin: 1 0 0 1;
+    }
+
+    #config-roster-order-actions Button {
+        min-width: 12;
+        margin-right: 1;
+    }
+
+    #config-roster-help {
+        color: $text-muted;
+        margin: 0 0 1 0;
+    }
+
+    ConfigRow Input, ConfigRow Select {
+        width: 30;
+    }
+
+    ConfigRow Switch {
+        width: auto;
+    }
+
+    #config-actions {
+        height: auto;
+        align: right middle;
+        margin-top: 1;
+    }
+
+    #config-actions Button {
+        margin-left: 1;
+    }
+}

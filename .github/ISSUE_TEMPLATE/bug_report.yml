@@ -1,21 +1,8 @@
 name: Bug Report
 description: Report a bug or issue
-title: "BUG"
+title: "Bug: "
 labels: ["bug"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Issues require an initial discussion and approval by a Toad developer before creating an issue.
-  - type: input
-    id: discussion-link
-    attributes:
-      label: Discussion link
-      description: Please enter the discussion link here
-      placeholder: https://github.com/batrachianai/toad/discussions/123
-    validations:
-      required: true
-  
   - type: textarea
     id: bug-description
     attributes:
@@ -25,5 +12,12 @@ body:
         What happened?
         What did you expect to happen?
         Steps to reproduce...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Wingmen version
+      placeholder: wingmen --version
     validations:
       required: true

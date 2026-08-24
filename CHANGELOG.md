@@ -7,10 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- The two-agent relay now supports an unlimited-size roster. `-a/--agent` is
+  repeatable (`wingmen run -a claude -a codex -a gemini`); `/agent
+  list|add <agent>|drop <n>` changes the roster inside a running session.
+- A detected-agent section in the launcher, populated from local agent
+  detection. `space` now adds/removes an agent from a roster being built;
+  `enter` launches that roster (or the highlighted agent solo if nothing is
+  selected). Added a filter input.
+- `f4` closes the current workspace (previously only
+  `/wingmen:session-close`).
+- Direct `c`/`p` keys to copy the highlighted block to the clipboard or into
+  the prompt.
+- Per-agent response headers, timestamps, work timers, and a compact rolling
+  tool-activity line with focusable history.
 ### Changed
 
+- Bare `wingmen` (no `-a`) now restores the last-used agent roster. If none is
+  saved, it opens the agent store instead of silently auto-starting a relay
+  from whatever agents happen to be detected — a fresh install now takes one
+  extra step (pick a roster once) in exchange for never starting agents you
+  didn't choose.
+- Rebranded the project from Taiji to Wingmen: PyPI distribution `taiji-cli` →
+  `wingmen`, primary command `taiji` → `wingmen`, relay safe word
+  `[TAIJI:STOP]` → `[WINGMEN:STOP]`, duplicate-agent tag/display suffixes
+  `-yin`/`-yang` → `-1`/`-2`, and the app icon `☯` → `✈`. Settings and session
+  data now live under a `wingmen` config/state path instead of `taiji`;
+  existing local settings and session history will not be picked up
+  automatically. The old compatibility identity is no longer supported.
 - Style tweak for compact prompt
 - Fix for overly wide question text
+
+### Removed
+
+- The sidebar and persistent plan panel; the conversation now uses the full
+  terminal width with one primary navigation surface.
+- The project file tree and tree-mode file picker; file attachment is now a
+  single fuzzy search flow.
+- The custom block context-menu framework and nonessential block actions such
+  as SVG export and maximize. Copying content remains available directly from
+  the conversation with `c` and `p`.
+- Telemetry: no more usage-event collection, and no more calls to the
+  upstream author's PostHog project. The `statistics.allow_collect` setting
+  is gone along with it.
+- The "Your agent here — sponsor this project" tile in the store and the former
+  testimonial/about commands (which were unrelated to agent conversations).
+  Attribution to Will McGugan and the AGPL notice remain in the license.
+- The "Recommended — Best of the bunch" store section, along with the
+  `recommended` agent-schema field it read. It held a single agent, which was
+  also listed again under Coding agents.
+- Dead code: `gist.py`, the unused `Welcome` widget, an empty `post_welcome`
+  no-op still scheduled on every session start, and two unreachable
+  `Schema`/`Settings` UI helpers.
+- The decorative quote/throbber loading option and store artwork; waiting
+  states now use the conversation's compact loading blocks.
+- The fixed-width column toggle and automatic copy-on-selection behavior;
+  conversations use the full terminal width and explicit copy actions.
+- Unreachable ACP diff-posting helpers and the ACP handler block from the
+  Conversation widget; ACP dispatch now lives in a dedicated handler module.
+- The standalone Settings screen and its F2/`ctrl+,` menu entry; runtime
+  defaults remain centralized in the internal settings schema.
+- Settings form metadata and validation scaffolding that only served the
+  removed screen; the runtime schema now stores defaults and leaf keys only.
+- The background version-check request and exit-time upgrade banner; the
+  wrapper no longer performs unrelated network work.
+
+### Fixed
+
+- The CLI no longer called the removed exit hook, and screen startup no longer
+  queried the conversation before it was mounted.
+- ACP shutdown now terminates and awaits subprocess tasks; relay peers stop in
+  parallel instead of leaking background protocol tasks.
+- Fuzzy file search now creates CPU workers lazily, cancels stale searches,
+  releases workers on unmount, and performs index scoring off the UI loop.
+- Updated the Codex integration to the current official
+  `@agentclientprotocol/codex-acp` adapter and aligned its install action.
+- The relay's turn-taking core (`RelayConversation`, née `DuplexConversation`)
+  is generalized from exactly two agents to N; the two-agent behavior is
+  unchanged (10 pre-existing tests pass with only an import/rename edit).
+- `wingmen acp COMMAND PATH -d OTHER_PATH` silently discarded `-d` — the
+  positional and the option were bound to the same parameter name.
+- The block context menu's copy/maximize/etc. actions had no direct key
+  binding, requiring three steps (engage cursor, open menu, pick a letter) to
+  copy an agent's response.
+- A plan update from the agent rendered twice — once inline in the
+  conversation and once in the sidebar — because only one of the two message
+  handlers stopped propagation.
+- The footer could show "⏎ Send" and "⏎ Select" at the same time, implying
+  two live behaviors for one key when only Send would actually fire.
+- Relay hand-offs now include every public human and agent-message update the
+  receiving agent has not seen since its previous turn, preventing a later
+  agent response from arriving without the question that prompted it.
+- Clicking blank space inside an attributed response no longer treats the
+  response container as one of its own Markdown children.
 
 ## [0.6.23] - 2026-08-17
 

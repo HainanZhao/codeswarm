@@ -1,0 +1,76 @@
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from pathlib import Path
+
+from textual.content import Content
+from textual.message import Message
+from textual.message_pump import MessagePump
+
+
+class AgentReady(Message):
+    """Agent is ready."""
+
+    def __init__(self, agent: "AgentBase | None" = None) -> None:
+        super().__init__()
+        self.agent = agent
+
+
+@dataclass
+class AgentFail(Message):
+    """Agent failed to start."""
+
+    message: str
+    details: str = ""
+    help: str = "fail"
+    agent: "AgentBase | None" = None
+
+
+class AgentBase(ABC):
+    """Base class for an 'agent'."""
+
+    def __init__(self, project_root: Path) -> None:
+        self.project_root_path = project_root
+        super().__init__()
+
+    async def start(self, message_target: MessagePump | None = None) -> None:
+        """Start the agent process.
+
+        Concrete protocols may override this. Keeping lifecycle methods on
+        the base contract lets session orchestration remain UI-independent.
+        """
+
+    @abstractmethod
+    async def send_prompt(self, prompt: str) -> str | None:
+        """Send a prompt to the agent.
+
+        Args:
+            prompt: Prompt text.
+
+        Returns:
+            str: The stop reason.
+        """
+
+    async def set_mode(self, mode_id: str) -> str | None:
+        """Put the agent in a new mode.
+
+        Args:
+            mode_id: Mode id.
+
+        Returns:
+            str: The stop reason.
+        """
+
+    async def cancel(self) -> bool:
+        """Cancel prompt.
+
+        Returns:
+            bool: `True` if success, `False` if the turn wasn't cancelled.
+
+        """
+        return False
+
+    def get_info(self) -> Content:
+        return Content("")
+
+    async def stop(self) -> None:
+        """Stop the agent (gracefully exit the process)"""

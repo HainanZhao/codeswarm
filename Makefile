@@ -1,9 +1,38 @@
 
-run := uv run taiji
+run := .venv/bin/wingmen
+python := PYTHONPATH=src .venv/bin/python
 
 .PHONY: run
 run:
 	$(run)
+
+.PHONY: test
+test:
+	$(python) -m unittest discover -s tests -v
+
+.PHONY: compile
+compile:
+	$(python) -m compileall -q src tests
+
+.PHONY: lock
+lock:
+	uv lock --check --python .venv/bin/python
+
+.PHONY: typecheck
+typecheck:
+	.venv/bin/mypy src/wingmen/acp/relay.py src/wingmen/session.py src/wingmen/mode_policy.py src/wingmen/settings.py src/wingmen/settings_schema.py src/wingmen/agents.py --follow-imports=skip --ignore-missing-imports
+
+.PHONY: package
+package:
+	.venv/bin/wingmen --version
+	$(python) scripts/verify_package.py
+
+.PHONY: verify
+verify: diff-check package test compile lock typecheck
+
+.PHONY: diff-check
+diff-check:
+	git diff --check HEAD
 
 .PHONY: gemini-acp
 gemini-acp:
@@ -14,7 +43,7 @@ claude-acp:
 	$(run) acp "claude-code-acp" --project-dir ~/sandbox --title "Claude"
 
 
-.PHONE: codex-acp
+.PHONY: codex-acp
 codex-acp:
 	$(run) acp "codex-acp"  --project-dir ~/sandbox --title="OpenAI Codex"
 

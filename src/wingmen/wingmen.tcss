@@ -1,0 +1,94 @@
+.block {
+    margin: 1 1 1 0;
+}
+
+
+Markdown {
+    layout: stream;
+}
+
+LoadingIndicator {
+    background: transparent;
+}
+
+.-hidden {
+    display: none;
+}
+
+App.-hide-thoughts AgentThought {
+    display: none;
+}
+
+App.-hide-status-line StatusLine {
+    display: none;
+}
+
+App.-hide-agent-title AgentInfo {
+    display: none;
+}
+
+App.-hide-info-bar #info-container {
+    height: 1;
+    display: none;
+}
+
+App.-compact-input {
+    Prompt {
+        &.-mode-ask #prompt-container {
+            border: tall transparent !important;
+            &:focus-within {
+                border: tall $primary !important;
+            }
+        }
+        #prompt-container {
+            border: none;
+            &:focus-within {
+                border: none;
+            }
+            margin: 0 0 0 0;
+            #prompt {
+                padding: 0 1 0 0;
+            }
+        }
+        #info-container {
+            margin: 0 0;
+
+            AgentInfo {
+                padding: 0 0 0 0;
+            }
+        }
+
+    }
+
+
+}
+
+Checkbox {
+    # TODO: Bug in Textual?
+    text-overflow: clip;
+}
+
+
+Toast {
+    margin: 0 0;
+    padding: 0 1;
+    background: $background;
+    color: $text-muted;
+    .toast--title {
+        color: $text;
+    }
+    &.-information {
+        border: round $primary;
+    }
+    &.-warning {
+        border: round $warning;
+    }
+    &.-error {
+        border: round $error;
+    }
+}
+
+
+Loading {
+    color: $text-primary;
+}

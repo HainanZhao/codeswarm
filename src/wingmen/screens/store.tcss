@@ -1,0 +1,119 @@
+
+StoreScreen {
+
+    #container {
+        hatch: right $primary 15%;
+        overflow: hidden auto;
+    }
+
+    .instruction-text {
+        text-style: dim italic;
+        padding: 1 2;
+    }
+
+    .heading {
+        margin: 0 0 0 0;
+        padding: 1 1 0 2;
+    }
+    DirectoryDisplay {
+        padding: 0 1 0 2;
+        border-bottom: solid $foreground 10%;
+
+
+        CondensedPath {
+            pointer:pointer;
+            width: 100%;
+            color: $text-warning;
+            &:hover {
+                background: $foreground 4%;
+                text-style: underline;
+            }
+        }
+    }
+
+    #title-container {
+        align: center top;
+        dock: top;
+        #title-grid {
+            margin: 0 1;
+            border: block black 20%;
+            background: black 20%;
+            grid-size: 2 1;
+            height: auto;
+            grid-columns: 24 1fr;
+            grid-rows: auto;
+            grid-gutter: 1 2;
+            min-width: 40;
+        }
+    }
+
+    LoadingIndicator {
+        height: 3;
+    }
+
+    GridSelect {
+        grid-gutter: 0;
+        height: auto;
+        padding: 0;
+        margin: 0 0;
+
+        &.-highlight {
+            background: $panel;
+            border: tall $primary 30%;
+        }
+
+        &:focus * {
+            &.-highlight {
+                background: $panel;
+                border: tall $primary;
+            }
+        }
+
+    }
+
+    GridSelect {
+        margin: 0 1;
+        border: round $secondary 50%;
+        keyline: none
+    }
+
+    AgentItem {
+        height: auto;
+        border: tall transparent;
+        padding: 0 1    ;
+        &:hover {
+            background: $panel;
+        }
+        pointer: pointer;
+
+        &.-selected {
+            border: tall $success 70%;
+        }
+
+        #description {
+            text-style: dim;
+        }
+        #author {
+            text-style: italic;
+            color: $text-secondary;
+        }
+        #availability {
+            height: auto;
+        }
+    }
+
+    #agent-filter {
+        margin: 0 1;
+    }
+
+    #roster-strip {
+        padding: 0 2;
+        color: $text-success;
+        text-style: bold;
+        height: auto;
+        &.-empty {
+            display: none;
+        }
+    }
+
+}
