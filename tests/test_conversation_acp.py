@@ -483,6 +483,38 @@ class ConversationACPDispatchTests(unittest.TestCase):
         self.assertNotIn("dropdown", help_text)
         self.assertNotIn("Install\"", help_text)
 
+    def test_resume_command_reopens_a_saved_agent_session(self) -> None:
+        async def scenario() -> None:
+            conversation = Conversation(Path.cwd())
+            db = Mock()
+            db.session_get = AsyncMock(
+                return_value={
+                    "id": 7,
+                    "agent_identity": "claude.ai",
+                    "agent_session_id": "saved-session",
+                    "protocol": "acp",
+                }
+            )
+
+            with (
+                patch(
+                    "wingmen.widgets.conversation.DB", return_value=db, create=True
+                ),
+                patch.object(conversation, "post_message") as post_message,
+                patch.object(conversation, "flash"),
+            ):
+                handled = await conversation.slash_command("/resume 7")
+
+            self.assertTrue(handled)
+            message = post_message.call_args.args[0]
+            self.assertIsInstance(message, messages.LaunchAgent)
+            assert isinstance(message, messages.LaunchAgent)
+            self.assertEqual(message.identity, "claude.ai")
+            self.assertEqual(message.session_id, "saved-session")
+            self.assertEqual(message.pk, 7)
+
+        asyncio.run(scenario())
+
     def test_failed_terminal_start_is_not_left_registered(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:

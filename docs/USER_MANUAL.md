@@ -165,6 +165,7 @@ agent. Run `/agent list` to copy the correct tag.
 | Pause or resume a multi-agent relay | `Ctrl+Shift+P` or `/pause` |
 | Open the mode picker | `Ctrl+O` or click the mode name |
 | Close the workspace and return to agent selection | `F4` or `/close` |
+| Resume a saved ACP session | `/resume [session number]` |
 
 Pausing cancels current agent work but preserves queued prompts. Resuming asks
 the agents to continue from the shared workspace state. Pause is available
@@ -221,6 +222,7 @@ it is never sent to an agent. Press `Ctrl+C` to stop a running command.
 | `/agent add AGENT` | Add and start an agent by short name or identity. |
 | `/agent drop N` | Stop and mark roster member `N` as dropped; numbering stays stable. |
 | `/pause` | Pause or resume the multi-agent relay. |
+| `/resume [N]` | Resume the most recent other saved ACP session, or session `N`. |
 | `/mode` | Open the mode picker. |
 | `/mode chat` | Enter Chat mode directly. |
 | `/clear` | Clear the visible transcript. |
@@ -228,6 +230,9 @@ it is never sent to an agent. Press `Ctrl+C` to stop a running command.
 | `/close` | Close this workspace and return to agent selection. |
 
 Roster member 1 owns the session and cannot be dropped; use `/close` instead.
+
+`/resume` replaces the current workspace with the saved session. It is available
+only for ACP agents and adapters that support loading sessions.
 Roster changes are also saved as the default for the next launch.
 
 Agents may advertise additional slash commands. They appear in command search

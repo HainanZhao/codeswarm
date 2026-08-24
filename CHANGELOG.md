@@ -10,11 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `wingwomen` as an alias for the `wingmen` command.
+- `/resume [session number]` to reopen the previous or selected saved ACP
+  session.
 
 ### Fixed
 
 - Clicking an agent header no longer crashes the conversation view.
 - Agent header backgrounds now use a stronger per-agent accent fill.
+- Closing a workspace now terminates the complete ACP adapter process group.
 
 ## [0.6.24] - 2026-08-24
 

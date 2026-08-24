@@ -37,6 +37,7 @@ from textual.timer import Timer
 
 import wingmen
 from wingmen import jsonrpc, messages
+from wingmen.db import DB
 from wingmen import paths
 from wingmen.agent_schema import Agent as AgentData
 from wingmen.acp import messages as acp_messages
@@ -1491,6 +1492,11 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 "Close the current session",
             ),
             SlashCommand(
+                "/resume",
+                "Resume a saved agent session",
+                "<optional session number>",
+            ),
+            SlashCommand(
                 "/agent",
                 "Manage the relay roster",
                 "add <agent> | drop <n> | list",
@@ -1565,6 +1571,44 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         await self._sync_desired_mode()
         self.update_slash_commands()
         await self._persist_roster()
+
+    async def _slash_resume(self, parameters: str) -> None:
+        """Launch a saved ACP session, defaulting to the previous one."""
+        requested = parameters.strip()
+        db = DB()
+        if requested:
+            try:
+                session_pk = int(requested)
+            except ValueError:
+                self.flash("Use /resume <session number>", style="error")
+                return
+            session = await db.session_get(session_pk)
+        else:
+            sessions = await db.session_get_recent()
+            current_session_pk = self.session.session_pk
+            session = next(
+                (
+                    candidate
+                    for candidate in sessions or []
+                    if candidate["id"] != current_session_pk
+                ),
+                None,
+            )
+
+        if session is None:
+            self.flash("No saved session is available to resume", style="warning")
+            return
+        if session.get("protocol") != "acp":
+            self.flash("Only ACP sessions can be resumed", style="error")
+            return
+
+        self.post_message(
+            messages.LaunchAgent(
+                session["agent_identity"],
+                session_id=session["agent_session_id"],
+                pk=session["id"],
+            )
+        )
 
     async def _slash_agent(self, parameters: str) -> None:
         """Handle ``/agent [list|add <agent>|drop <n>]``."""
@@ -2075,6 +2119,7 @@ Wingmen is licensed under the [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.t
 - `/pause` — pause or resume a multi-agent relay
 - `/clear [lines]` — clear the conversation window
 - `/close` — close this workspace and return to agent selection
+- `/resume [session number]` — reopen the previous or selected saved session
 
 ### Wingmen
 
@@ -2107,6 +2152,9 @@ Drag over conversation text and press `Ctrl+C` to copy it. Otherwise,
             return True
         if command in {"agent", "wingmen:agent"}:
             await self._slash_agent(parameters.strip())
+            return True
+        if command == "resume":
+            await self._slash_resume(parameters)
             return True
         if command in {"clear", "wingmen:clear"}:
             try:

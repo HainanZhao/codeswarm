@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 from time import monotonic
 from typing import Any, cast, NamedTuple
 from copy import deepcopy
@@ -833,6 +834,7 @@ class Agent(AgentBase):
                 env=env,
                 cwd=str(self.project_root_path),
                 limit=10 * 1024 * 1024,
+                start_new_session=os.name == "posix",
             )
         except Exception as error:
             self.post_message(AgentFail("Failed to start agent", details=str(error)))
@@ -998,7 +1000,10 @@ class Agent(AgentBase):
         process = self._process
         if process is not None:
             try:
-                process.terminate()
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.terminate()
             except OSError:
                 pass
 
@@ -1006,7 +1011,10 @@ class Agent(AgentBase):
                 await asyncio.wait_for(process.wait(), timeout=2.0)
             except asyncio.TimeoutError:
                 try:
-                    process.kill()
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    else:
+                        process.kill()
                 except OSError:
                     pass
                 with suppress(asyncio.TimeoutError):

@@ -2,6 +2,7 @@ import asyncio
 import os
 from pathlib import Path
 import shlex
+import signal
 import sys
 import tempfile
 import unittest
@@ -23,6 +24,7 @@ from wingmen.widgets.conversation import Conversation
 
 class _FakeProcess:
     def __init__(self) -> None:
+        self.pid = 12345
         self.terminated = False
         self.killed = False
 
@@ -809,7 +811,7 @@ class AgentLifecycleTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_stop_terminates_process_and_cancels_protocol_tasks(self) -> None:
+    def test_stop_terminates_process_group_and_cancels_protocol_tasks(self) -> None:
         async def scenario() -> None:
             data = cast(
                 AgentData,
@@ -825,12 +827,57 @@ class AgentLifecycleTests(unittest.TestCase):
             agent._task = asyncio.create_task(asyncio.sleep(60))
             agent._agent_task = asyncio.create_task(asyncio.sleep(60))
 
-            await agent.stop()
+            if os.name == "posix":
+                with patch("wingmen.acp.agent.os.killpg") as killpg:
+                    await agent.stop()
+                killpg.assert_called_once_with(process.pid, signal.SIGTERM)
+            else:
+                await agent.stop()
+                self.assertTrue(process.terminated)
 
-            self.assertTrue(process.terminated)
             self.assertIsNone(agent._process)
             self.assertIsNone(agent._task)
             self.assertIsNone(agent._agent_task)
+
+        asyncio.run(scenario())
+
+    @unittest.skipUnless(os.name == "posix", "process groups require POSIX")
+    def test_stop_terminates_the_adapter_process_group(self) -> None:
+        async def scenario() -> None:
+            data = cast(
+                AgentData,
+                {
+                    "name": "Test agent",
+                    "identity": "test.agent",
+                    "run_command": {"*": "test-agent"},
+                },
+            )
+            child_code = (
+                "import subprocess, time; "
+                "child=subprocess.Popen(['sleep', '60']); "
+                "print(child.pid, flush=True); time.sleep(60)"
+            )
+            command = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)}"
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            assert process.stdout is not None
+            child_pid = int((await process.stdout.readline()).decode())
+            agent = Agent(Path.cwd(), data, None)
+            agent._process = process
+
+            try:
+                await agent.stop()
+                await asyncio.sleep(0.1)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child_pid, 0)
+            finally:
+                try:
+                    os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
         asyncio.run(scenario())
 
