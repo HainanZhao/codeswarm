@@ -97,8 +97,23 @@ Conversation {
 
         #agent-message-header {
             height: 1;
+            width: auto;
+            max-width: 1fr;
             margin: 0;
-            padding: 0;
+            padding: 0 1;
+
+            &.-agent-tone-0 {
+                background: $agent-tone-0 24%;
+            }
+            &.-agent-tone-1 {
+                background: $agent-tone-1 24%;
+            }
+            &.-agent-tone-2 {
+                background: $agent-tone-2 24%;
+            }
+            &.-agent-tone-3 {
+                background: $agent-tone-3 24%;
+            }
         }
 
         AgentToolActivity {

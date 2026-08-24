@@ -224,13 +224,18 @@ class AgentMessage(containers.Vertical):
         super().__init__()
         self.response = response
         self.tool_activity = AgentToolActivity()
+        self.tone_class = f"-agent-tone-{tone_index % 4}"
         self.header = Content.assemble(
             (speaker, f"$agent-tone-{tone_index % 4} bold"),
             (f" · {timestamp}", "dim"),
         )
 
     def compose(self) -> ComposeResult:
-        yield NonSelectableLabel(self.header, id="agent-message-header")
+        yield NonSelectableLabel(
+            self.header,
+            id="agent-message-header",
+            classes=self.tone_class,
+        )
         if self.response is not None:
             yield self.response
         yield self.tool_activity

@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
+from textual.color import Color
+
 from wingmen.acp import messages as acp_messages
 from wingmen.acp.agent import Mode
 from wingmen.acp.relay import MAX_QUEUED_PROMPTS, RelayConversation, RelayResult
@@ -1101,12 +1103,35 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             ),
                             1,
                         )
+                        headers = [
+                            response.parent.query_one("#agent-message-header")
+                            for response in responses
+                        ]
+                        expected_colors = (
+                            "#88C0D0",
+                            "#EBCB8B",
+                            "#A3BE8C",
+                            "#D08770",
+                        )
+                        for index, (header, response, expected_color) in enumerate(
+                            zip(headers, responses, expected_colors)
+                        ):
+                            self.assertTrue(header.has_class(f"-agent-tone-{index}"))
+                            self.assertEqual(
+                                header.styles.background.rgb,
+                                Color.parse(expected_color).rgb,
+                            )
+                            self.assertAlmostEqual(header.styles.background.a, 0.24)
+                            available_width = (
+                                response.parent.size.width
+                                - response.parent.styles.padding.left
+                                - response.parent.styles.padding.right
+                            )
+                            self.assertLess(header.size.width, available_width)
                         self.assertEqual(
                             [
-                                response.parent.query_one(
-                                    "#agent-message-header"
-                                ).render().spans[0].style
-                                for response in responses
+                                header.render().spans[0].style
+                                for header in headers
                             ],
                             [f"$agent-tone-{index} bold" for index in range(4)],
                         )
