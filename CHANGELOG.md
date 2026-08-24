@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Finished relay agents now show a completion checkmark instead of the active
+  work indicator.
 - Clicking an agent header no longer crashes the conversation view.
 - Agent header backgrounds now use a stronger per-agent accent fill.
 - Closing a workspace now terminates the complete ACP adapter process group.

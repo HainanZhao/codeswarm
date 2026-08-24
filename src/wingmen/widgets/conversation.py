@@ -1260,7 +1260,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             is_complete = (
                 self._collaboration_complete and id(agent) in self._agent_elapsed
             )
-            marker = "●" if is_current or is_complete else "○" if is_ready else "…"
+            marker = "●" if is_current else "✓" if is_complete else "○" if is_ready else "…"
             timer = (
                 f" · {self._format_elapsed(elapsed)}"
                 if is_timed or is_complete

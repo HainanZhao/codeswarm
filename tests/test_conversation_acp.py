@@ -231,7 +231,8 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             )
                             conversation._mark_collaboration_complete()
 
-                        self.assertIn("● Gemini · 0:05", conversation.agent_info.plain)
+                        self.assertIn("✓ Gemini · 0:05", conversation.agent_info.plain)
+                        self.assertNotIn("● Gemini · 0:05", conversation.agent_info.plain)
                         self.assertTrue(
                             any(
                                 span.style == "$success bold"
