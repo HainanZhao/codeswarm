@@ -1157,7 +1157,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_roster_palette_only_colors_agent_headers(self) -> None:
+    def test_roster_palette_lightly_tints_each_agent_reply(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
@@ -1199,7 +1199,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                     for response in responses
                                 }
                             ),
-                            1,
+                            4,
                         )
                         headers = [
                             response.parent.query_one("#agent-message-header")
@@ -1214,6 +1214,16 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         for index, (header, response, expected_color) in enumerate(
                             zip(headers, responses, expected_colors)
                         ):
+                            self.assertTrue(
+                                response.parent.has_class(f"-agent-tone-{index}")
+                            )
+                            self.assertEqual(
+                                response.parent.styles.background.rgb,
+                                Color.parse(expected_color).rgb,
+                            )
+                            self.assertAlmostEqual(
+                                response.parent.styles.background.a, 0.08
+                            )
                             self.assertTrue(header.has_class(f"-agent-tone-{index}"))
                             self.assertEqual(
                                 header.styles.background.rgb,

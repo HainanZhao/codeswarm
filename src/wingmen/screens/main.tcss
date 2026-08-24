@@ -91,6 +91,19 @@ Conversation {
         padding: 1;
         background: $foreground 4%;
 
+        &.-agent-tone-0 {
+            background: $agent-tone-0 8%;
+        }
+        &.-agent-tone-1 {
+            background: $agent-tone-1 8%;
+        }
+        &.-agent-tone-2 {
+            background: $agent-tone-2 8%;
+        }
+        &.-agent-tone-3 {
+            background: $agent-tone-3 8%;
+        }
+
         &.block {
             margin: 1 1 0 0;
         }

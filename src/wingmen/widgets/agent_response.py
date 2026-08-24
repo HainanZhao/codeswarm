@@ -225,6 +225,7 @@ class AgentMessage(containers.Vertical):
         self.response = response
         self.tool_activity = AgentToolActivity()
         self.tone_class = f"-agent-tone-{tone_index % 4}"
+        self.add_class(self.tone_class)
         self.header = Content.assemble(
             (speaker, f"$agent-tone-{tone_index % 4} bold"),
             (f" · {timestamp}", "dim"),
