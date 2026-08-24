@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Direct agent messages now use `#agent: instruction`; `@` is reserved for
-  file attachments.
+- `@` is reserved for file attachments. Click a roster agent to select the
+  recipient of the next normal message; prompt-level direct-message syntax was
+  removed.
 
 ### Added
 

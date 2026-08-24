@@ -295,27 +295,6 @@ class SessionCoordinator:
             return index
         return None
 
-    def parse_agent_tag(self, prompt: str) -> tuple[int, str] | None:
-        """Parse ``#agent: instruction`` for a direct relay turn."""
-        if not self.relay_active or not prompt.startswith("#"):
-            return None
-        tag, separator, body = prompt.partition(":")
-        if not separator or not body.strip():
-            return None
-        tag = tag[1:].strip().lower()
-        for index, entry in enumerate(self.roster):
-            if not entry.active:
-                continue
-            names = {
-                entry.data["short_name"].lower(),
-                entry.data["identity"].lower(),
-                entry.data["name"].lower().replace(" ", "-"),
-            }
-            names.update(f"{name}-{index + 1}" for name in tuple(names))
-            if tag in names:
-                return index, body.strip()
-        return None
-
     def display_name(self, agent: AgentBase) -> str:
         name = str(agent.get_info())
         if self.relay is None:
@@ -330,26 +309,26 @@ class SessionCoordinator:
         )
         if index is None:
             return name
-        # Show the exact copyable address only when otherwise-identical names
-        # need disambiguating. Distinct agents remain pleasantly noise-free.
+        # Distinguish identical roster entries without exposing a message-tag
+        # syntax in the prompt.
         matching_names = sum(
             str(candidate.get_info()).casefold() == name.casefold()
             for candidate in self.relay.agents
         )
         return (
-            f"{name} ({self.agent_tag(index)})" if matching_names > 1 else name
+            f"{name} ({index + 1})" if matching_names > 1 else name
         )
 
-    def agent_tag(self, index: int) -> str:
-        """Return the shortest unambiguous, copyable direct-message tag."""
+    def select_agent(self, index: int) -> None:
+        """Select the active roster member for the next normal relay turn."""
+        if not 0 <= index < len(self.roster):
+            raise IndexError("agent index out of range")
         entry = self.roster[index]
-        short_name = entry.data["short_name"].lower()
-        duplicate_count = sum(
-            candidate.data["short_name"].casefold() == short_name.casefold()
-            for candidate in self.roster
-        )
-        suffix = f"-{index + 1}" if duplicate_count > 1 else ""
-        return f"#{short_name}{suffix}"
+        if not entry.active or entry.agent is None:
+            raise IndexError("agent is not active")
+        self.first_agent = index
+        if self.relay is not None:
+            self.relay.next_agent_index = index
 
     def agent_at(self, index: int) -> AgentBase:
         if self.relay is None:

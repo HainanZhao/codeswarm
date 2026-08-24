@@ -1022,7 +1022,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 return
             await self.post(UserInput(text))
             self.window.scroll_end(animate=False)
-            direct_target = self._parse_agent_tag(text)
+            direct_target: tuple[int, str] | None = None
             if (
                 direct_target is None
                 and text.startswith("/")
@@ -1170,9 +1170,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             self._pending_solo_prompts.extend(queued_prompts)
             self.flash("Queued work will continue with the remaining agent", style="success")
 
-    def _parse_agent_tag(self, prompt: str) -> tuple[int, str] | None:
-        return self.session.parse_agent_tag(prompt)
-
     def _agent_display_name(self, agent: AgentBase) -> str:
         return self.session.display_name(agent)
 
@@ -1236,6 +1233,26 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             if entry.active and entry.agent in active_agents:
                 return entry.agent
         return active_agents[0] if active_agents else None
+
+    def select_routing_agent_at(self, offset: int) -> None:
+        """Select the roster entry whose visible name was clicked."""
+        roster_text = self.agent_info.plain
+        search_start = 0
+        for agent in self.session.active_agents:
+            name = self._agent_display_name(agent)
+            name_start = roster_text.find(name, search_start)
+            if name_start < 0:
+                continue
+            # The marker and optional routing arrow immediately precede a
+            # name. Accept clicks on either so the compact target is forgiving.
+            if name_start - 4 <= offset < name_start + len(name):
+                index = self.session.index_of_agent(agent)
+                if index is not None:
+                    self.session.select_agent(index)
+                    self._refresh_roster_info()
+                    self.prompt.prompt_text_area.focus()
+                return
+            search_start = name_start + len(name)
 
     def _refresh_roster_info(self) -> None:
         """Show the complete roster and current speaker in the prompt footer."""
@@ -1601,12 +1618,11 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 status = "" if entry.active else " — dropped"
                 owner = " — session owner" if index == 0 else ""
                 lines.append(
-                    f"{index + 1}. {entry.data['name']} "
-                    f"(`{self.session.agent_tag(index)}`){owner}{status}"
+                    f"{index + 1}. {entry.data['name']}{owner}{status}"
                 )
             if len(self.session.roster) > 1:
                 lines.append(
-                    "\nAddress one directly with the displayed `#tag: instruction`."
+                    "\nClick an agent beside the prompt to select the next recipient."
                 )
             await self.post(MarkdownNote("\n".join(lines), classes="-agent-identity"))
             return
@@ -2069,7 +2085,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 Terminal workspace for collaborating with one or more coding agents.
 
 - The roster is shown beside the prompt; the filled marker is speaking.
-- Send a normal message to continue the relay, or `#agent: message` to address one agent.
+- Click an agent beside the prompt to select who receives the next message.
 - `/agent list` shows the active roster.
 
 Wingmen is licensed under the [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.txt).""",

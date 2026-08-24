@@ -32,9 +32,9 @@ Launch a specific roster directly when needed:
 wingmen run -a claude -a codex -a gemini ~/projects/example
 ```
 
-Agents take turns sequentially. Use `#agent:` to address one directly, such
-as `#claude: inspect the failing test`. Press `Ctrl+C` to cancel work or quit;
-use `Ctrl+Shift+P` to pause or resume a multi-agent relay.
+Agents take turns sequentially. Click an agent beside the prompt to choose who
+receives the next message. Press `Ctrl+C` to cancel work or quit; use
+`Ctrl+Shift+P` to pause or resume a multi-agent relay.
 
 See the [user manual](docs/USER_MANUAL.md) for all commands and controls.
 

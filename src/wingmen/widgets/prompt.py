@@ -287,8 +287,7 @@ See on-screen instructions for details.
                     self.selection = Selection((y, start), (y, end))
                     break
 
-            # ``@`` starts file references. Direct agent tags use ``#claude:``
-            # and therefore never compete with the attachment picker.
+            # ``@`` starts file references.
             if x > 1 and x <= len(line) and line[x - 1] == "@":
                 remaining_line = line[x + 1 :]
                 if not remaining_line or remaining_line[0].isspace():
@@ -389,6 +388,14 @@ class Prompt(containers.VerticalGroup):
     @on(events.Click, "ModeInfo")
     def on_click(self):
         self.mode_switcher.focus()
+
+    @on(events.Click, "AgentInfo")
+    def on_click_agent_info(self, event: events.Click) -> None:
+        """Select the clicked relay recipient without leaving the prompt."""
+        from wingmen.widgets.conversation import Conversation
+
+        self.query_ancestor(Conversation).select_routing_agent_at(event.x)
+        event.stop()
 
     def watch_modes(self, modes: dict[str, Mode] | None) -> None:
         from wingmen.visuals.columns import Columns

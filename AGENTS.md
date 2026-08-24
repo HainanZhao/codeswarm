@@ -29,9 +29,8 @@
 - Untagged human messages submitted while an agent is working are queued back
   to that same agent, in FIFO order, before the relay advances. The next agent
   receives the active agent's latest response as context.
-- Tagged messages such as `#claude: inspect this` bypass alternation and target
-  only that agent. Duplicate names use `-1`, `-2`, `-3`, … suffixes (roster
-  index + 1).
+- Clicking an agent beside the prompt selects it as the first recipient for
+  the next normal relay message. Duplicate names display their roster number.
 - `[WINGMEN:STOP]` is the safe word, but only an agent reviewing a different
   agent's response may use it. The first responder after any human message and
   direct/private turns cannot stop peer review. An eligible reviewer with
@@ -46,8 +45,7 @@
   it does not scale with roster size.
 - `/agent list|add <agent>|drop <n>` changes the roster inside a running
   session. `drop` tombstones an entry (`active = False`) rather than removing
-  it, so roster indices — and any already-queued direct-tagged prompt — stay
-  valid.
+  it, so roster indices stay valid.
 
 ## Launch flow
 

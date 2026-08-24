@@ -312,7 +312,7 @@ class SessionCoordinatorTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_tag_parsing_and_relay_execution_stay_out_of_the_ui(self) -> None:
+    def test_select_agent_sets_the_next_relay_recipient(self) -> None:
         async def scenario() -> None:
             owner = agent_data("claude.ai", "Claude", "claude")
             peer = agent_data("openai.com", "Codex", "codex")
@@ -332,17 +332,13 @@ class SessionCoordinatorTests(unittest.TestCase):
             )
             await coordinator.start(object())
 
-            self.assertEqual(
-                coordinator.parse_agent_tag("#codex-2: inspect this"),
-                (1, "inspect this"),
-            )
-            self.assertIsNone(
-                coordinator.parse_agent_tag("@codex-2: inspect this")
-            )
-            self.assertIsNone(coordinator.parse_agent_tag("@src/main.py"))
+            coordinator.select_agent(1)
 
-            await coordinator.send_direct_prompt(1, "inspect this")
-            self.assertIn("Turn context:\ninspect this", coordinator.agent_at(1).prompts[0])
+            self.assertEqual(coordinator.first_agent, 1)
+
+            coordinator.roster[1].active = False
+            with self.assertRaises(IndexError):
+                coordinator.select_agent(1)
 
         asyncio.run(scenario())
 
@@ -370,7 +366,7 @@ class SessionCoordinatorTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_duplicate_display_names_include_their_copyable_tags(self) -> None:
+    def test_duplicate_display_names_include_their_roster_number(self) -> None:
         async def scenario() -> None:
             first = agent_data("claude.one", "Claude", "claude")
             second = agent_data("claude.two", "Claude", "claude")
@@ -392,13 +388,12 @@ class SessionCoordinatorTests(unittest.TestCase):
 
             self.assertEqual(
                 coordinator.display_name(coordinator.agent_at(0)),
-                "Claude (#claude-1)",
+                "Claude (1)",
             )
             self.assertEqual(
                 coordinator.display_name(coordinator.agent_at(1)),
-                "Claude (#claude-2)",
+                "Claude (2)",
             )
-            self.assertEqual(coordinator.agent_tag(0), "#claude-1")
 
         asyncio.run(scenario())
 
@@ -430,7 +425,10 @@ class SessionCoordinatorTests(unittest.TestCase):
             self.assertFalse(coordinator.roster[1].active)
             self.assertTrue(coordinator.roster[2].active)
             self.assertTrue(coordinator.relay_active)
-            self.assertIsNone(coordinator.parse_agent_tag("#codex-2: no"))
+            with self.assertRaises(IndexError):
+                coordinator.select_agent(1)
+            coordinator.select_agent(2)
+            self.assertEqual(coordinator.first_agent, 2)
 
         asyncio.run(scenario())
 

@@ -33,6 +33,7 @@ Type a request and press `Enter`. With multiple agents, Wingmen sends each
 response to the next agent in sequence. The roster beside the prompt shows
 connection and speaker state:
 
+- `→` — receives the next message
 - `●` — currently working
 - `○` — connected and waiting
 - `…` — connecting
@@ -48,9 +49,9 @@ connection and speaker state:
 - A normal follow-up entered while an agent is working is queued back to that
   agent. After it handles all queued follow-ups, the relay advances and gives
   the next agent the latest response as context.
-- `#agent: message` addresses one agent only. That response is not relayed.
-- Duplicate agent names show their exact addresses, such as
-  `Claude (#claude-1)` and `Claude (#claude-2)`.
+- Click an agent beside the prompt to choose who receives the next normal
+  message. Duplicate names include their roster number, such as `Claude (1)`
+  and `Claude (2)`.
 - The first agent answering a human message cannot stop the relay; another agent
   always gets the chance to review it. If that reviewer has nothing meaningful
   to correct or add, it may acknowledge with an emoji and Wingmen's internal
@@ -142,18 +143,11 @@ the file. Paths containing spaces are quoted automatically. Slash commands
 owned by Wingmen run locally. Commands advertised by an agent are sent to that
 agent; an unknown slash command shows an error instead of becoming a prompt.
 
-### Direct Messages
+### Select the Next Agent
 
-Use the short name shown by `/agent list`:
-
-```text
-#claude: inspect the failing test
-```
-
-A direct instruction goes only to the named agent. Its answer text is not
-forwarded to another agent; the relay may continue using only shared workspace
-state. If work is already active, Wingmen queues the instruction for that
-agent. Run `/agent list` to copy the correct tag.
+Click an agent beside the prompt. The `→` marker moves to the selected agent;
+your next normal message starts the relay with that agent. While an agent is
+working, ordinary follow-ups still queue for that active agent.
 
 ## Control the Relay
 
@@ -333,9 +327,8 @@ Gemini CLI. Some agents also require an ACP adapter.
 
 ### Only One Agent Responds
 
-Run `/agent list` and confirm that at least 2 roster members are active. A
-message beginning with `#agent:` intentionally targets only that agent and does
-not relay its response.
+Run `/agent list` and confirm that at least 2 roster members are active. Click
+an agent beside the prompt to choose who receives the next normal message.
 
 ### An Agent Keeps Working on the Wrong Task
 

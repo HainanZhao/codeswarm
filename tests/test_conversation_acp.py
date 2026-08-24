@@ -1453,6 +1453,98 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_clicking_a_roster_agent_selects_the_next_recipient(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        claude = _RosterAgent("Claude")
+                        gemini = _RosterAgent("Gemini")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.ai",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                claude,  # type: ignore[arg-type]
+                            ),
+                            RosterEntry(
+                                AgentData(
+                                    identity="gemini.google.com",
+                                    name="Gemini",
+                                    short_name="gemini",
+                                ),
+                                gemini,  # type: ignore[arg-type]
+                            ),
+                        ]
+                        conversation.session._build_relay(
+                            on_turn_start=None, on_turn=None
+                        )
+                        conversation.agent_ready = True
+                        conversation._ready_agents = {id(claude), id(gemini)}
+                        conversation._refresh_roster_info()
+                        await pilot.pause()
+
+                        await pilot.click(AgentInfo, offset=(14, 0))
+
+                        self.assertEqual(conversation.session.first_agent, 1)
+                        self.assertTrue(
+                            conversation.agent_info.plain.startswith("○ Claude · → ○ Gemini")
+                        )
+
+        asyncio.run(scenario())
+
+    def test_hash_prefixed_prompt_is_a_normal_message(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        claude = _RosterAgent("Claude")
+                        gemini = _RosterAgent("Gemini")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.ai",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                claude,  # type: ignore[arg-type]
+                            ),
+                            RosterEntry(
+                                AgentData(
+                                    identity="gemini.google.com",
+                                    name="Gemini",
+                                    short_name="gemini",
+                                ),
+                                gemini,  # type: ignore[arg-type]
+                            ),
+                        ]
+                        conversation.session._build_relay(
+                            on_turn_start=None, on_turn=None
+                        )
+
+                        with patch.object(conversation, "send_prompt_to_agent") as send:
+                            await conversation.on_user_input_submitted(
+                                messages.UserInputSubmitted("#claude: inspect this")
+                            )
+
+                        send.assert_called_once_with("#claude: inspect this")
+
+        asyncio.run(scenario())
+
     def test_pause_is_unavailable_without_a_relay(self) -> None:
         conversation = Conversation(Path.cwd())
 

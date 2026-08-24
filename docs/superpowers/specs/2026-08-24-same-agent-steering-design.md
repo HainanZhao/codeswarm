@@ -21,8 +21,8 @@ adapter-specific protocol extensions.
   hidden and is not forwarded.
 - A trailing stop marker from the final steered response keeps its existing
   meaning and ends automated collaboration.
-- Explicit `#agent` messages remain private direct turns and retain their
-  existing priority and routing behavior.
+- The selected roster entry starts the next normal relay turn; this is a UI
+  selection, not a prompt syntax.
 - Paused relays retain queued input. The active-agent association is preserved
   until the relay resumes.
 - Solo sessions keep their existing FIFO same-agent prompt queue.
