@@ -1020,7 +1020,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             if text.startswith("/") and await self.slash_command(text):
                 # Wingmen has processed the slash command.
                 return
-            await self.post(UserInput(text))
+            user_message = await self.post(UserInput(text))
             self.window.scroll_end(animate=False)
             direct_target: tuple[int, str] | None = None
             if (
@@ -1042,12 +1042,14 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                     self._queue_relay_prompt(
                         self.session.enqueue_direct(agent_index, direct_prompt),
                         "Queued while agents are paused",
+                        user_message,
                     )
                     return
                 if self.turn == "agent":
                     self._queue_relay_prompt(
                         self.session.enqueue_direct(agent_index, direct_prompt),
                         "Queued for the tagged agent",
+                        user_message,
                     )
                     return
                 self.turn = "agent"
@@ -1061,20 +1063,24 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                     else "the active agent"
                 )
                 self._queue_relay_prompt(
-                    self.session.enqueue_human(text), f"Queued for {active_name}"
+                    self.session.enqueue_human(text),
+                    f"Queued for {active_name}",
+                    user_message,
                 )
                 return
             if self._relay_active and self.relay_paused:
                 self._queue_relay_prompt(
-                    self.session.enqueue_human(text), "Queued while agents are paused"
+                    self.session.enqueue_human(text),
+                    "Queued while agents are paused",
+                    user_message,
                 )
                 return
-            if self._queue_solo_prompt_if_busy(text):
+            if self._queue_solo_prompt_if_busy(text, user_message):
                 return
             self.turn = "agent"
             self.send_prompt_to_agent(text)
 
-    def _queue_solo_prompt_if_busy(self, prompt: str) -> bool:
+    def _queue_solo_prompt_if_busy(self, prompt: str, message: UserInput) -> bool:
         """Queue a follow-up instead of overlapping requests to one ACP agent."""
         if self._relay_active or self.turn != "agent":
             return False
@@ -1085,13 +1091,15 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             )
             return True
         self._pending_solo_prompts.append(prompt)
-        self.flash("Queued for the agent", style="success")
+        message.set_queue_status("Queued for the agent")
         return True
 
-    def _queue_relay_prompt(self, accepted: bool, success_message: str) -> None:
+    def _queue_relay_prompt(
+        self, accepted: bool, success_message: str, message: UserInput
+    ) -> None:
         """Tell the user whether a busy relay accepted their follow-up."""
         if accepted:
-            self.flash(success_message, style="success")
+            message.set_queue_status(success_message)
             return
         self.flash(
             f"Queue is full ({MAX_QUEUED_PROMPTS} messages); wait for an agent",
@@ -1168,7 +1176,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         queued_prompts = self.session.drain_relay_prompts_for_solo_agent()
         if queued_prompts:
             self._pending_solo_prompts.extend(queued_prompts)
-            self.flash("Queued work will continue with the remaining agent", style="success")
 
     def _agent_display_name(self, agent: AgentBase) -> str:
         return self.session.display_name(agent)

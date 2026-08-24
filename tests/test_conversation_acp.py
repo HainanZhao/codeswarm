@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from textual.color import Color
+from textual.widgets._markdown import MarkdownHorizontalRule
 
 from wingmen.acp import messages as acp_messages
 from wingmen.acp.agent import Mode
@@ -597,7 +598,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         )
                         self.assertEqual(bubble.styles.background.rgb, (163, 190, 140))
                         self.assertEqual(bubble.styles.background.a, 0.14)
-                        self.assertEqual(bubble.children[-1].id, "prompt")
+                        self.assertEqual(bubble.query_one("#prompt").id, "prompt")
 
         asyncio.run(scenario())
 
@@ -1246,6 +1247,41 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_agent_reply_horizontal_rules_are_compact(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(80, 20)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        claude = _RosterAgent("Claude")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.ai",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                claude,  # type: ignore[arg-type]
+                            )
+                        ]
+                        conversation.begin_agent_output(claude)  # type: ignore[arg-type]
+                        response = await conversation.post_agent_response(
+                            "Before\n\n---\n\nAfter"
+                        )
+                        assert response is not None
+                        await pilot.pause(0.1)
+
+                        rule = response.query_one(MarkdownHorizontalRule)
+                        self.assertEqual(rule.styles.padding.top, 0)
+                        self.assertEqual(rule.styles.margin.bottom, 0)
+
+        asyncio.run(scenario())
+
     def test_response_tint_uses_chunk_owner_after_relay_advances(self) -> None:
         """Queued ACP output keeps its source color after the next turn starts."""
 
@@ -1687,8 +1723,11 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                 )
                             )
 
-                        flash.assert_called_once_with(
-                            "Queued for Gemini", style="success"
+                        flash.assert_not_called()
+                        queued_message = conversation.query(UserInput).last()
+                        self.assertEqual(
+                            queued_message.queue_status.render().plain,
+                            "Queued for Gemini",
                         )
 
         asyncio.run(scenario())
@@ -1755,7 +1794,11 @@ class ConversationACPDispatchTests(unittest.TestCase):
             f"message {index}" for index in range(MAX_QUEUED_PROMPTS)
         )
 
-        self.assertTrue(conversation._queue_solo_prompt_if_busy("one too many"))
+        self.assertTrue(
+            conversation._queue_solo_prompt_if_busy(
+                "one too many", UserInput("one too many")
+            )
+        )
         self.assertEqual(len(conversation._pending_solo_prompts), MAX_QUEUED_PROMPTS)
         self.assertIn("Queue is full", conversation.flash.call_args.args[0])
 

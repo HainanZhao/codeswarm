@@ -168,6 +168,11 @@ Conversation {
         & > MarkdownBlock:last-child {            
             margin-bottom: 0;
         }
+
+        MarkdownHorizontalRule {
+            padding-top: 0;
+            margin-bottom: 0;
+        }
     }
 
     LoadingIndicator {
@@ -325,6 +330,17 @@ Conversation {
             border-right: blank $success;
             background: $success 14%;
             padding: 1 0 1 1;
+
+            #user-content {
+                height: auto;
+            }
+
+            #user-queue-status {
+                height: 1;
+                margin: 0 1 0 1;
+                color: $text-secondary;
+                text-style: italic;
+            }
 
             Markdown {
                 padding: 0 0 0 1;
