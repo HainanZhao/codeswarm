@@ -1211,14 +1211,36 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         self._agent_elapsed.clear()
 
     def _mark_collaboration_complete(self) -> None:
-        """Represent relay completion with green roster indicators."""
+        """Return the roster to its idle state after a collaboration finishes."""
         self._collaboration_complete = True
         self._active_relay_agent = None
         self._refresh_roster_info()
 
+    def _routing_agent(self) -> AgentBase | None:
+        """Return the agent that would receive the next user message."""
+        active_agents = self.session.active_agents
+        if self._working_agent in active_agents:
+            return self._working_agent
+        if self._active_relay_agent in active_agents:
+            return self._active_relay_agent
+        relay = self.session.relay
+        if relay is None:
+            return active_agents[0] if len(active_agents) == 1 else None
+        index = relay.next_agent_index
+        if not isinstance(index, int):
+            index = self.session.first_agent
+        if not isinstance(index, int):
+            return active_agents[0] if active_agents else None
+        if 0 <= index < len(self.session.roster):
+            entry = self.session.roster[index]
+            if entry.active and entry.agent in active_agents:
+                return entry.agent
+        return active_agents[0] if active_agents else None
+
     def _refresh_roster_info(self) -> None:
         """Show the complete roster and current speaker in the prompt footer."""
         agents = self.session.active_agents
+        routing_agent = self._routing_agent()
         discussion_indicator: tuple[str, str] = (" · Chat", "$text-accent")
         if len(agents) <= 1:
             if agents:
@@ -1227,16 +1249,18 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 elapsed = self._agent_elapsed.get(id(agent), 0)
                 if is_working and self._agent_started_at is not None:
                     elapsed += int(monotonic() - self._agent_started_at)
-                if is_working or (
-                    self._collaboration_complete and id(agent) in self._agent_elapsed
-                ):
+                prefix = "→ " if agent is routing_agent else ""
+                if is_working:
                     agent_info = Content.styled(
-                        f"● {self._agent_display_name(agent)} · "
+                        f"{prefix}● {self._agent_display_name(agent)} · "
                         f"{self._format_elapsed(elapsed)}",
-                        "$primary bold" if is_working else "$success bold",
+                        "$primary bold",
                     )
                 else:
-                    agent_info = agent.get_info()
+                    agent_info = Content.styled(
+                        f"{prefix}○ {self._agent_display_name(agent)}",
+                        "$text-secondary",
+                    )
             else:
                 agent_info = Content.styled("shell")
             self.agent_info = Content.assemble(
@@ -1257,23 +1281,17 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             is_timed = agent is self._working_agent and self._agent_started_at is not None
             if is_timed and self._agent_started_at is not None:
                 elapsed += int(monotonic() - self._agent_started_at)
-            is_complete = (
-                self._collaboration_complete and id(agent) in self._agent_elapsed
-            )
-            marker = "●" if is_current else "✓" if is_complete else "○" if is_ready else "…"
+            marker = "●" if is_current else "○" if is_ready else "…"
+            prefix = "→ " if agent is routing_agent else ""
             timer = (
                 f" · {self._format_elapsed(elapsed)}"
-                if is_timed or is_complete
+                if is_timed
                 else ""
             )
             roster.append(
                 Content.styled(
-                    f"{marker} {self._agent_display_name(agent)}{timer}",
-                    "$primary bold"
-                    if is_current
-                    else "$success bold"
-                    if is_complete
-                    else "$text-secondary",
+                    f"{prefix}{marker} {self._agent_display_name(agent)}{timer}",
+                    "$primary bold" if is_current else "$text-secondary",
                 )
             )
         if self.discussion_mode:

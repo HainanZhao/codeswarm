@@ -213,6 +213,8 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             ),
                         ]
                         conversation._ready_agents = {id(claude), id(gemini)}
+                        relay = RelayConversation((claude, gemini))  # type: ignore[arg-type]
+                        conversation.session.relay = relay
 
                         clock = Mock(return_value=100.0)
                         with patch("wingmen.widgets.conversation.monotonic", clock):
@@ -222,22 +224,18 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             self.assertFalse(
                                 conversation.agent_info.plain.startswith("Agents:")
                             )
-                            self.assertIn("● Gemini · 0:00", conversation.agent_info.plain)
+                            self.assertIn("→ ● Gemini · 0:00", conversation.agent_info.plain)
                             self.assertEqual(len(conversation.query("Loading")), 0)
 
                             clock.return_value = 105.0
                             await conversation._label_relay_turn(
                                 2, gemini, ""  # type: ignore[arg-type]
                             )
+                            relay.next_agent_index = 0
                             conversation._mark_collaboration_complete()
 
-                        self.assertIn("✓ Gemini · 0:05", conversation.agent_info.plain)
-                        self.assertNotIn("● Gemini · 0:05", conversation.agent_info.plain)
-                        self.assertTrue(
-                            any(
-                                span.style == "$success bold"
-                                for span in conversation.agent_info.spans
-                            )
+                        self.assertEqual(
+                            conversation.agent_info.plain, "→ ○ Claude · ○ Gemini"
                         )
                         self.assertNotIn(
                             "Collaboration complete",
