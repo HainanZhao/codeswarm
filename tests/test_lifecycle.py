@@ -116,6 +116,36 @@ class _StoppingSession:
 
 
 class AgentLifecycleTests(unittest.TestCase):
+    def test_first_prompt_includes_wingmen_operating_instructions(self) -> None:
+        async def scenario() -> None:
+            data = cast(
+                AgentData,
+                {
+                    "name": "Test agent",
+                    "identity": "test.agent",
+                    "run_command": {"*": "test-agent"},
+                },
+            )
+            agent = Agent(Path.cwd(), data, None)
+            agent.session_id = "new-session"
+
+            with (
+                patch(
+                    "wingmen.acp.agent.build_prompt", return_value=[]
+                ) as build_prompt,
+                patch.object(agent, "acp_session_prompt", new=AsyncMock()),
+            ):
+                await agent.send_prompt("Inspect the failing test")
+                await agent.send_prompt("Summarize it")
+
+            first_prompt = build_prompt.call_args_list[0].args[1]
+            self.assertIn("Do not speculate", first_prompt)
+            self.assertIn("explicit user instructions", first_prompt)
+            self.assertIn("Inspect the failing test", first_prompt)
+            self.assertEqual(build_prompt.call_args_list[1].args[1], "Summarize it")
+
+        asyncio.run(scenario())
+
     def test_oversized_protocol_line_reports_failure_and_reaps_agent(self) -> None:
         async def scenario() -> None:
             data = cast(

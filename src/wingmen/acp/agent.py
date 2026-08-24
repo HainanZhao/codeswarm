@@ -49,6 +49,16 @@ RESPONSE_TRUNCATED_MESSAGE = (
 THOUGHT_TRUNCATED_MESSAGE = (
     "\n\n[Wingmen stopped rendering the rest of this unusually long thought.]\n"
 )
+OPERATING_INSTRUCTIONS = """\
+## Wingmen operating instructions
+
+- Do not speculate. If a request or its relevant context is unclear, inspect
+  the available context or ask the user for clarification; do not guess.
+- Treat a question as a request for an answer, not authorization to begin
+  work. Only act on explicit user instructions.
+- When work is explicitly requested, follow the stated scope and constraints
+  precisely: do not omit requirements or add unrequested work.
+"""
 _BRACKETED_MODE_UPDATE = re.compile(
     r"^\s*\[\s*mode[\s_-]+(?:update|updated|changed)\s*\]\s+(\S+)\s*$",
     re.IGNORECASE,
@@ -229,6 +239,7 @@ class Agent(AgentBase):
         self._response_display_truncated = False
         self._thought_displayed_chars = 0
         self._thought_display_truncated = False
+        self._operating_instructions_sent = False
         # Keep a short suffix while streaming so a stop token split across
         # ACP chunks never reaches the conversation UI.
         self._response_display_tail = ""
@@ -1099,6 +1110,9 @@ class Agent(AgentBase):
         Args:
             prompt: Prompt text.
         """
+        if not self._operating_instructions_sent:
+            prompt = f"{OPERATING_INSTRUCTIONS}\n\nUser request:\n{prompt}"
+            self._operating_instructions_sent = True
         prompt_content_blocks = await asyncio.to_thread(
             build_prompt, self.project_root_path, prompt
         )
