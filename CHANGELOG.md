@@ -10,8 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `wingwomen` as an alias for the `wingmen` command.
-- `/resume [session number]` to reopen the previous or selected saved ACP
-  session.
 
 ### Fixed
 

@@ -423,7 +423,8 @@ class AgentLifecycleTests(unittest.TestCase):
                     "run_command": {"*": "gemini --acp"},
                 },
             )
-            agent = Agent(Path.cwd(), data, None)
+            project_path = Path("/tmp/wingmen-gemini-project")
+            agent = Agent(project_path, data, None)
             agent._stopping = True
             process = _ExitedProcess()
 
@@ -435,6 +436,7 @@ class AgentLifecycleTests(unittest.TestCase):
 
             launch_env = create_process.await_args.kwargs["env"]
             self.assertEqual(launch_env.get("GEMINI_TELEMETRY_ENABLED"), "false")
+            self.assertEqual(launch_env.get("WINGMEN_CWD"), str(project_path))
 
         asyncio.run(scenario())
 

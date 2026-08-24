@@ -812,7 +812,7 @@ class Agent(AgentBase):
 
         PIPE = asyncio.subprocess.PIPE
         env = os.environ.copy()
-        env["WINGMEN_CWD"] = str(Path("./").absolute())
+        env["WINGMEN_CWD"] = str(self.project_root_path)
         if self._agent_data["identity"] == "geminicli.com":
             # Gemini's in-process GCP telemetry exporter has produced noisy
             # shutdown and out-of-order metric failures in long ACP sessions.
