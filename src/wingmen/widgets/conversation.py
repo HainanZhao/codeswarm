@@ -1216,14 +1216,16 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
     def _routing_agent(self) -> AgentBase | None:
         """Return the agent that would receive the next user message."""
         active_agents = self.session.active_agents
-        if self._working_agent in active_agents:
-            return self._working_agent
-        if self._active_relay_agent in active_agents:
-            return self._active_relay_agent
         relay = self.session.relay
         if relay is None:
             return active_agents[0] if len(active_agents) == 1 else None
-        index = relay.next_agent_index
+        index = self.session.selected_agent_index
+        if not isinstance(index, int):
+            if self._working_agent in active_agents:
+                return self._working_agent
+            if self._active_relay_agent in active_agents:
+                return self._active_relay_agent
+            index = relay.next_agent_index
         if not isinstance(index, int):
             index = self.session.first_agent
         if not isinstance(index, int):

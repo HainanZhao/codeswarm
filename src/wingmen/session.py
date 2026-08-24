@@ -87,6 +87,7 @@ class SessionCoordinator:
         if max_rounds < 1:
             raise ValueError("max_rounds must be positive")
         self.relay: RelayConversation | None = None
+        self.selected_agent_index: int | None = None
         self._turn_instructions = ""
         self._gemini_restart_attempted: set[int] = set()
 
@@ -327,8 +328,7 @@ class SessionCoordinator:
         if not entry.active or entry.agent is None:
             raise IndexError("agent is not active")
         self.first_agent = index
-        if self.relay is not None:
-            self.relay.next_agent_index = index
+        self.selected_agent_index = index
 
     def agent_at(self, index: int) -> AgentBase:
         if self.relay is None:
@@ -347,6 +347,9 @@ class SessionCoordinator:
     ) -> RelayResult | str | None:
         if self.relay_active:
             assert self.relay is not None
+            if self.selected_agent_index is not None:
+                self.relay.next_agent_index = self.selected_agent_index
+                self.selected_agent_index = None
             return await self.relay.run(prompt, first_agent=self.first_agent)
         if (agent := self.primary_agent) is not None:
             return await agent.send_prompt(prompt)
@@ -439,6 +442,8 @@ class SessionCoordinator:
         if not entry.active:
             raise ValueError("agent is already dropped")
         entry.active = False
+        if self.selected_agent_index == index:
+            self.selected_agent_index = None
         if self.relay is not None:
             self.relay.drop_agent(index)
         if entry.agent is not None:
