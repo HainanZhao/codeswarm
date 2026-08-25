@@ -24,6 +24,7 @@ from wingmen.widgets.agent_response import (
     AgentResponse,
     AgentToolActivity,
 )
+from wingmen.widgets.agent_thought import AgentThought
 from wingmen.widgets import agent_response as agent_response_widget
 from wingmen.widgets.markdown_note import MarkdownNote
 from wingmen.widgets.note import Note
@@ -1019,6 +1020,38 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             continuation.region.y - first.region.bottom,
                             0,
                         )
+
+        asyncio.run(scenario())
+
+    def test_focusing_agent_thought_does_not_change_panel_border_geometry(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        thought = await conversation.post_agent_thought(
+                            "Inspecting the flight controls"
+                        )
+                        self.assertIsNotNone(thought)
+                        assert thought is not None
+                        await pilot.pause(0.1)
+                        outer_size = thought.outer_size
+
+                        thought.focus()
+                        await pilot.pause()
+
+                        focused = conversation.query_one(AgentThought)
+                        self.assertTrue(focused.has_focus)
+                        self.assertEqual(focused.styles.border_top[0], "")
+                        self.assertEqual(focused.styles.border_right[0], "")
+                        self.assertEqual(focused.styles.border_bottom[0], "solid")
+                        self.assertEqual(focused.styles.border_left[0], "solid")
+                        self.assertEqual(focused.outer_size, outer_size)
 
         asyncio.run(scenario())
 

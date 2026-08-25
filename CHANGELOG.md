@@ -41,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the prompt, and runs argument-free commands with a single Enter press.
 - Once the prompt is visible, notifications consistently use the teal Flash
   ribbon for information, warnings, and errors.
+- Focusing an agent thought no longer replaces its HUD rails with a full border
+  or shifts the surrounding message layout.
 - JSON-RPC rejects missing, extra, or malformed parameters instead of invoking
   handlers with partial arguments.
 - Fuzzy path matching, result retention, and cache growth are bounded for

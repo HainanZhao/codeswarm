@@ -225,9 +225,6 @@ Conversation {
         overflow-y: auto;
         scrollbar-visibility: hidden;
 
-        &:focus {
-            border: tall $primary;
-        }
     }
 
     ToolCall {    
