@@ -149,7 +149,7 @@ class AgentLifecycleTests(unittest.TestCase):
                         theme = pilot.app.current_theme
 
                         self.assertEqual(theme.warning, "#A78BFA")
-                        self.assertEqual(theme.error, "#FB7185")
+                        self.assertEqual(theme.error, "#EF4444")
                         self.assertEqual(theme.success, "#34D399")
                         self.assertEqual(theme.accent, "#67E8F9")
 

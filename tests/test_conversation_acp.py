@@ -1532,9 +1532,9 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         ]
                         expected_colors = (
                             "#2DD4BF",
-                            "#38BDF8",
-                            "#A78BFA",
                             "#FB7185",
+                            "#A78BFA",
+                            "#22D3EE",
                         )
                         for index, (header, response, expected_color) in enumerate(
                             zip(headers, responses, expected_colors)

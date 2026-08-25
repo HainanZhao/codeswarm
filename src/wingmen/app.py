@@ -43,7 +43,7 @@ WINGMEN_TERMINAL_THEME = terminal_theme.TerminalTheme(
     foreground=(216, 222, 233),  # #D8DEE9
     normal=[
         (59, 66, 82),  # black - #3B4252
-        (251, 113, 133),  # red - coral #FB7185
+        (239, 68, 68),  # red - #EF4444
         (52, 211, 153),  # green - emerald #34D399
         (167, 139, 250),  # yellow slot - violet #A78BFA
         (56, 189, 248),  # blue - sky #38BDF8
@@ -53,7 +53,7 @@ WINGMEN_TERMINAL_THEME = terminal_theme.TerminalTheme(
     ],
     bright=[
         (76, 86, 106),  # bright black - #4C566A
-        (253, 164, 175),  # bright red - coral #FDA4AF
+        (248, 113, 113),  # bright red - #F87171
         (110, 231, 183),  # bright green - emerald #6EE7B7
         (196, 181, 253),  # bright yellow slot - violet #C4B5FD
         (125, 211, 252),  # bright blue - sky #7DD3FC
@@ -68,7 +68,7 @@ WINGMEN_BLACK_THEME = Theme(
     primary="#2DD4BF",
     secondary="#14B8A6",
     warning="#A78BFA",
-    error="#FB7185",
+    error="#EF4444",
     success="#34D399",
     accent="#67E8F9",
     foreground="#D8DEE9",
@@ -78,9 +78,9 @@ WINGMEN_BLACK_THEME = Theme(
     dark=True,
     variables={
         "agent-tone-0": "#2DD4BF",
-        "agent-tone-1": "#38BDF8",
+        "agent-tone-1": "#FB7185",
         "agent-tone-2": "#A78BFA",
-        "agent-tone-3": "#FB7185",
+        "agent-tone-3": "#22D3EE",
         "block-cursor-background": "#2DD4BF",
         "block-cursor-foreground": "#000000",
         "input-selection-background": "#14B8A6 35%",
