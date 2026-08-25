@@ -45,15 +45,11 @@
 - The relay defaults to 100 automated turns and can be adjusted with
   `--max-rounds N`. This is a runaway-safety limit, not a per-agent budget —
   it does not scale with roster size.
-- `/agent list|add <agent>|drop <n>` changes the roster inside a running
-  session. `drop` tombstones an entry (`active = False`) rather than removing
-  it, so roster indices stay valid.
-
 ## Launch flow
 
 - Bare `wingmen` restores the last-used roster (`launcher.roster` setting,
-  written on every roster mutation). If no saved roster resolves, it opens the
-  agent store instead of auto-starting anything — detection
+  written whenever the roster selection changes). If no saved roster resolves,
+  it opens the agent store instead of auto-starting anything — detection
   (`agents.detect_preferred_agents`) only pre-selects candidates on that
   screen, it never starts a session by itself.
 - In the store, `space` toggles an agent's membership in the roster being

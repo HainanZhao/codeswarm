@@ -189,6 +189,47 @@ class AgentLifecycleTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_failed_first_prompt_retries_with_operating_instructions(self) -> None:
+        async def scenario() -> None:
+            data = cast(
+                AgentData,
+                {
+                    "name": "Gemini CLI",
+                    "identity": "geminicli.com",
+                    "run_command": {"*": "gemini --acp"},
+                },
+            )
+            agent = Agent(Path.cwd(), data, None)
+            agent.session_id = "new-session"
+            agent.set_roster_introduction(
+                "You are Gemini CLI. Your collaborator is Claude Code."
+            )
+
+            prompt = AsyncMock(
+                side_effect=[
+                    jsonrpc.APIError(429, "No capacity available", None),
+                    "end_turn",
+                    "end_turn",
+                ]
+            )
+            with patch("wingmen.acp.agent.build_prompt", return_value=[]) as build, patch.object(
+                agent, "acp_session_prompt", new=prompt
+            ):
+                with self.assertRaises(jsonrpc.APIError):
+                    await agent.send_prompt("Start the task")
+                await agent.send_prompt("Start the task")
+                await agent.send_prompt("Continue")
+
+            first_attempt = build.call_args_list[0].args[1]
+            retry = build.call_args_list[1].args[1]
+            follow_up = build.call_args_list[2].args[1]
+            for submitted in (first_attempt, retry):
+                self.assertIn("Wingmen operating instructions", submitted)
+                self.assertIn("Your collaborator is Claude Code", submitted)
+            self.assertNotIn("Wingmen operating instructions", follow_up)
+
+        asyncio.run(scenario())
+
     def test_oversized_protocol_line_reports_failure_and_reaps_agent(self) -> None:
         async def scenario() -> None:
             data = cast(
@@ -374,6 +415,33 @@ class AgentLifecycleTests(unittest.TestCase):
 
                 saved = json.loads(config_path.read_text(encoding="utf-8"))
                 self.assertEqual(saved["ui"]["theme"], "wingmen-black")
+
+        asyncio.run(scenario())
+
+    def test_legacy_thin_scrollbar_is_migrated_to_normal(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                config_path = Path(state_dir) / "wingmen" / "wingmen.json"
+                config_path.parent.mkdir()
+                config_path.write_text(
+                    json.dumps({"ui": {"scrollbar": "thin"}}),
+                    encoding="utf-8",
+                )
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(mode="store").run_test(
+                        size=(120, 40)
+                    ) as app:
+                        self.assertEqual(
+                            app.app.settings.get("ui.scrollbar", str),
+                            "normal",
+                        )
+                        self.assertEqual(app.app.scrollbar, "normal")
+
+                saved = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(saved["ui"]["scrollbar"], "normal")
 
         asyncio.run(scenario())
 

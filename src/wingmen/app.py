@@ -77,9 +77,8 @@ WINGMEN_BLACK_THEME = Theme(
     panel="#10151D",
     dark=True,
     variables={
-        "agent-tone-0": "#2DD4BF",
-        "agent-tone-1": "#FB7185",
-        "agent-tone-2": "#A78BFA",
+        "agent-tone-1": "#B8A65A",
+        "agent-tone-2": "#28728F",
         "agent-tone-3": "#22D3EE",
         "block-cursor-background": "#2DD4BF",
         "block-cursor-foreground": "#000000",
@@ -454,18 +453,21 @@ class WingmenApp(App, inherit_bindings=False):
                 json.dumps(settings, indent=4, separators=(", ", ": ")), "utf-8"
             )
             self.notify(f"Wrote default settings to {settings_path}", title="Settings")
-        theme_migrated = False
+        settings_migrated = False
         ui_settings = settings.get("ui")
         if (
             isinstance(ui_settings, dict)
             and ui_settings.get("theme") != WINGMEN_BLACK_THEME.name
         ):
             ui_settings["theme"] = WINGMEN_BLACK_THEME.name
-            theme_migrated = True
+            settings_migrated = True
+        if isinstance(ui_settings, dict) and ui_settings.get("scrollbar") == "thin":
+            ui_settings["scrollbar"] = "normal"
+            settings_migrated = True
         self.ansi_theme_dark = WINGMEN_TERMINAL_THEME
         self._settings = settings
         self.settings.set_all()
-        if theme_migrated:
+        if settings_migrated:
             await self.save_settings(force=True)
 
     async def new_session_screen(

@@ -27,19 +27,12 @@ Conversation {
     Window {                      
         layout: stream;
         margin: 0;                
-        scrollbar-size-vertical: 2;        
+        scrollbar-size-vertical: 1;
         padding: 0 1 0 0;
         height: 1fr;                
         align: left bottom;   
     }
 
-    &.-scrollbar-thin {
-        Window {
-            # scrollbar-gutter: stable;
-            scrollbar-size-vertical: 1;
-        }
-        
-    }
     &.-scrollbar-hidden {
         Window {
             # scrollbar-gutter: auto;
@@ -76,32 +69,33 @@ Conversation {
         height: auto;
         padding: 0 1 0 1;
         background: $foreground 4%;
-        border-left: solid $primary;
+        border-left: vkey $primary;
         border-bottom: solid $primary 25%;
 
         &.-agent-tone-0 {
-            border-left: solid $agent-tone-0;
-            border-bottom: solid $agent-tone-0 25%;
+            border-left: vkey $text-primary;
+            border-bottom: solid $text-primary 25%;
         }
         &.-agent-tone-1 {
-            border-left: solid $agent-tone-1;
+            border-left: vkey $agent-tone-1;
             border-bottom: solid $agent-tone-1 25%;
         }
         &.-agent-tone-2 {
-            border-left: solid $agent-tone-2;
+            border-left: vkey $agent-tone-2;
             border-bottom: solid $agent-tone-2 25%;
         }
         &.-agent-tone-3 {
-            border-left: solid $agent-tone-3;
+            border-left: vkey $agent-tone-3;
             border-bottom: solid $agent-tone-3 25%;
         }
 
         &.block {
-            margin: 0 1 0 0;
+            margin: 0 1 1 0;
         }
 
         &.-continues {
             border-bottom: none;
+            margin-bottom: 0;
         }
 
         &.-continuation #agent-message-header {
@@ -112,7 +106,7 @@ Conversation {
             height: 1;
             width: 1fr;
             margin: 0;
-            padding: 0 1;
+            padding: 0 1 0 0;
         }
 
         AgentToolActivity {
@@ -148,6 +142,14 @@ Conversation {
         layout: stream;
         & > MarkdownBlock:last-child {            
             margin-bottom: 0;
+        }
+
+        MarkdownBlock {
+            &:dark > .code_inline,
+            &:light > .code_inline {
+                background: $accent 10%;
+                color: $text-accent 95%;
+            }
         }
 
         MarkdownHorizontalRule {
@@ -309,8 +311,9 @@ Conversation {
         #user-bubble {
             width: 80%;
             height: auto;
-            border-right: solid $primary;
-            background: $primary 10%;
+            border-top: tall $primary 20%;
+            border-bottom: tall $primary 20%;
+            background: $primary 20%;
             padding: 0 0 0 1;
 
             Markdown {
@@ -321,11 +324,6 @@ Conversation {
             }
             MarkdownFence {
                 margin: 0 2 1 0;
-            }
-            #prompt {
-                margin: 0 0 0 1;
-                color: $primary;
-                text-style: bold;
             }
         }
     }

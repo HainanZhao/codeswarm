@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.27] - 2026-08-25
+
+### Changed
+
+- Refined the conversation styling with clearer user messages, aligned agent
+  headers, roomier bubble spacing, slimmer scrollbars, familiar tool-status
+  icons, and a more distinct muted-gold secondary agent tone.
+- Agent startup and prompt failures now use a clear error presentation while
+  preserving literal adapter details safely.
+- Corrected project and documentation links to the Wingmen repository.
+
+### Fixed
+
+- ACP prompt errors now remain retryable request failures instead of being
+  mistaken for agent startup failures.
+- A failed first relay turn no longer leaves stale task context behind, so a
+  retry starts with the new request and receives the full operating context.
+- Legacy saved thin-scrollbar settings migrate cleanly to the supported normal
+  scrollbar.
+
+### Removed
+
+- Removed the low-value local `/clear` and `/agent` commands. Agent-provided
+  commands with those names continue to work, and roster changes remain
+  available when configuring the next workspace.
+- Removed broken Discussions links from agent failure guidance.
+
 ## [0.6.26] - 2026-08-25
 
 ### Changed

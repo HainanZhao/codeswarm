@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 
+from wingmen import jsonrpc
 from wingmen.acp.relay import MAX_QUEUED_PROMPTS, MAX_RELAY_EVENTS, RelayConversation
 
 
@@ -21,6 +22,32 @@ class FakeAgent:
 
 
 class RelayConversationTests(unittest.TestCase):
+    def test_failed_first_turn_does_not_commit_a_stale_shared_task(self) -> None:
+        async def scenario() -> None:
+            class CapacityLimitedAgent(FakeAgent):
+                async def send_prompt(self, prompt: str) -> str:
+                    self.prompts.append(prompt)
+                    if len(self.prompts) == 1:
+                        raise jsonrpc.APIError(429, "No capacity available", None)
+                    self.last_response = "Recovered"
+                    return "end_turn"
+
+            gemini = CapacityLimitedAgent("Gemini", [])
+            claude = FakeAgent("Claude", [("end_turn", "[WINGMEN:STOP]")])
+            relay = RelayConversation((gemini, claude))
+
+            with self.assertRaises(jsonrpc.APIError):
+                await relay.run("Original task")
+
+            result = await relay.run("Retry task")
+
+            self.assertEqual(result.reason, "stop_token")
+            self.assertIn("Shared task:\nRetry task", gemini.prompts[1])
+            self.assertNotIn("Human follow-up", gemini.prompts[1])
+            self.assertEqual(relay.active_indices, [0, 1])
+
+        asyncio.run(scenario())
+
     def test_idle_direct_prompt_includes_unseen_public_history(self) -> None:
         async def scenario() -> None:
             claude = FakeAgent(

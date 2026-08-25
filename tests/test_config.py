@@ -70,6 +70,16 @@ class ConfigScreenTests(unittest.TestCase):
                         self.assertNotIn("ui.prune_excess", keys)
                         self.assertNotIn("notifications.hide_low_severity", keys)
                         self.assertNotIn("diff.annotations", keys)
+                        scrollbar = next(
+                            field
+                            for _group, fields in config._fields()
+                            for field in fields
+                            if field.key == "ui.scrollbar"
+                        )
+                        self.assertEqual(
+                            scrollbar.choices,
+                            [("Normal", "normal"), ("Hidden", "hidden")],
+                        )
 
                         config.query_one("#config-agent-thoughts", Switch).value = True
                         roster_options = list(

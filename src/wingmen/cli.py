@@ -228,7 +228,7 @@ def acp(
         "identity": identity,
         "name": title or command_name,
         "short_name": "agent",
-        "url": "https://github.com/batrachianai/wingmen",
+        "url": "https://github.com/HainanZhao/wingmen",
         "protocol": "acp",
         "type": "coding",
         "author_name": "Will McGugan",

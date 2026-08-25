@@ -1,8 +1,10 @@
+import asyncio
 import unittest
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
+from wingmen import jsonrpc
 from wingmen.acp import messages
 from wingmen.acp.agent import Agent
 from wingmen.agent_schema import Agent as AgentData
@@ -15,6 +17,9 @@ class _MessageTarget:
     def post_message(self, message: Any) -> bool:
         self.messages.append(message)
         return True
+
+    def call_later(self, callback: Any, *args: Any) -> None:
+        pass
 
 
 class ACPStreamingTests(unittest.TestCase):
@@ -220,6 +225,34 @@ class ACPStreamingTests(unittest.TestCase):
         self.assertTrue(
             all(getattr(message, "agent", None) is agent for message in tool_messages)
         )
+
+    def test_prompt_capacity_error_remains_a_request_failure(self) -> None:
+        async def scenario() -> None:
+            agent = self.make_agent()
+            agent.session_id = "session-1"
+            target = _MessageTarget()
+            agent._message_target = target
+
+            class FailedPrompt:
+                async def wait(self) -> None:
+                    raise jsonrpc.APIError(
+                        429,
+                        "No capacity available for model gemini-3.5-flash",
+                        None,
+                    )
+
+            with patch(
+                "wingmen.acp.agent.api.session_prompt",
+                return_value=FailedPrompt(),
+            ):
+                with self.assertRaisesRegex(jsonrpc.APIError, "No capacity"):
+                    await agent.acp_session_prompt([])
+
+            self.assertFalse(
+                any(message.__class__.__name__ == "AgentFail" for message in target.messages)
+            )
+
+        asyncio.run(scenario())
 
 
 if __name__ == "__main__":

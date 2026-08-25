@@ -232,7 +232,8 @@ class RelayConversation:
         )
         if not self.active[current]:
             current = self._advance(current)
-        if self._shared_task is None:
+        new_shared_task = self._shared_task is None
+        if new_shared_task:
             self._shared_task = prompt
             relay = prompt
             context_event_index: int | None = None
@@ -240,6 +241,7 @@ class RelayConversation:
             relay = f"Human follow-up:\n{prompt}"
             context_event_index = self._record_event("Human", prompt)
         task = self._shared_task
+        assert task is not None
         context_agent: AgentLike | None = None
         for round_number in range(1, self.max_rounds + 1):
             if self.paused:
@@ -290,7 +292,12 @@ class RelayConversation:
                 ),
                 can_stop=can_stop,
             )
-            stop_reason = await agent.send_prompt(turn_prompt)
+            try:
+                stop_reason = await agent.send_prompt(turn_prompt)
+            except Exception:
+                if new_shared_task and round_number == 1:
+                    self._shared_task = None
+                raise
             raw_response = getattr(agent, "last_response", "") or ""
             response_without_stop, requested_stop = self._strip_trailing_stop_token(
                 raw_response

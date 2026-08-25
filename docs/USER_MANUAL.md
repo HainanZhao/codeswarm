@@ -210,17 +210,10 @@ it is never sent to an agent. Press `Ctrl+C` to stop a running command.
 | --- | --- |
 | `/help` | Show the concise command and control reference in the conversation. |
 | `/config` | Open Wingmen settings and the roster for the next workspace. |
-| `/agent list` | Show the complete current roster and agent numbers. |
-| `/agent add AGENT` | Add and start an agent by short name or identity. |
-| `/agent drop N` | Stop and mark roster member `N` as dropped; numbering stays stable. |
 | `/pause` | Pause or resume the multi-agent relay. |
 | `/mode` | Open the mode picker. |
 | `/mode chat` | Enter Chat mode directly. |
 | `/close` | Close this workspace and return to agent selection. |
-
-Roster member 1 owns the session and cannot be dropped; use `/close` instead.
-
-Roster changes are also saved as the default for the next launch.
 
 Agents may advertise additional slash commands. They appear in command search
 and are forwarded to the active agent. A Wingmen command with the same name
@@ -262,7 +255,8 @@ Run `/config`, move between controls with `Tab` and `Shift+Tab`, and then use:
 Checked roster agents are used for the next workspace in numbered,
 top-to-bottom order. At least 1 agent must be selected. “Not detected” means
 the CLI must be installed and Wingmen reopened before that roster can launch.
-Changing the current session roster uses `/agent`, not `/config`.
+Roster changes apply to the next workspace; the current session roster cannot
+be edited from the conversation.
 
 Available preferences:
 
@@ -271,7 +265,7 @@ Available preferences:
 | UI | Theme | Changes the terminal color theme. |
 | UI | Prompt Message | Changes the empty prompt message. |
 | UI | Density | Uses comfortable or compact spacing. |
-| UI | Scrollbar | Uses normal, thin, or hidden scrollbars. |
+| UI | Scrollbar | Uses normal or hidden scrollbars. |
 | UI | Flash Duration | Sets how long temporary status messages remain visible. |
 | Notifications | System | Shows system notifications when unfocused, always, or never. |
 | Notifications | Blink Title | Marks activity in the terminal title. |
@@ -324,8 +318,8 @@ Gemini CLI. Some agents also require an ACP adapter.
 
 ### Only One Agent Responds
 
-Run `/agent list` and confirm that at least 2 roster members are active. Click
-an agent beside the prompt to choose who receives the next normal message.
+Confirm that at least 2 roster members are shown beside the prompt. Click an
+agent there to choose who receives the next normal message.
 
 ### An Agent Keeps Working on the Wrong Task
 

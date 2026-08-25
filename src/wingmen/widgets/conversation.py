@@ -74,8 +74,6 @@ Check that the agent is installed and up-to-date.
 
 Some agents require an ACP adapter. Install or update the agent according to
 its upstream documentation, then restart Wingmen.
-
-If that fails, ask for help in [Discussions](https://github.com/batrachianai/wingmen/discussions)!
 """,
     "no_resume": """\
 ## Agent does not support resume
@@ -88,56 +86,30 @@ then start a new workspace.
 - Use `/close` to return to the launcher, or exit with
   `Ctrl+C`.
 - Select the agent and press `Enter` to start a fresh workspace.
-
-If that fails, ask for help in [Discussions](https://github.com/batrachianai/wingmen/discussions)!
 """,
 }
 
-HELP_URL = "https://github.com/batrachianai/wingmen/discussions"
+MAX_AGENT_ERROR_DISPLAY_CHARS = 4_000
 
-INTERNAL_EROR = f"""\
-## Internal error
-
-The agent reported an internal error:
-
-```
-$ERROR
-```
-
-This is likely an issue with the agent, and not Wingmen.
-
-- Try the prompt again
-- Report the issue to the Agent developer
-
-Ask on {HELP_URL} if you need assistance.
-
-"""
-
-STOP_REASON_MAX_TOKENS = f"""\
+STOP_REASON_MAX_TOKENS = """\
 ## Maximum tokens reached
 
 $AGENT reported that your account is out of tokens.
 
 - You may need to purchase additional tokens, or fund your account.
 - If your account has tokens, try running any login or auth process again.
-
-If that fails, ask on {HELP_URL}
 """
 
-STOP_REASON_MAX_TURN_REQUESTS = f"""\
+STOP_REASON_MAX_TURN_REQUESTS = """\
 ## Maximum model requests reached
 
 $AGENT has exceeded the maximum number of model requests in a single turn.
-
-Need help? Ask on {HELP_URL}
 """
 
-STOP_REASON_REFUSAL = f"""\
+STOP_REASON_REFUSAL = """\
 ## Agent refusal
 
 $AGENT has refused to continue.
-
-Need help? Ask on {HELP_URL}
 """
 
 DISCUSSION_INSTRUCTIONS = """\
@@ -770,8 +742,8 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             self._refresh_roster_info()
 
         if self.agent_ready:
-            # A roster mutation after the session has already started (e.g.
-            # `/agent add`) should still identify the newly connected member.
+            # A newly connected member should still be identified if the
+            # session has already started.
             if newly_connected and message.agent is not None:
                 self.flash(
                     Content.assemble(
@@ -923,7 +895,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         else:
             help = AGENT_FAIL_HELP["fail"]
 
-        await self.post(MarkdownNote(help))
+        await self.post(MarkdownNote(help, classes="-error"))
 
     @on(messages.WorkStarted)
     def on_work_started(self) -> None:
@@ -1444,13 +1416,22 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 
     async def _post_agent_communication_error(self, error: Exception) -> None:
         """Surface an adapter failure while still returning the prompt to idle."""
-        from wingmen.widgets.markdown_note import MarkdownNote
-
         message = str(error).strip() or "no details were provided"
+        if len(message) > MAX_AGENT_ERROR_DISPLAY_CHARS:
+            message = (
+                message[:MAX_AGENT_ERROR_DISPLAY_CHARS]
+                + "\n[Wingmen truncated the remaining error details.]"
+            )
         await self.post(
-            MarkdownNote(
-                INTERNAL_EROR.replace("$ERROR", message),
-                classes="-stop-reason",
+            Note(
+                Content.assemble(
+                    ("Agent request failed", "$text-error"),
+                    " — ",
+                    (message, "dim"),
+                    "\n",
+                    ("Try the prompt again.", "dim"),
+                ),
+                classes="-error",
             )
         )
 
@@ -1527,11 +1508,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 "/close",
                 "Close the current session",
             ),
-            SlashCommand(
-                "/agent",
-                "Manage the relay roster",
-                "add <agent> | drop <n> | list",
-            ),
         ]
         if self._relay_active:
             slash_commands.append(
@@ -1603,107 +1579,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         self._refresh_displayed_modes()
         await self._sync_desired_mode()
         self.update_slash_commands()
-        await self._persist_roster()
-
-    async def _slash_agent(self, parameters: str) -> None:
-        """Handle ``/agent [list|add <agent>|drop <n>]``."""
-        from wingmen.widgets.markdown_note import MarkdownNote
-
-        verb, _, argument = parameters.partition(" ")
-        verb = verb.strip().lower()
-        argument = argument.strip()
-
-        if not verb or verb == "list":
-            if not self.session.roster:
-                self.flash("No agent is running in this session", style="error")
-                return
-            lines = ["**Roster**"]
-            for index, entry in enumerate(self.session.roster):
-                status = "" if entry.active else " — dropped"
-                owner = " — session owner" if index == 0 else ""
-                lines.append(
-                    f"{index + 1}. {entry.data['name']}{owner}{status}"
-                )
-            if len(self.session.roster) > 1:
-                lines.append(
-                    "\nClick an agent beside the prompt to select the next recipient."
-                )
-            await self.post(MarkdownNote("\n".join(lines), classes="-agent-identity"))
-            return
-
-        if verb == "add":
-            if not argument:
-                self.flash("Usage: /agent add <short_name|identity>", style="error")
-                return
-            await self._roster_add(argument)
-            return
-
-        if verb == "drop":
-            try:
-                index = int(argument) - 1
-            except ValueError:
-                self.flash("Usage: /agent drop <n>", style="error")
-                return
-            await self._roster_drop(index)
-            return
-
-        self.flash(f"Unknown /agent action: {verb!r}", style="error")
-
-    async def _roster_add(self, name: str) -> None:
-        """Resolve and start a new agent, appending it to the roster."""
-        if self.agent is None:
-            self.flash("No agent is running in this session", style="error")
-            return
-        from wingmen.agents import resolve_agent
-
-        data = await resolve_agent(name)
-        if data is None:
-            self.flash(f"Agent not found: {name}", style="error")
-            return
-
-        try:
-            await self.session.add(
-                data,
-                self,
-                on_turn_start=self._label_relay_turn_start,
-                on_queued_turn_start=self._label_queued_relay_turn_start,
-                on_queued_turn_discarded=self._discard_queued_prompt,
-                on_turn=self._label_relay_turn,
-            )
-        except Exception as error:
-            details = str(error).strip() or "no details were provided"
-            self.flash(f"Unable to add {data['name']}: {details}", style="error")
-            return
-        self._refresh_roster_info()
-        self._refresh_displayed_modes()
-        await self._sync_desired_mode()
-        self.update_slash_commands()
-
-        self.flash(f"{data['name']} joined the roster", style="success")
-        await self._persist_roster()
-
-    async def _roster_drop(self, index: int) -> None:
-        """Tombstone a roster entry. The session owner (index 0) is protected."""
-        if index == 0:
-            self.flash(
-                "Agent 1 owns the session; use /close instead",
-                style="error",
-            )
-            return
-        if not 0 <= index < len(self.session.roster):
-            self.flash("No such agent number", style="error")
-            return
-        entry = self.session.roster[index]
-        if not entry.active:
-            self.flash(f"{entry.data['name']} is already dropped", style="warning")
-            return
-        await self.session.drop(index)
-        self._move_relay_queue_to_solo_agent()
-        self._refresh_roster_info()
-        self._refresh_displayed_modes()
-        await self._sync_desired_mode()
-        self.update_slash_commands()
-        self.flash(f"{entry.data['name']} dropped from the roster", style="success")
         await self._persist_roster()
 
     async def _persist_roster(self) -> None:
@@ -2084,7 +1959,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 ### Conversation
 
 - `!<command>` — run a shell command directly in the current workspace
-- `/agent list|add <agent>|drop <n>` — inspect or change this session's roster
 - `/mode` — choose one mode for every active agent
 - `/mode chat` — chat without workspace inspection or tools
 - `/pause` — pause or resume a multi-agent relay
@@ -2115,9 +1989,6 @@ Drag over conversation text and press `Ctrl+C` to copy it. Otherwise,
             return True
         if command == "pause":
             self.action_toggle_pause()
-            return True
-        if command == "agent":
-            await self._slash_agent(parameters.strip())
             return True
         if command == "close":
             return await self._close_session()

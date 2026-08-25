@@ -1111,7 +1111,8 @@ class Agent(AgentBase):
         Args:
             prompt: Prompt text.
         """
-        if not self._operating_instructions_sent:
+        first_prompt = not self._operating_instructions_sent
+        if first_prompt:
             roster_context = (
                 f"\n\n{self._roster_introduction}"
                 if self._roster_introduction
@@ -1120,11 +1121,13 @@ class Agent(AgentBase):
             prompt = (
                 f"{OPERATING_INSTRUCTIONS}{roster_context}\n\nUser request:\n{prompt}"
             )
-            self._operating_instructions_sent = True
         prompt_content_blocks = await asyncio.to_thread(
             build_prompt, self.project_root_path, prompt
         )
-        return await self.acp_session_prompt(prompt_content_blocks)
+        stop_reason = await self.acp_session_prompt(prompt_content_blocks)
+        if first_prompt:
+            self._operating_instructions_sent = True
+        return stop_reason
 
     def set_roster_introduction(self, introduction: str) -> None:
         self._roster_introduction = introduction.strip()
@@ -1246,31 +1249,6 @@ class Agent(AgentBase):
             session_prompt = api.session_prompt(prompt, self.session_id)
         try:
             result = await session_prompt.wait()
-        except jsonrpc.APIError as error:
-            details = ""
-            match error.data:
-                case {"details": details}:
-                    pass
-
-            self.post_message(
-                AgentFail(
-                    "Failed to send prompt" or error.message,
-                    (
-                        str(details)
-                        if details
-                        else f"{self._agent_data['name']} returned an error"
-                    ),
-                )
-            )
-            return None
-        except jsonrpc.JSONRPCError as error:
-            self.post_message(
-                AgentFail(
-                    "Failed to send prompt" or error.message,
-                    (error.message or f"{self._agent_data['name']} returned an error"),
-                )
-            )
-            return None
         finally:
             self._flush_agent_response_display()
 

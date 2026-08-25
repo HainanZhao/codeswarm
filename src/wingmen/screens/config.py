@@ -18,7 +18,7 @@ from wingmen.settings import SchemaDict
 
 CHOICES: dict[str, list[tuple[str, str]]] = {
     "ui.density": [("Comfortable", "comfortable"), ("Compact", "compact")],
-    "ui.scrollbar": [("Normal", "normal"), ("Thin", "thin"), ("Hidden", "hidden")],
+    "ui.scrollbar": [("Normal", "normal"), ("Hidden", "hidden")],
     "notifications.system": [
         ("When Wingmen is unfocused", "blur"),
         ("Always", "always"),

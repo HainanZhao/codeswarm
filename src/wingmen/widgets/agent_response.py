@@ -138,7 +138,7 @@ class AgentToolActivity(containers.VerticalGroup, can_focus=True):
         raw_title = tool_data.get("title", "Tool call") if tool_data else "Tool call"
         title = " ".join(str(raw_title).split())[:160] or "Tool call"
         noun = "tool" if len(self._tools) == 1 else "tools"
-        prefix = "SYS OK //" if self._finalized else "SYS //"
+        prefix = "✓" if self._finalized else "🔧"
         self.summary.update(f"{prefix} {title} · {len(self._tools)} {noun}")
 
     @property

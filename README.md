@@ -58,7 +58,6 @@ change the policy from the mode selector beside the prompt.
 | --- | --- |
 | Attach a project file | Type `@` followed by its path. `@` does not tag agents. |
 | Choose the next recipient | Click an agent beside the prompt. |
-| Inspect or change the roster | `/agent list`, `/agent add AGENT`, `/agent drop N` |
 | Pause or resume a relay | `Ctrl+Shift+P` or `/pause` |
 | Cancel active work | Press `Ctrl+C` once. |
 | Quit | Press `Ctrl+C` while idle, or twice within three seconds while work is active. |
@@ -66,7 +65,7 @@ change the policy from the mode selector beside the prompt.
 
 Messages submitted while an agent is working wait in a bounded holding area
 and are delivered in order before the relay advances. See the
-[user manual](https://github.com/HainanZhao/taiji/blob/main/docs/USER_MANUAL.md)
+[user manual](https://github.com/HainanZhao/wingmen/blob/main/docs/USER_MANUAL.md)
 for the complete launch flow, commands,
 permissions, and troubleshooting guide.
 
@@ -98,6 +97,6 @@ make verify
 ## License
 
 Wingmen is licensed under
-[AGPL-3.0](https://github.com/HainanZhao/taiji/blob/main/LICENSE). See the
-[commercial license notice](https://github.com/HainanZhao/taiji/blob/main/COMMERCIAL_LICENSE.md)
+[AGPL-3.0](https://github.com/HainanZhao/wingmen/blob/main/LICENSE). See the
+[commercial license notice](https://github.com/HainanZhao/wingmen/blob/main/COMMERCIAL_LICENSE.md)
 for commercial licensing.
