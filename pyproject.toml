@@ -1,9 +1,28 @@
 [project]
 name = "wingmen"
-version = "0.6.25"
+version = "0.6.26"
 description = "A focused terminal workspace for collaborating with ACP coding agents."
 readme = "README.md"
 requires-python = ">=3.14"
+license = "AGPL-3.0-only"
+keywords = [
+    "acp",
+    "agent-client-protocol",
+    "ai",
+    "coding-agents",
+    "terminal",
+    "tui",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+]
 dependencies = [
     "textual[syntax]==8.2.7",
     "click==8.4.0",
@@ -22,6 +41,12 @@ dependencies = [
 
 [project.scripts]
 wingmen = "wingmen.cli:main"
+
+[project.urls]
+Documentation = "https://github.com/HainanZhao/taiji/blob/main/docs/USER_MANUAL.md"
+Homepage = "https://github.com/HainanZhao/taiji"
+Issues = "https://github.com/HainanZhao/taiji/issues"
+Repository = "https://github.com/HainanZhao/taiji"
 
 [build-system]
 requires = ["hatchling==1.28.0"]
