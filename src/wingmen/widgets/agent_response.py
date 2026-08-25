@@ -121,6 +121,7 @@ class AgentToolActivity(containers.VerticalGroup, can_focus=True):
         for previous_tool in self._tools:
             previous_tool.display = False
         self._finalized = False
+        tool_call.display = False
         await self.mount(tool_call)
         self._tools.append(tool_call)
         self.selected_index = len(self._tools) - 1

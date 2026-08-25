@@ -1353,6 +1353,55 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_new_tool_is_hidden_before_mount_to_avoid_activity_reflow(self) -> None:
+        class MountProbeToolCall(ToolCall):
+            display_when_mounted: bool | None = None
+
+            def on_mount(self) -> None:
+                self.display_when_mounted = self.display
+                super().on_mount()
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        claude = _RosterAgent("Claude")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.ai",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                claude,  # type: ignore[arg-type]
+                            )
+                        ]
+                        conversation._active_relay_agent = claude  # type: ignore[assignment]
+                        agent_message = await conversation.ensure_agent_message(claude)  # type: ignore[arg-type]
+                        tool = MountProbeToolCall(
+                            {
+                                "sessionUpdate": "tool_call",
+                                "toolCallId": "run-tests",
+                                "status": "in_progress",
+                                "title": "Run focused tests",
+                            }
+                        )
+
+                        await agent_message.tool_activity.add_tool_call(tool)
+
+                        self.assertFalse(tool.display_when_mounted)
+                        self.assertTrue(agent_message.tool_activity.summary.display)
+                        await pilot.pause()
+                        self.assertEqual(agent_message.tool_activity.outer_size.height, 1)
+
+        asyncio.run(scenario())
+
     def test_clicking_tool_activity_focuses_it_and_enter_toggles_details(
         self,
     ) -> None:

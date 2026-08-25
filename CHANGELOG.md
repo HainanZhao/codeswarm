@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Live tool changes no longer briefly resize the active agent message and jump
+  the conversation window; tool history stays hidden behind its fixed one-row
+  summary until deliberately focused.
 - Relay indicators now distinguish the next message recipient (`→`), active
   work (`●`), and idle agents (`○`); completed turns no longer leave timers.
 - Clicking an agent header no longer crashes the conversation view.
