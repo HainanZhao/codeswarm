@@ -24,7 +24,6 @@ typecheck:
 
 .PHONY: package
 package:
-	.venv/bin/wingmen --version
 	$(python) scripts/verify_package.py
 
 .PHONY: verify
