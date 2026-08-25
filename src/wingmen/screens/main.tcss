@@ -121,6 +121,14 @@ Conversation {
             margin: 0 1 0 0;
         }
 
+        &.-continues {
+            border-bottom: none;
+        }
+
+        &.-continuation #agent-message-header {
+            display: none;
+        }
+
         #agent-message-header {
             height: 1;
             width: 1fr;

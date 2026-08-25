@@ -977,6 +977,51 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_adjacent_messages_from_the_same_agent_form_one_visual_stack(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        gemini = _RosterAgent("Gemini CLI")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="geminicli.com",
+                                    name="Gemini CLI",
+                                    short_name="gemini",
+                                ),
+                                gemini,  # type: ignore[arg-type]
+                            )
+                        ]
+
+                        conversation.begin_agent_output(gemini)  # type: ignore[arg-type]
+                        await conversation.post_agent_response("First message")
+                        conversation.new_block()
+                        await conversation.post_agent_response("Second message")
+                        await pilot.pause(0.1)
+
+                        messages = list(conversation.query(AgentMessage))
+                        self.assertEqual(len(messages), 2)
+                        first, continuation = messages
+                        self.assertTrue(first.has_class("-continues"))
+                        self.assertTrue(continuation.has_class("-continuation"))
+                        self.assertFalse(
+                            continuation.query_one("#agent-message-header").display
+                        )
+                        self.assertEqual(first.styles.border_bottom[0], "")
+                        self.assertEqual(
+                            continuation.region.y - first.region.bottom,
+                            0,
+                        )
+
+        asyncio.run(scenario())
+
     def test_clicking_an_agent_reply_selects_the_clicked_markdown_block(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:

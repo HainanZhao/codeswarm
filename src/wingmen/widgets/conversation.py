@@ -752,11 +752,23 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             except ValueError:
                 agent_index = 0
             replied_at = datetime.now().astimezone()
+            previous_message = (
+                self.contents.displayed_children[-1]
+                if self.contents.displayed_children
+                else None
+            )
             self._agent_message = AgentMessage(
+                source_agent=agent,
                 speaker=self._agent_display_name(agent),
                 timestamp=format_reply_timestamp(replied_at, now=replied_at),
                 tone_index=agent_index,
             )
+            if (
+                isinstance(previous_message, AgentMessage)
+                and previous_message.source_agent is agent
+            ):
+                previous_message.add_class("-continues")
+                self._agent_message.add_class("-continuation")
             await self.post(self._agent_message, new_block=False)
         return self._agent_message
 

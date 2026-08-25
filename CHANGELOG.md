@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ribbons, compact message panels, and a wingmen-formation landing mark.
 - Messages submitted behind active work remain in a bounded holding area above
   the prompt and enter the transcript only when their agent turn starts.
+- Adjacent messages from the same agent render as one compact visual stack
+  without repeating the header or divider between them.
 
 ### Added
 

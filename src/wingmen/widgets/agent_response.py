@@ -217,11 +217,13 @@ class AgentMessage(containers.Vertical):
         self,
         response: AgentResponse | None = None,
         *,
+        source_agent: object,
         speaker: str,
         timestamp: str,
         tone_index: int,
     ) -> None:
         super().__init__()
+        self.source_agent = source_agent
         self.response = response
         self.tool_activity = AgentToolActivity()
         self.tone_class = f"-agent-tone-{tone_index % 4}"
