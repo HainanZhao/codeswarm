@@ -232,7 +232,7 @@ class AgentMessage(containers.Vertical):
         self.header = Content.assemble(
             (
                 speaker,
-                f"$agent-tone-{tone_index % 4} bold",
+                "$text-primary bold",
             ),
             (f" · {timestamp}", "dim"),
         )
@@ -241,7 +241,6 @@ class AgentMessage(containers.Vertical):
         yield NonSelectableLabel(
             self.header,
             id="agent-message-header",
-            classes=self.tone_class,
         )
         if self.response is not None:
             yield self.response

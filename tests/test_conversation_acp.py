@@ -981,7 +981,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         )
                         self.assertEqual(
                             [span.style for span in header_content.spans],
-                            ["$agent-tone-0 bold", "dim"],
+                            ["$text-primary bold", "dim"],
                         )
                         format_timestamp.assert_called_once()
 
@@ -1543,7 +1543,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_roster_palette_lightly_tints_each_agent_reply(self) -> None:
+    def test_roster_palette_only_colors_each_agent_reply_border(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
@@ -1585,7 +1585,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                     for response in responses
                                 }
                             ),
-                            4,
+                            1,
                         )
                         headers = [
                             response.parent.query_one("#agent-message-header")
@@ -1604,18 +1604,13 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                 response.parent.has_class(f"-agent-tone-{index}")
                             )
                             self.assertEqual(
-                                response.parent.styles.background.rgb,
+                                response.parent.styles.border_left[1].rgb,
                                 Color.parse(expected_color).rgb,
                             )
-                            self.assertAlmostEqual(
-                                response.parent.styles.background.a, 0.05
-                            )
-                            self.assertTrue(header.has_class(f"-agent-tone-{index}"))
                             self.assertEqual(
-                                header.styles.background.rgb,
+                                response.parent.styles.border_bottom[1].rgb,
                                 Color.parse(expected_color).rgb,
                             )
-                            self.assertAlmostEqual(header.styles.background.a, 0.16)
                             available_width = (
                                 response.parent.size.width
                                 - response.parent.styles.padding.left
@@ -1627,12 +1622,12 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                 header.render().spans[0].style
                                 for header in headers
                             ],
-                            [f"$agent-tone-{index} bold" for index in range(4)],
+                            ["$text-primary bold"] * 4,
                         )
 
         asyncio.run(scenario())
 
-    def test_agent_reply_markdown_accents_follow_the_bubble_tone(self) -> None:
+    def test_agent_reply_interiors_share_one_style_across_agents(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
@@ -1663,29 +1658,36 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                 gemini,  # type: ignore[arg-type]
                             ),
                         ]
-                        conversation.begin_agent_output(gemini)  # type: ignore[arg-type]
-                        response = await conversation.post_agent_response(
+                        conversation.begin_agent_output(claude)  # type: ignore[arg-type]
+                        claude_response = await conversation.post_agent_response(
                             "# Heading\n\n> Quoted detail\n\n---\n\nBody"
                         )
-                        assert response is not None
+                        conversation.begin_agent_output(gemini)  # type: ignore[arg-type]
+                        gemini_response = await conversation.post_agent_response(
+                            "# Heading\n\n> Quoted detail\n\n---\n\nBody"
+                        )
+                        assert claude_response is not None
+                        assert gemini_response is not None
                         await pilot.pause(0.1)
 
-                        tone = Color.parse("#FB7185").rgb
-                        self.assertEqual(
-                            response.query_one(MarkdownH1).styles.color.rgb,
-                            tone,
-                        )
-                        self.assertEqual(
-                            response.query_one(MarkdownBlockQuote)
-                            .styles.border_left[1]
-                            .rgb,
-                            tone,
-                        )
-                        self.assertEqual(
-                            response.query_one(MarkdownHorizontalRule)
-                            .styles.border_bottom[1]
-                            .rgb,
-                            tone,
+                        for selector, style_name in (
+                            (MarkdownH1, "color"),
+                            (MarkdownBlockQuote, "border_left"),
+                            (MarkdownHorizontalRule, "border_bottom"),
+                        ):
+                            claude_style = getattr(
+                                claude_response.query_one(selector).styles,
+                                style_name,
+                            )
+                            gemini_style = getattr(
+                                gemini_response.query_one(selector).styles,
+                                style_name,
+                            )
+                            self.assertEqual(claude_style, gemini_style)
+
+                        self.assertNotEqual(
+                            claude_response.parent.styles.border_left[1].rgb,
+                            gemini_response.parent.styles.border_left[1].rgb,
                         )
 
         asyncio.run(scenario())

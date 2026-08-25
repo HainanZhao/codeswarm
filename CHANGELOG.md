@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Agent message bubbles now use the space reclaimed from the removed selection
   rail, aligning directly with the conversation window's left edge.
+- Agent bubble interiors now use one shared visual style; roster-specific teal,
+  coral, violet, and aqua are limited to the bubble border rails.
 - Replaced the remaining amber, olive, and orange accents with a cohesive
   avionics palette: teal, coral, violet, and aqua identify agents, while
   emerald and red remain distinct success and error signals.
@@ -36,9 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Markdown headings, quote rails, rules, inline code, and tool activity inside
-  an agent bubble now use that bubble's roster tone instead of the first
-  agent's global teal accent.
 - Live tool changes no longer briefly resize the active agent message and jump
   the conversation window; tool history stays hidden behind its fixed one-row
   summary until deliberately focused.
