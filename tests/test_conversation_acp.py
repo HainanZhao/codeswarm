@@ -905,9 +905,14 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         conversation._active_relay_agent = gemini  # type: ignore[assignment]
 
                         response = await conversation.post_agent_response("Done")
+                        await pilot.pause()
 
                         self.assertIsNotNone(response)
                         assert response is not None
+                        self.assertEqual(
+                            response.parent.region.x,
+                            conversation.window.region.x,
+                        )
                         self.assertTrue(response.has_class("-agent-tone-1"))
                         self.assertEqual(response.styles.padding.top, 0)
                         self.assertEqual(response.styles.padding.left, 0)

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Agent message bubbles now use the space reclaimed from the removed selection
+  rail, aligning directly with the conversation window's left edge.
 - Replaced the remaining amber, olive, and orange accents with a cohesive
   avionics palette: teal, coral, violet, and aqua identify agents, while
   emerald and red remain distinct success and error signals.
