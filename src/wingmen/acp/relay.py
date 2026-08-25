@@ -58,6 +58,9 @@ class RelayConversation:
         max_rounds: int = 100,
         stop_token: str = STOP_TOKEN,
         on_turn_start: Callable[[int, AgentLike], Awaitable[None] | None] | None = None,
+        on_queued_turn_start: Callable[[int, AgentLike, str, bool], Awaitable[None] | None]
+        | None = None,
+        on_queued_turn_discarded: Callable[[str, bool], None] | None = None,
         on_turn: Callable[[int, AgentLike, str], Awaitable[None] | None] | None = None,
     ) -> None:
         if len(agents) < 2:
@@ -69,6 +72,8 @@ class RelayConversation:
         self.max_rounds = max_rounds
         self.stop_token = stop_token
         self.on_turn_start = on_turn_start
+        self.on_queued_turn_start = on_queued_turn_start
+        self.on_queued_turn_discarded = on_queued_turn_discarded
         self.on_turn = on_turn
         self._steering_queue: deque[tuple[int, str]] = deque()
         self._direct_queue: deque[tuple[int, str]] = deque()
@@ -135,6 +140,13 @@ class RelayConversation:
             raise ValueError("index out of range")
         self.active[index] = False
         # Queued work must not be dispatched to an agent the caller stopped.
+        if self.on_queued_turn_discarded is not None:
+            for target, prompt in self._direct_queue:
+                if target == index:
+                    self.on_queued_turn_discarded(prompt, True)
+            for target, prompt in self._steering_queue:
+                if target == index:
+                    self.on_queued_turn_discarded(prompt, False)
         self._direct_queue = deque(
             (target, prompt)
             for target, prompt in self._direct_queue
@@ -238,13 +250,17 @@ class RelayConversation:
                 # back to itself until max_rounds.
                 return RelayResult(round_number - 1, True, "roster_collapsed")
             direct_turn = False
+            queued_turn = False
+            steering_turn = False
             if self._direct_queue:
                 current, relay = self._direct_queue.popleft()
                 direct_turn = True
+                queued_turn = True
                 context_event_index = None
             elif self._steering_queue:
                 current, relay = self._steering_queue.popleft()
-                context_event_index = self._record_event("Human", relay)
+                queued_turn = True
+                steering_turn = True
             agent = self.agents[current]
             can_stop = (
                 not direct_turn
@@ -252,6 +268,14 @@ class RelayConversation:
                 and context_agent is not agent
             )
             self.last_active_index = current
+            if queued_turn and self.on_queued_turn_start is not None:
+                result = self.on_queued_turn_start(
+                    round_number, agent, relay, direct_turn
+                )
+                if result is not None:
+                    await result
+            if steering_turn:
+                context_event_index = self._record_event("Human", relay)
             if self.on_turn_start is not None:
                 result = self.on_turn_start(round_number, agent)
                 if result is not None:

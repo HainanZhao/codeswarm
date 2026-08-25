@@ -13,6 +13,9 @@ __pycache__
 .vscode
 .zed
 .mypy_cache
+.coverage
+coverage.xml
+htmlcov/
 *.log
 
 agent.jsonl

@@ -58,11 +58,10 @@ def main() -> None:
             check=True,
         )
         python = install_dir / "bin" / "python"
-        executables = [
-            install_dir / "bin" / "wingmen",
-            install_dir / "bin" / "wingwomen",
-        ]
+        executables = [install_dir / "bin" / "wingmen"]
         run(["uv", "pip", "install", "--python", str(python), str(wheel)], check=True)
+        if (install_dir / "bin" / "wingwomen").exists():
+            raise SystemExit("wheel installed the unsupported wingwomen executable")
         for executable in executables:
             run([str(executable), "--version"], check=True)
             run([str(executable), "--help"], check=True)
@@ -76,11 +75,11 @@ def main() -> None:
         )
         run([str(python), "-c", smoke], check=True)
 
-    expected = {
-        "wingmen = wingmen.cli:main",
-        "wingwomen = wingmen.cli:main",
+    expected = {"wingmen = wingmen.cli:main"}
+    console_scripts = {
+        line.strip() for line in entry_points.splitlines() if " = " in line
     }
-    if not expected.issubset(entry_points.splitlines()) or "toad" in entry_points:
+    if console_scripts != expected or "toad" in entry_points:
         raise SystemExit(
             "wheel has invalid console scripts; expected "
             f"{sorted(expected)!r}, got:\n{entry_points}"

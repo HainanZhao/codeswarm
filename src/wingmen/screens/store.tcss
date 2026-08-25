@@ -45,6 +45,14 @@ StoreScreen {
             grid-gutter: 1 2;
             min-width: 40;
         }
+
+        #wingmen-formation {
+            height: 100%;
+            color: $primary;
+            text-style: bold;
+            text-align: center;
+            content-align: center middle;
+        }
     }
 
     LoadingIndicator {

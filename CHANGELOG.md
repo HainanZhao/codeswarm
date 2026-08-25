@@ -5,21 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.6.25] - 2026-08-25
 
 ### Changed
 
 - `@` is reserved for file attachments. Click a roster agent to select the
   recipient of the next normal message; prompt-level direct-message syntax was
   removed.
+- The terminal UI now uses a single teal fighter-HUD theme, full-width Flash
+  ribbons, compact message panels, and a wingmen-formation landing mark.
+- Messages submitted behind active work remain in a bounded holding area above
+  the prompt and enter the transcript only when their agent turn starts.
 
 ### Added
 
-- `wingwomen` as an alias for the `wingmen` command.
 - Each agent's first prompt now identifies its Wingmen roster collaborators.
 - New ACP sessions receive concise operating instructions: avoid speculation,
   answer questions without starting work, and stay within explicitly requested
   scope.
+- JSON-RPC requests are scoped to their owning ACP agent so one adapter cannot
+  resolve another adapter's in-flight request when response IDs collide.
 
 ### Fixed
 
@@ -28,6 +33,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clicking an agent header no longer crashes the conversation view.
 - Agent header backgrounds now use a stronger per-agent accent fill.
 - Closing a workspace now terminates the complete ACP adapter process group.
+- Unsupported saved Textual themes are migrated before styles load, preventing
+  custom HUD variables from blocking startup.
+- Slash-command completion keeps focus on Tab, previews the selected command in
+  the prompt, and runs argument-free commands with a single Enter press.
+- Once the prompt is visible, notifications consistently use the teal Flash
+  ribbon for information, warnings, and errors.
+- JSON-RPC rejects missing, extra, or malformed parameters instead of invoking
+  handlers with partial arguments.
+- Fuzzy path matching, result retention, and cache growth are bounded for
+  repetitive queries and large repositories.
+
+### Removed
+
+- The unsupported `wingwomen` executable alias and the redundant `/about`
+  command.
 
 ## [0.6.24] - 2026-08-24
 

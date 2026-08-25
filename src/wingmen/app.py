@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from wingmen.db import DB
 
 
-# A pure-black terminal palette with Wingmen's calm blue/teal accents.
+# A pure-black terminal palette with Wingmen's crisp teal accents.
 WINGMEN_TERMINAL_THEME = terminal_theme.TerminalTheme(
     background=(0, 0, 0),  # #000000
     foreground=(216, 222, 233),  # #D8DEE9
@@ -46,9 +46,9 @@ WINGMEN_TERMINAL_THEME = terminal_theme.TerminalTheme(
         (191, 97, 106),  # red - #BF616A
         (163, 190, 140),  # green - #A3BE8C
         (235, 203, 139),  # yellow - #EBCB8B
-        (129, 161, 193),  # blue - #81A1C1
+        (20, 184, 166),  # blue slot - teal #14B8A6
         (180, 142, 173),  # magenta - #B48EAD
-        (136, 192, 208),  # cyan - #88C0D0
+        (45, 212, 191),  # cyan - teal #2DD4BF
         (229, 233, 240),  # white - #E5E9F0
     ],
     bright=[
@@ -56,34 +56,34 @@ WINGMEN_TERMINAL_THEME = terminal_theme.TerminalTheme(
         (191, 97, 106),  # bright red - #BF616A
         (163, 190, 140),  # bright green - #A3BE8C
         (235, 203, 139),  # bright yellow - #EBCB8B
-        (143, 188, 187),  # bright blue - #8FBCBB
+        (94, 234, 212),  # bright blue slot - teal #5EEAD4
         (180, 142, 173),  # bright magenta - #B48EAD
-        (136, 192, 208),  # bright cyan - #88C0D0
+        (45, 212, 191),  # bright cyan - teal #2DD4BF
         (236, 239, 244),  # bright white - #ECEFF4
     ],
 )
 
 WINGMEN_BLACK_THEME = Theme(
     name="wingmen-black",
-    primary="#88C0D0",
-    secondary="#81A1C1",
+    primary="#2DD4BF",
+    secondary="#14B8A6",
     warning="#EBCB8B",
     error="#BF616A",
     success="#A3BE8C",
-    accent="#8FBCBB",
+    accent="#5EEAD4",
     foreground="#D8DEE9",
     background="#000000",
     surface="#0A0D12",
     panel="#10151D",
     dark=True,
     variables={
-        "agent-tone-0": "#88C0D0",
+        "agent-tone-0": "#2DD4BF",
         "agent-tone-1": "#EBCB8B",
         "agent-tone-2": "#A3BE8C",
         "agent-tone-3": "#D08770",
-        "block-cursor-background": "#88C0D0",
+        "block-cursor-background": "#2DD4BF",
         "block-cursor-foreground": "#000000",
-        "input-selection-background": "#81A1C1 35%",
+        "input-selection-background": "#14B8A6 35%",
         "button-color-foreground": "#000000",
     },
 )
@@ -339,8 +339,37 @@ class WingmenApp(App, inherit_bindings=False):
 
         notification.send()
 
-    def on_notify(self, event: Notify) -> None:
-        """Handle notification message."""
+    def _on_notify(self, event: Notify) -> None:
+        """Use the conversation ribbon once its prompt is available."""
+        self._forward_system_notification(event)
+
+        from wingmen.widgets.conversation import Conversation
+
+        conversation = self.screen.query_one_optional(Conversation)
+        if conversation is None:
+            return
+
+        notification = event.notification
+        content = Content(notification.message)
+        if notification.title:
+            content = Content.assemble(
+                (f"{notification.title}: ", "bold"),
+                content,
+            )
+        style = {
+            "information": "default",
+            "warning": "warning",
+            "error": "error",
+        }[notification.severity]
+        conversation.flash(
+            content,
+            duration=notification.timeout,
+            style=style,
+        )
+        event.prevent_default()
+
+    def _forward_system_notification(self, event: Notify) -> None:
+        """Forward eligible notifications to the operating system."""
         system_notifications = self.settings.get("notifications.system", str)
         if system_notifications == "always" or (
             system_notifications == "blur" and not self.app_focus
@@ -355,8 +384,6 @@ class WingmenApp(App, inherit_bindings=False):
                 message = event.notification.message
             if not (hide_low_severity and event.notification.severity == "information"):
                 self.system_notify(message, title=event.notification.title)
-        self._notifications.add(event.notification)
-        self._refresh_notifications()
 
     async def save_settings(self, force: bool = False) -> None:
         """Save settings in a thread.
@@ -380,8 +407,7 @@ class WingmenApp(App, inherit_bindings=False):
 
     def setting_updated(self, key: str, value: object) -> None:
         if key == "ui.theme":
-            if isinstance(value, str):
-                self.theme = value
+            self.theme = WINGMEN_BLACK_THEME.name
         elif key == "ui.scrollbar":
             if isinstance(value, str):
                 self.scrollbar = value
@@ -428,9 +454,19 @@ class WingmenApp(App, inherit_bindings=False):
                 json.dumps(settings, indent=4, separators=(", ", ": ")), "utf-8"
             )
             self.notify(f"Wrote default settings to {settings_path}", title="Settings")
+        theme_migrated = False
+        ui_settings = settings.get("ui")
+        if (
+            isinstance(ui_settings, dict)
+            and ui_settings.get("theme") != WINGMEN_BLACK_THEME.name
+        ):
+            ui_settings["theme"] = WINGMEN_BLACK_THEME.name
+            theme_migrated = True
         self.ansi_theme_dark = WINGMEN_TERMINAL_THEME
         self._settings = settings
         self.settings.set_all()
+        if theme_migrated:
+            await self.save_settings(force=True)
 
     async def new_session_screen(
         self, get_screen: Callable[[], Screen]

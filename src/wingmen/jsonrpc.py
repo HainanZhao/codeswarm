@@ -214,6 +214,17 @@ class Server:
             name: parameter.default for name, parameter in method.parameters.items()
         }
 
+        def is_server_parameter(parameter: Parameter) -> bool:
+            return inspect.isclass(parameter.type) and issubclass(
+                parameter.type, Server
+            )
+
+        callable_parameters = {
+            name: parameter
+            for name, parameter in method.parameters.items()
+            if not is_server_parameter(parameter)
+        }
+
         def validate(value: JSONType, parameter_type: type) -> None:
             """Validate types."""
             try:
@@ -229,25 +240,46 @@ class Server:
                 )
 
         if isinstance(params, list):
-            parameter_items = [
-                (name, parameter)
-                for name, parameter in method.parameters.items()
-                if not issubclass(parameter.type, Server)
-            ]
+            parameter_items = list(callable_parameters.items())
+            required_count = sum(
+                parameter.default is NO_DEFAULT
+                for _, parameter in parameter_items
+            )
+            if not required_count <= len(params) <= len(parameter_items):
+                raise InvalidParams(
+                    "Positional parameter count does not match the method signature",
+                    id=request_id,
+                )
             for (parameter_name, parameter), value in zip(parameter_items, params):
-                if issubclass(parameter.type, Server):
-                    value = self
-                else:
-                    validate(value, parameter.type)
+                validate(value, parameter.type)
                 arguments[parameter_name] = value
         else:
+            unexpected_parameters = params.keys() - callable_parameters.keys()
+            if unexpected_parameters:
+                raise InvalidParams(
+                    "Unexpected parameter(s): "
+                    + ", ".join(sorted(unexpected_parameters)),
+                    id=request_id,
+                )
             for parameter_name, value in params.items():
-                if parameter := method.parameters.get(parameter_name):
-                    validate(value, parameter.type)
-                    arguments[parameter_name] = value
+                parameter = callable_parameters[parameter_name]
+                validate(value, parameter.type)
+                arguments[parameter_name] = value
+
+            missing_parameters = [
+                name
+                for name, parameter in callable_parameters.items()
+                if parameter.default is NO_DEFAULT and name not in params
+            ]
+            if missing_parameters:
+                raise InvalidParams(
+                    "Missing required parameter(s): "
+                    + ", ".join(missing_parameters),
+                    id=request_id,
+                )
 
         for name, parameter in method.parameters.items():
-            if inspect.isclass(parameter.type) and issubclass(parameter.type, Server):
+            if is_server_parameter(parameter):
                 arguments[name] = self
 
         try:
@@ -328,12 +360,17 @@ class Server:
 @rich.repr.auto
 class MethodCall[ReturnType]:
     def __init__(
-        self, method: str, id: int | None, parameters: dict[str, JSONType]
+        self,
+        method: str,
+        id: int | None,
+        parameters: dict[str, JSONType],
+        owner: object | None = None,
     ) -> None:
         self.method = method
         self.id = id
         self.parameters = parameters
         self.notification = False
+        self.owner = owner
         self.future: Future[ReturnType] = get_running_loop().create_future()
 
     def __rich_repr__(self) -> rich.repr.Result:
@@ -372,8 +409,14 @@ T = TypeVar("T")  # Original return type
 
 
 class Request:
-    def __init__(self, api: API, callback: Callable[[Request], None] | None) -> None:
+    def __init__(
+        self,
+        api: API,
+        callback: Callable[[Request], None] | None,
+        owner: object | None,
+    ) -> None:
         self.api = api
+        self.owner = owner
         self._calls: list[MethodCall] = []
         self._callback = callback
 
@@ -425,39 +468,58 @@ class API:
             weakref.WeakValueDictionary()
         )
 
-    def request(self, callback: Callable[[Request], None] | None = None) -> Request:
+    def request(
+        self,
+        callback: Callable[[Request], None] | None = None,
+        *,
+        owner: object | None = None,
+    ) -> Request:
         """Create a Request context manager."""
-        request = Request(self, callback)
+        request = Request(self, callback, owner)
         return request
 
-    def _process_method_response(self, response: JSONObject) -> None:
+    def _process_method_response(
+        self, response: JSONObject, owner: object | None = None
+    ) -> None:
         if (id := response.get("id")) is not None and isinstance(id, int):
             if (method_call := self._calls.get(id)) is not None:
+                if owner is not None and method_call.owner is not owner:
+                    return
                 try:
                     result = response["result"]
                 except KeyError:
-                    if (error := response.get("error")) is not None:
-                        if isinstance(error, dict):
-                            code = error.get("code", -1)
-                            if not isinstance(code, int):
-                                code = -1
-                            message = str(error.get("message", "unknown error"))
-                            data = error.get("data", None)
-                            if not method_call.future.done():
-                                method_call.future.set_exception(
-                                    APIError(code, message, data)
-                                )
+                    error = response.get("error")
+                    if isinstance(error, dict):
+                        code = error.get("code", -1)
+                        if not isinstance(code, int):
+                            code = -1
+                        message = str(error.get("message", "unknown error"))
+                        data = error.get("data", None)
+                        if not method_call.future.done():
+                            method_call.future.set_exception(
+                                APIError(code, message, data)
+                            )
+                    elif not method_call.future.done():
+                        method_call.future.set_exception(
+                            APIError(
+                                int(ErrorCode.INTERNAL_ERROR),
+                                "Malformed JSON-RPC response",
+                                None,
+                            )
+                        )
                 else:
                     if not method_call.future.done():
                         method_call.future.set_result(result)
 
-    def process_response(self, response: JSONType) -> None:
+    def process_response(
+        self, response: JSONType, *, owner: object | None = None
+    ) -> None:
         if isinstance(response, list):
             for response_object in response:
                 if isinstance(response_object, dict):
-                    self._process_method_response(response_object)
+                    self._process_method_response(response_object, owner)
         elif isinstance(response, dict):
-            self._process_method_response(response)
+            self._process_method_response(response, owner)
 
     def method(
         self, name: str = "", *, prefix: str = "", notification: bool = False
@@ -486,11 +548,14 @@ class API:
                     call_parameters[parameter_name] = arg
                 for parameter_name, arg in kwargs.items():
                     call_parameters[parameter_name] = arg
+                owner = self._requests[-1].owner
                 if notification:
-                    method_call = MethodCall(name, None, call_parameters)
+                    method_call = MethodCall(name, None, call_parameters, owner)
                 else:
                     self._request_id += 1
-                    method_call = MethodCall(name, self._request_id, call_parameters)
+                    method_call = MethodCall(
+                        name, self._request_id, call_parameters, owner
+                    )
                 self._requests[-1].add_call(method_call)
                 if method_call.id is not None:
                     self._calls[method_call.id] = method_call

@@ -37,6 +37,9 @@ from wingmen.path_filter import PathFilter
 from wingmen._path_fuzzy_search import PathFuzzySearch
 from wingmen._path_match import match_path
 
+MAX_SEARCH_RESULTS = 30
+PATH_SEARCH_CACHE_SIZE = 64
+
 
 class PathContent(Content):
 
@@ -168,7 +171,7 @@ class PathSearch(containers.VerticalGroup):
         self._pool: concurrent.futures.InterpreterPoolExecutor | None = None
         self._mounted = False
         self.search_cache: LRUCache[str, list[tuple[float, Sequence[int], str]]] = (
-            LRUCache(1024)
+            LRUCache(PATH_SEARCH_CACHE_SIZE)
         )
 
     def compose(self) -> ComposeResult:
@@ -203,6 +206,17 @@ class PathSearch(containers.VerticalGroup):
         )
         return scores
 
+    @staticmethod
+    def rank_matches(
+        matches: Sequence[tuple[float, Sequence[int], str]],
+    ) -> list[tuple[float, Sequence[int], str]]:
+        """Return the best displayable matches without retaining excess results."""
+        return sorted(
+            (match for match in matches if match[0]),
+            key=itemgetter(0),
+            reverse=True,
+        )[:MAX_SEARCH_RESULTS]
+
     @work(exclusive=True, description="search_paths")
     async def search(self, search: str) -> None:
         if not search:
@@ -221,6 +235,7 @@ class PathSearch(containers.VerticalGroup):
                 scored_paths = await asyncio.to_thread(
                     self.fuzzy_match_paths, search, display_paths
                 )
+                scored_paths = self.rank_matches(scored_paths)
                 self.search_cache[search] = scored_paths
         else:
             fuzzy_search = self.fuzzy_search
@@ -231,16 +246,11 @@ class PathSearch(containers.VerticalGroup):
                 )
                 for path in display_paths
             ]
-
-        scored_paths = sorted(
-            [score for score in scored_paths if score[0]],
-            key=itemgetter(0),
-            reverse=True,
-        )
+            scored_paths = self.rank_matches(scored_paths)
 
         scores = [
             (score, highlights, self.highlight_path(path))
-            for score, highlights, path in scored_paths[:30]
+            for score, highlights, path in scored_paths
         ]
 
         def highlight_offsets(path: Content, offsets: Sequence[int]) -> Content:

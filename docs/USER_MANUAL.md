@@ -209,7 +209,6 @@ it is never sent to an agent. Press `Ctrl+C` to stop a running command.
 | Command | Action |
 | --- | --- |
 | `/help` | Show the concise command and control reference in the conversation. |
-| `/about` | Show the version, license, and relay overview. |
 | `/config` | Open Wingmen settings and the roster for the next workspace. |
 | `/agent list` | Show the complete current roster and agent numbers. |
 | `/agent add AGENT` | Add and start an agent by short name or identity. |

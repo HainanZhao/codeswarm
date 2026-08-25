@@ -39,6 +39,8 @@ class StoppableAgent(Protocol):
 
 SaveSettings = Callable[[], Awaitable[None]]
 RelayTurnStart = Callable[[int, AgentBase], Awaitable[None] | None]
+RelayQueuedTurnStart = Callable[[int, AgentBase, str, bool], Awaitable[None] | None]
+RelayQueuedTurnDiscarded = Callable[[str, bool], None]
 RelayTurn = Callable[[int, AgentBase, str], Awaitable[None] | None]
 
 
@@ -148,6 +150,8 @@ class SessionCoordinator:
         message_target: MessagePump,
         *,
         on_turn_start: RelayTurnStart | None = None,
+        on_queued_turn_start: RelayQueuedTurnStart | None = None,
+        on_queued_turn_discarded: RelayQueuedTurnDiscarded | None = None,
         on_turn: RelayTurn | None = None,
     ) -> None:
         """Start the owner and peers, then construct the relay if needed."""
@@ -179,7 +183,12 @@ class SessionCoordinator:
             await self.stop()
             raise
 
-        self._build_relay(on_turn_start=on_turn_start, on_turn=on_turn)
+        self._build_relay(
+            on_turn_start=on_turn_start,
+            on_queued_turn_start=on_queued_turn_start,
+            on_queued_turn_discarded=on_queued_turn_discarded,
+            on_turn=on_turn,
+        )
         self._introduce_roster()
 
     def _introduce_roster(self) -> None:
@@ -209,8 +218,10 @@ class SessionCoordinator:
     def _build_relay(
         self,
         *,
-        on_turn_start: RelayTurnStart | None,
-        on_turn: RelayTurn | None,
+        on_turn_start: RelayTurnStart | None = None,
+        on_queued_turn_start: RelayQueuedTurnStart | None = None,
+        on_queued_turn_discarded: RelayQueuedTurnDiscarded | None = None,
+        on_turn: RelayTurn | None = None,
     ) -> None:
         agents = [entry.agent for entry in self.roster]
         if len(agents) <= 1 or any(agent is None for agent in agents):
@@ -225,6 +236,11 @@ class SessionCoordinator:
             on_turn_start=cast(
                 Callable[[int, AgentLike], Awaitable[None] | None], on_turn_start
             ),
+            on_queued_turn_start=cast(
+                Callable[[int, AgentLike, str, bool], Awaitable[None] | None],
+                on_queued_turn_start,
+            ),
+            on_queued_turn_discarded=on_queued_turn_discarded,
             on_turn=cast(
                 Callable[[int, AgentLike, str], Awaitable[None] | None], on_turn
             ),
@@ -432,6 +448,8 @@ class SessionCoordinator:
         message_target: MessagePump,
         *,
         on_turn_start: RelayTurnStart | None = None,
+        on_queued_turn_start: RelayQueuedTurnStart | None = None,
+        on_queued_turn_discarded: RelayQueuedTurnDiscarded | None = None,
         on_turn: RelayTurn | None = None,
     ) -> None:
         """Start and append a peer, creating the relay when it becomes needed."""
@@ -452,7 +470,12 @@ class SessionCoordinator:
             raise
         self.roster.append(RosterEntry(data, agent))
         if self.relay is None:
-            self._build_relay(on_turn_start=on_turn_start, on_turn=on_turn)
+            self._build_relay(
+                on_turn_start=on_turn_start,
+                on_queued_turn_start=on_queued_turn_start,
+                on_queued_turn_discarded=on_queued_turn_discarded,
+                on_turn=on_turn,
+            )
         else:
             index = self.relay.add_agent(cast(AgentLike, agent))
             if index != len(self.roster) - 1:

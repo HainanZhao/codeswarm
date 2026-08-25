@@ -35,7 +35,6 @@ from textual.strip import Strip
 from textual.timer import Timer
 
 
-import wingmen
 from wingmen import jsonrpc, messages
 from wingmen import paths
 from wingmen.agent_schema import Agent as AgentData
@@ -364,6 +363,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
     relay_paused: var[bool] = var(False, toggle_class="-relay-paused")
     discussion_mode: var[bool] = var(False, toggle_class="-discussion-mode")
     status: var[str | Content] = var("")
+    queued_messages: var[tuple[str, ...]] = var(())
 
     title = var("")
 
@@ -426,6 +426,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 
         self._post_lock = asyncio.Lock()
         self._pending_solo_prompts: deque[str] = deque()
+        self._queued_prompt_previews: deque[tuple[str, bool, str]] = deque()
 
     def update_title(self) -> None:
         """Update the screen title."""
@@ -650,6 +651,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             current_mode=Conversation.current_mode,
             modes=Conversation.modes,
             status=Conversation.status,
+            queued_messages=Conversation.queued_messages,
         )
 
     @on(messages.Flash)
@@ -826,7 +828,11 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             # `/agent add`) should still identify the newly connected member.
             if newly_connected and message.agent is not None:
                 self.flash(
-                    Content.assemble(message.agent.get_info(), " connected"),
+                    Content.assemble(
+                        "COMMS // ",
+                        message.agent.get_info(),
+                        " LINK ESTABLISHED",
+                    ),
                     style="success",
                 )
             return
@@ -840,11 +846,14 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         ]
 
         if message.agent is not None and waiting_agents:
-            waiting_names = ", ".join(str(agent.get_info()) for agent in waiting_agents)
+            waiting_names = " + ".join(
+                str(agent.get_info()) for agent in waiting_agents
+            )
             self.flash(
                 Content.assemble(
+                    "COMMS // ",
                     message.agent.get_info(),
-                    " connected · Waiting for ",
+                    " LINK ESTABLISHED · AWAITING ",
                     waiting_names,
                 ),
                 style="success",
@@ -853,26 +862,29 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 
         if ready_agents:
             names = [str(agent.get_info()) for agent in ready_agents]
-            if len(names) == 1:
-                connected_names = names[0]
-            elif len(names) == 2:
-                connected_names = f"{names[0]} and {names[1]}"
-            else:
-                connected_names = f"{', '.join(names[:-1])}, and {names[-1]}"
+            connected_names = " + ".join(names)
             self.flash(
-                Content.assemble(connected_names, " connected"),
+                Content.assemble(
+                    "FORMATION // ", connected_names, " ON STATION"
+                ),
                 style="success",
             )
         elif message.agent is not None:
             # A custom/legacy agent may report readiness before its roster
             # entry is visible. Preserve a useful notification in that case.
             self.flash(
-                Content.assemble(message.agent.get_info(), " connected"),
+                Content.assemble(
+                    "COMMS // ",
+                    message.agent.get_info(),
+                    " LINK ESTABLISHED",
+                ),
                 style="success",
             )
         elif self.agent is not None:
             self.flash(
-                Content.assemble(self.agent.get_info(), " connected"),
+                Content.assemble(
+                    "COMMS // ", self.agent.get_info(), " LINK ESTABLISHED"
+                ),
                 style="success",
             )
 
@@ -922,7 +934,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             self._refresh_roster_info()
             self._refresh_displayed_modes()
             self.flash(
-                f"{failed_agent.get_info()} disconnected · reconnecting",
+                f"COMMS LOST // {failed_agent.get_info()} · REACQUIRING LINK",
                 style="warning",
             )
             return
@@ -1020,8 +1032,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             if text.startswith("/") and await self.slash_command(text):
                 # Wingmen has processed the slash command.
                 return
-            user_message = await self.post(UserInput(text))
-            self.window.scroll_end(animate=False)
             direct_target: tuple[int, str] | None = None
             if (
                 direct_target is None
@@ -1041,17 +1051,21 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 if self.relay_paused:
                     self._queue_relay_prompt(
                         self.session.enqueue_direct(agent_index, direct_prompt),
-                        "Queued while agents are paused",
-                        user_message,
+                        "TX HOLD // FORMATION PAUSED",
+                        direct_prompt,
+                        direct=True,
                     )
                     return
                 if self.turn == "agent":
                     self._queue_relay_prompt(
                         self.session.enqueue_direct(agent_index, direct_prompt),
-                        "Queued for the tagged agent",
-                        user_message,
+                        "TX HOLD // DIRECT CHANNEL",
+                        direct_prompt,
+                        direct=True,
                     )
                     return
+                await self.post(UserInput(direct_prompt))
+                self.window.scroll_end(animate=False)
                 self.turn = "agent"
                 self.send_direct_prompt_to_agent(agent_index, direct_prompt)
                 return
@@ -1064,23 +1078,25 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 )
                 self._queue_relay_prompt(
                     self.session.enqueue_human(text),
-                    f"Queued for {active_name}",
-                    user_message,
+                    f"TX HOLD // {active_name}",
+                    text,
                 )
                 return
             if self._relay_active and self.relay_paused:
                 self._queue_relay_prompt(
                     self.session.enqueue_human(text),
-                    "Queued while agents are paused",
-                    user_message,
+                    "TX HOLD // FORMATION PAUSED",
+                    text,
                 )
                 return
-            if self._queue_solo_prompt_if_busy(text, user_message):
+            if self._queue_solo_prompt_if_busy(text):
                 return
+            await self.post(UserInput(text))
+            self.window.scroll_end(animate=False)
             self.turn = "agent"
             self.send_prompt_to_agent(text)
 
-    def _queue_solo_prompt_if_busy(self, prompt: str, message: UserInput) -> bool:
+    def _queue_solo_prompt_if_busy(self, prompt: str) -> bool:
         """Queue a follow-up instead of overlapping requests to one ACP agent."""
         if self._relay_active or self.turn != "agent":
             return False
@@ -1091,20 +1107,47 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             )
             return True
         self._pending_solo_prompts.append(prompt)
-        message.set_queue_status("Queued for the agent")
+        self._add_queued_prompt(prompt, False, "TX HOLD // ACTIVE WINGMAN")
         return True
 
     def _queue_relay_prompt(
-        self, accepted: bool, success_message: str, message: UserInput
+        self, accepted: bool, success_message: str, prompt: str, *, direct: bool = False
     ) -> None:
-        """Tell the user whether a busy relay accepted their follow-up."""
+        """Show accepted relay prompts above the composer until dispatch."""
         if accepted:
-            message.set_queue_status(success_message)
+            self._add_queued_prompt(prompt, direct, success_message)
             return
         self.flash(
             f"Queue is full ({MAX_QUEUED_PROMPTS} messages); wait for an agent",
             style="error",
         )
+
+    def _add_queued_prompt(self, prompt: str, direct: bool, label: str) -> None:
+        self._queued_prompt_previews.append((prompt, direct, label))
+        self._refresh_queued_prompt_previews()
+
+    def _refresh_queued_prompt_previews(self) -> None:
+        self.queued_messages = tuple(
+            f"{label} · {prompt}"
+            for prompt, _direct, label in self._queued_prompt_previews
+        )
+
+    def _discard_queued_prompt(self, prompt: str, direct: bool) -> None:
+        """Remove one accepted prompt from the composer holding area."""
+        previews = list(self._queued_prompt_previews)
+        for index, (queued_prompt, queued_direct, _label) in enumerate(previews):
+            if queued_prompt == prompt and queued_direct == direct:
+                previews.pop(index)
+                self._queued_prompt_previews = deque(previews)
+                break
+        self._refresh_queued_prompt_previews()
+
+    async def _label_queued_relay_turn_start(
+        self, _round_number: int, _agent: AgentBase, prompt: str, direct: bool
+    ) -> None:
+        self._discard_queued_prompt(prompt, direct)
+        await self.post(UserInput(prompt))
+        self.window.scroll_end(animate=False)
 
     @property
     def has_interruptible_work(self) -> bool:
@@ -1167,6 +1210,9 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         if not self._pending_solo_prompts or self.agent is None:
             return False
         prompt = self._pending_solo_prompts.popleft()
+        self._discard_queued_prompt(prompt, False)
+        await self.post(UserInput(prompt))
+        self.window.scroll_end(animate=False)
         self.turn = "agent"
         self.send_prompt_to_agent(prompt)
         return True
@@ -1176,6 +1222,11 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         queued_prompts = self.session.drain_relay_prompts_for_solo_agent()
         if queued_prompts:
             self._pending_solo_prompts.extend(queued_prompts)
+            self._queued_prompt_previews = deque(
+                (prompt, False, label)
+                for prompt, _direct, label in self._queued_prompt_previews
+            )
+            self._refresh_queued_prompt_previews()
 
     def _agent_display_name(self, agent: AgentBase) -> str:
         return self.session.display_name(agent)
@@ -1189,6 +1240,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         """Start the compact roster timer for one sequential agent turn."""
         if self._agent_status_timer is not None:
             self._agent_status_timer.stop()
+        self._agent_elapsed[id(agent)] = 0
         self._working_agent = agent
         self._agent_started_at = monotonic()
         self._agent_status_timer = self.set_interval(1, self._refresh_roster_info)
@@ -1504,9 +1556,10 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 )
 
         if self.app.settings.get("notifications.turn_over", bool):
+            agent_title = self.agent_title or "Agent"
             self.app.system_notify(
-                f"{self.agent_title} has finished working",
-                title="Waiting for input",
+                f"MISSION COMPLETE // {agent_title}",
+                title="AWAITING ORDERS",
             )
 
     def action_focus_block(self, block_id: str) -> None:
@@ -1521,7 +1574,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 
     def _build_slash_commands(self) -> list[SlashCommand]:
         slash_commands = [
-            SlashCommand("/about", "About Wingmen and multi-agent relays"),
             SlashCommand("/help", "Show Wingmen commands"),
             SlashCommand("/config", "Configure Wingmen preferences"),
             SlashCommand("/mode", "Open the mode picker"),
@@ -1581,6 +1633,8 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             await self.session.start(
                 self,
                 on_turn_start=self._label_relay_turn_start,
+                on_queued_turn_start=self._label_queued_relay_turn_start,
+                on_queued_turn_discarded=self._discard_queued_prompt,
                 on_turn=self._label_relay_turn,
             )
         except Exception as error:
@@ -1671,6 +1725,8 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 data,
                 self,
                 on_turn_start=self._label_relay_turn_start,
+                on_queued_turn_start=self._label_queued_relay_turn_start,
+                on_queued_turn_discarded=self._discard_queued_prompt,
                 on_turn=self._label_relay_turn,
             )
         except Exception as error:
@@ -1997,7 +2053,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             # a prompt submitted immediately afterwards is queued rather than
             # racing a second relay run.
             self.turn = "agent"
-            self.flash("Agents resumed", style="success")
+            self.flash("FORMATION // FLIGHT RESUMED", style="success")
             self.send_prompt_to_agent(
                 "Resume the collaboration from the current shared workspace."
             )
@@ -2007,7 +2063,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         self.session.pause()
         for agent in self.session.active_agents:
             await agent.cancel()
-        self.flash("All agents paused", style="warning")
+        self.flash("FORMATION // HOLDING PATTERN", style="warning")
 
     def focus_prompt(self, reset_cursor: bool = True, scroll_end: bool = True) -> None:
         """Focus the prompt input.
@@ -2084,24 +2140,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 be forwarded to the agent.
         """
         command, _, parameters = text[1:].partition(" ")
-        if command in {"about", "wingmen:about"}:
-            from wingmen.widgets.markdown_note import MarkdownNote
-
-            await self.post(
-                MarkdownNote(
-                    f"""## Wingmen v{wingmen.get_version()}
-
-Terminal workspace for collaborating with one or more coding agents.
-
-- The roster is shown beside the prompt; the filled marker is speaking.
-- Click an agent beside the prompt to select who receives the next message.
-- `/agent list` shows the active roster.
-
-Wingmen is licensed under the [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.txt).""",
-                    classes="about",
-                )
-            )
-            return True
         if command == "help":
             from wingmen.widgets.markdown_note import MarkdownNote
 
@@ -2122,7 +2160,6 @@ Wingmen is licensed under the [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.t
 ### Wingmen
 
 - `/config` — settings and the next workspace's agent roster
-- `/about` — version and relay overview
 
 Drag over conversation text and press `Ctrl+C` to copy it. Otherwise,
 `Ctrl+C` cancels active work; press it again within three seconds to quit.

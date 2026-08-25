@@ -175,6 +175,40 @@ class RelayConversationTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_queued_turn_callback_runs_when_a_prompt_is_dispatched(self) -> None:
+        async def scenario() -> None:
+            started = asyncio.Event()
+            release = asyncio.Event()
+            dispatched: list[tuple[str, bool]] = []
+
+            class WaitingAgent(FakeAgent):
+                async def send_prompt(self, prompt: str) -> str:
+                    self.prompts.append(prompt)
+                    if len(self.prompts) == 1:
+                        started.set()
+                        await release.wait()
+                    self.last_response = "response"
+                    return "end_turn"
+
+            claude = WaitingAgent("Claude", [])
+            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+
+            async def on_queued_turn_start(_round, _agent, prompt, direct) -> None:
+                dispatched.append((prompt, direct))
+
+            relay = RelayConversation(
+                (claude, codex), on_queued_turn_start=on_queued_turn_start
+            )
+            task = asyncio.create_task(relay.run("build it"))
+            await started.wait()
+            relay.enqueue_human("review this change")
+            self.assertEqual(dispatched, [])
+            release.set()
+            await task
+            self.assertEqual(dispatched, [("review this change", False)])
+
+        asyncio.run(scenario())
+
     def test_direct_prompt_targets_tagged_agent_without_relaying_response(self) -> None:
         async def scenario() -> None:
             claude = FakeAgent("Claude", [("end_turn", "[WINGMEN:STOP]")])
@@ -426,13 +460,24 @@ class RelayConversationTests(unittest.TestCase):
     def test_dropping_agent_discards_its_queued_steering(self) -> None:
         claude = FakeAgent("Claude", [])
         codex = FakeAgent("Codex", [])
-        relay = RelayConversation((claude, codex))
+        discarded: list[tuple[str, bool]] = []
+        relay = RelayConversation(
+            (claude, codex),
+            on_queued_turn_discarded=lambda prompt, direct: discarded.append(
+                (prompt, direct)
+            ),
+        )
         relay.last_active_index = 1
 
         self.assertTrue(relay.enqueue_human("keep checking"))
+        self.assertTrue(relay.enqueue_direct(1, "inspect the trace"))
         relay.drop_agent(1)
 
         self.assertEqual(relay.queued_prompt_count, 0)
+        self.assertEqual(
+            discarded,
+            [("inspect the trace", True), ("keep checking", False)],
+        )
 
 
     def test_queued_prompts_have_a_shared_bound(self) -> None:

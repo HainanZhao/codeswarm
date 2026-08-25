@@ -1,6 +1,6 @@
 [project]
 name = "wingmen"
-version = "0.6.24"
+version = "0.6.25"
 description = "A focused terminal workspace for collaborating with ACP coding agents."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,7 +22,6 @@ dependencies = [
 
 [project.scripts]
 wingmen = "wingmen.cli:main"
-wingwomen = "wingmen.cli:main"
 
 [build-system]
 requires = ["hatchling==1.28.0"]
@@ -32,4 +31,9 @@ build-backend = "hatchling.build"
 packages = ["src/wingmen"]
 
 [dependency-groups]
-dev = ["mypy>=1.19.1", "pyinstrument>=5.1.1", "textual-dev>=1.8.0"]
+dev = [
+    "coverage>=7.15.4",
+    "mypy>=1.19.1",
+    "pyinstrument>=5.1.1",
+    "textual-dev>=1.8.0",
+]

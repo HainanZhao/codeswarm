@@ -29,6 +29,9 @@ from wingmen.agent_schema import Agent
 from wingmen.agents import read_agents, detect_preferred_agents, available_identities
 
 
+WINGMEN_FORMATION = "      ✈\n   ✈     ✈\n✈           ✈"
+
+
 @dataclass
 class ChangeDirectory(Message):
     path: str
@@ -278,6 +281,11 @@ class StoreScreen(Screen):
         with containers.VerticalGroup(id="title-container"):
             with containers.Grid(id="title-grid"):
                 yield widgets.Label(self.get_info(), id="info")
+                yield widgets.Static(
+                    WINGMEN_FORMATION,
+                    id="wingmen-formation",
+                    markup=False,
+                )
         yield DirectoryDisplay(self.project_dir).data_bind(
             project_dir=StoreScreen.project_dir
         )

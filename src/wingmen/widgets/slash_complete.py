@@ -28,7 +28,8 @@ class SlashCompleteInput(widgets.Input):
 Search for slash commands by typing a few characters from the command.
 
 - **cursor keys** Navigate list
-- **enter** Add command to prompt
+- **tab** Preview next command
+- **enter** Run command or add its arguments
 - **escape** Dismiss fuzzy search
 """
 
@@ -52,6 +53,13 @@ class SlashComplete(containers.VerticalGroup):
             group=CURSOR_BINDING_GROUP,
             priority=True,
         ),
+        Binding(
+            "tab",
+            "cursor_down",
+            "Next command",
+            group=CURSOR_BINDING_GROUP,
+            priority=True,
+        ),
         Binding("enter", "submit", "Insert /command", priority=True),
         Binding("escape", "dismiss", "Dismiss", priority=True),
     ]
@@ -71,6 +79,11 @@ class SlashComplete(containers.VerticalGroup):
 
     @dataclass
     class Completed(Message):
+        command: str
+        submit: bool
+
+    @dataclass
+    class Previewed(Message):
         command: str
 
     def __init__(
@@ -203,9 +216,15 @@ class SlashComplete(containers.VerticalGroup):
 
     def action_cursor_down(self) -> None:
         self.option_list.action_cursor_down()
+        self._preview_highlighted_command()
 
     def action_cursor_up(self) -> None:
         self.option_list.action_cursor_up()
+        self._preview_highlighted_command()
+
+    def _preview_highlighted_command(self) -> None:
+        if (option := self.option_list.highlighted_option) is not None:
+            self.post_message(self.Previewed(option.id or ""))
 
     def action_dismiss(self) -> None:
         self.post_message(Dismiss(self))
@@ -215,7 +234,21 @@ class SlashComplete(containers.VerticalGroup):
         if (option := option_list.highlighted_option) is not None:
             with self.input.prevent(widgets.Input.Changed):
                 self.input.clear()
-            self.post_message(self.Completed(option.id or ""))
+            command = option.id or ""
+            slash_command = next(
+                (
+                    slash_command
+                    for slash_command in self.slash_commands
+                    if slash_command.command == command
+                ),
+                None,
+            )
+            self.post_message(
+                self.Completed(
+                    command,
+                    submit=slash_command is not None and not slash_command.hint,
+                )
+            )
 
 
 if __name__ == "__main__":

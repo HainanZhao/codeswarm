@@ -60,6 +60,23 @@
   built; `enter` launches that roster, or the highlighted agent solo if
   nothing is selected. There is no quick-launch row.
 
+## Agent workflow
+
+- When a user requests an actionable repository change, proceed with the
+  implementation without asking for a separate approval of the approach.
+  Ask a question only when missing information would materially change the
+  result or make the action unsafe.
+
+## Terminal notifications
+
+- Before the conversation prompt is available, Textual Toast notifications
+  may be used for setup, store, configuration, and modal-screen feedback.
+- Once the conversation prompt is shown, all in-terminal notifications use
+  Wingmen's single-line, full-width Flash ribbon. Do not show Textual Toasts
+  over the conversation UI or introduce another notification style there.
+- Optional operating-system notifications sent through `system_notify()` are
+  separate from this in-terminal presentation rule and remain supported.
+
 ## Verification
 
 Run the repository quality gate before release:

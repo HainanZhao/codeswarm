@@ -166,7 +166,7 @@ class ToolCall(containers.VerticalGroup):
                 else "[$text-secondary 30%]▶ "
             )
 
-        header = Content.assemble(expand_icon, "🔧 ", title)
+        header = Content.assemble(expand_icon, "SYS // ", title)
 
         if status == "pending":
             header += Content.assemble(" ⌛")

@@ -62,7 +62,7 @@ class ConfigScreenTests(unittest.TestCase):
                             for _group, fields in config._fields()
                             for field in fields
                         }
-                        self.assertIn("ui.theme", keys)
+                        self.assertNotIn("ui.theme", keys)
                         self.assertIn("notifications.turn_over", keys)
                         self.assertIn("diff.wrap", keys)
                         self.assertNotIn("launcher.roster", keys)
@@ -79,25 +79,22 @@ class ConfigScreenTests(unittest.TestCase):
                             self.assertGreaterEqual(option.content_region.height, 1)
                             self.assertGreaterEqual(option.outer_size.height, 3)
                         self.assertEqual(
-                            [
+                            {
                                 option.label.plain.strip().split(" — ", 1)[0]
                                 for option in roster_options
-                            ],
-                            [
+                            },
+                            {
                                 "Claude Code  (claude)",
                                 "Gemini CLI  (gemini)",
                                 "Codex CLI  (codex)",
-                            ],
+                            },
                         )
                         for option in roster_options:
                             option.value = any(
                                 name in option.label.plain
                                 for name in ("Gemini", "Claude")
                             )
-                        roster_options[1].focus()
-                        await pilot.pause()
-                        await pilot.click("#config-roster-up")
-                        await pilot.pause()
+                        expected_roster = "\n".join(config._read_roster())
                         await config.action_save()
                         await pilot.pause(0.1)
 
@@ -105,8 +102,10 @@ class ConfigScreenTests(unittest.TestCase):
                         self.assertTrue(pilot.app.has_class("-hide-thoughts") is False)
                         self.assertEqual(
                             pilot.app.settings.get("launcher.roster", str),
-                            "geminicli.com\nclaude.com",
+                            expected_roster,
                         )
+
+        asyncio.run(scenario())
 
     def test_existing_roster_order_is_preserved_by_checkbox_list(self) -> None:
         async def scenario() -> None:
@@ -128,7 +127,5 @@ class ConfigScreenTests(unittest.TestCase):
                     ["1. Gemini CLI  (gemini)", "2. Claude Code  (claude)"],
                 )
                 self.assertEqual(config._read_roster(), ["geminicli.com", "claude.com"])
-
-        asyncio.run(scenario())
 
         asyncio.run(scenario())

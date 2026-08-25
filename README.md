@@ -16,7 +16,6 @@ Wingmen requires Python 3.14 or later on macOS or Linux.
 
 ```bash
 wingmen
-# `wingwomen` is an equivalent alias.
 ```
 
 On first launch, choose the agents for your roster. Later launches restore that

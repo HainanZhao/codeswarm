@@ -80,7 +80,7 @@ class ConfigScreen(Screen[bool]):
         Binding("alt+up", "move_roster_up", "Move Agent Up", show=False),
         Binding("alt+down", "move_roster_down", "Move Agent Down", show=False),
     ]
-    AUTO_FOCUS = "#config-ui-theme"
+    AUTO_FOCUS = "#config-ui-prompt_message"
 
     app = getters.app(WingmenApp)
 

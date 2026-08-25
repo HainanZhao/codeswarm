@@ -11,7 +11,12 @@ SCHEMA: list[SchemaDict] = [
         "key": "ui",
         "type": "object",
         "fields": [
-            {"key": "theme", "type": "string", "default": "wingmen-black"},
+            {
+                "key": "theme",
+                "type": "string",
+                "default": "wingmen-black",
+                "editable": False,
+            },
             {
                 "key": "prompt_message",
                 "type": "string",

@@ -33,6 +33,74 @@ _CATALOG = {
 
 
 class StoreScreenTests(unittest.TestCase):
+    def test_landing_logo_is_an_airplane_wingmen_formation(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ), patch(
+                    "wingmen.screens.store.read_agents",
+                    new=AsyncMock(return_value=_CATALOG),
+                ), patch(
+                    "wingmen.screens.store.available_identities",
+                    new=AsyncMock(return_value=set(_CATALOG)),
+                ), patch(
+                    "wingmen.screens.store.detect_preferred_agents",
+                    new=AsyncMock(return_value=[]),
+                ):
+                    async with WingmenApp(mode="store", setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        await pilot.pause(0.2)
+                        logos = list(pilot.app.screen.query("#wingmen-formation"))
+                        self.assertEqual(len(logos), 1)
+                        logo = logos[0]
+                        lines = logo.render().plain.splitlines()
+
+                        self.assertEqual(sum(line.count("✈") for line in lines), 5)
+                        self.assertEqual([line.count("✈") for line in lines], [1, 2, 2])
+                        self.assertLess(lines[0].index("✈"), lines[1].rindex("✈"))
+
+        asyncio.run(scenario())
+
+    def test_notifications_before_the_conversation_prompt_remain_toasts(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ), patch(
+                    "wingmen.screens.store.read_agents",
+                    new=AsyncMock(return_value=_CATALOG),
+                ), patch(
+                    "wingmen.screens.store.available_identities",
+                    new=AsyncMock(return_value=set(_CATALOG)),
+                ), patch(
+                    "wingmen.screens.store.detect_preferred_agents",
+                    new=AsyncMock(return_value=[]),
+                ):
+                    async with WingmenApp(mode="store", setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        await pilot.pause(0.2)
+                        pilot.app._notifications.clear()
+
+                        pilot.app.screen.notify(
+                            "Install the agent CLI",
+                            title="Agent unavailable",
+                            severity="warning",
+                        )
+                        await pilot.pause()
+
+                        notifications = list(pilot.app._notifications)
+                        self.assertEqual(len(notifications), 1)
+                        self.assertEqual(
+                            notifications[0].message, "Install the agent CLI"
+                        )
+
+        asyncio.run(scenario())
+
     def test_click_toggles_agent_roster_selection(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:

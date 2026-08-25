@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from pathlib import Path
 import shlex
@@ -10,6 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from typing import cast
 
 from textual import events
+from textual.color import Color
 
 from wingmen.acp.agent import Agent, LOG_TRUNCATED_MESSAGE, MAX_INFLIGHT_AGENT_REQUESTS
 from wingmen.agent import AgentFail, AgentReady
@@ -116,6 +118,26 @@ class _StoppingSession:
 
 
 class AgentLifecycleTests(unittest.TestCase):
+    def test_default_theme_uses_teal_as_its_primary_accent(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        primary = Color.parse(pilot.app.current_theme.primary)
+                        secondary = Color.parse(pilot.app.current_theme.secondary)
+
+                        for color in (primary, secondary):
+                            self.assertGreater(color.g, color.b)
+                            self.assertGreater(color.b, color.r)
+                            self.assertGreater(color.g - color.r, 100)
+
+        asyncio.run(scenario())
+
     def test_first_prompt_includes_wingmen_operating_instructions(self) -> None:
         async def scenario() -> None:
             data = cast(
@@ -308,6 +330,33 @@ class AgentLifecycleTests(unittest.TestCase):
                         )
 
                 self.assertEqual(config_path.read_text(encoding="utf-8"), "not valid json")
+
+        asyncio.run(scenario())
+
+    def test_unsupported_saved_theme_is_migrated_before_styles_load(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                config_path = Path(state_dir) / "wingmen" / "wingmen.json"
+                config_path.parent.mkdir()
+                config_path.write_text(
+                    json.dumps({"ui": {"theme": "textual-dark"}}),
+                    encoding="utf-8",
+                )
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(mode="store").run_test(
+                        size=(120, 40)
+                    ) as app:
+                        self.assertEqual(
+                            app.app.settings.get("ui.theme", str),
+                            "wingmen-black",
+                        )
+                        self.assertEqual(app.app.current_theme.name, "wingmen-black")
+
+                saved = json.loads(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(saved["ui"]["theme"], "wingmen-black")
 
         asyncio.run(scenario())
 

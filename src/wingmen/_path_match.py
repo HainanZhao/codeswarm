@@ -3,6 +3,8 @@ from operator import itemgetter
 import re
 from typing import Iterable, Sequence
 
+MAX_MATCH_COMBINATIONS = 4096
+
 
 class PathFuzzySearch:
     """Performs a fuzzy search.
@@ -103,10 +105,12 @@ class PathFuzzySearch:
                 return
             position = positions[0] + 1
 
-        possible_offsets: list[list[int]] = []
         query_length = len(query)
+        match_count = 0
 
-        def get_offsets(offsets: list[int], positions_index: int) -> None:
+        def get_offsets(
+            offsets: list[int], positions_index: int
+        ) -> Iterable[list[int]]:
             """Recursively match offsets.
 
             Args:
@@ -114,16 +118,19 @@ class PathFuzzySearch:
                 positions_index: Index of query letter.
 
             """
+            nonlocal match_count
             for offset in letter_positions[positions_index]:
+                if match_count >= MAX_MATCH_COMBINATIONS:
+                    return
                 if not offsets or offset > offsets[-1]:
                     new_offsets = [*offsets, offset]
                     if len(new_offsets) == query_length:
-                        possible_offsets.append(new_offsets)
+                        match_count += 1
+                        yield new_offsets
                     else:
-                        get_offsets(new_offsets, positions_index + 1)
+                        yield from get_offsets(new_offsets, positions_index + 1)
 
-        get_offsets([], 0)
-        for offsets in possible_offsets:
+        for offsets in get_offsets([], 0):
             yield score(candidate, offsets), offsets
 
 

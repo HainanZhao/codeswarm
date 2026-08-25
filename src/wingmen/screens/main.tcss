@@ -1,8 +1,11 @@
 
 Note,MarkdownNote {    
     padding: 0 1 0 0;
+    background: $primary 5%;
+    border-left: solid $primary 45%;
     &.-error {
-        border: heavy $error;
+        background: $error 7%;
+        border-left: solid $error;
     }    
     &.-stop-reason {
         border: wide $error 50%;
@@ -88,44 +91,53 @@ Conversation {
 
     AgentMessage {
         height: auto;
-        padding: 1;
+        padding: 0 1 0 1;
         background: $foreground 4%;
+        border-left: solid $primary;
+        border-bottom: solid $primary 25%;
 
         &.-agent-tone-0 {
-            background: $agent-tone-0 8%;
+            background: $agent-tone-0 5%;
+            border-left: solid $agent-tone-0;
+            border-bottom: solid $agent-tone-0 25%;
         }
         &.-agent-tone-1 {
-            background: $agent-tone-1 8%;
+            background: $agent-tone-1 5%;
+            border-left: solid $agent-tone-1;
+            border-bottom: solid $agent-tone-1 25%;
         }
         &.-agent-tone-2 {
-            background: $agent-tone-2 8%;
+            background: $agent-tone-2 5%;
+            border-left: solid $agent-tone-2;
+            border-bottom: solid $agent-tone-2 25%;
         }
         &.-agent-tone-3 {
-            background: $agent-tone-3 8%;
+            background: $agent-tone-3 5%;
+            border-left: solid $agent-tone-3;
+            border-bottom: solid $agent-tone-3 25%;
         }
 
         &.block {
-            margin: 1 1 0 0;
+            margin: 0 1 0 0;
         }
 
         #agent-message-header {
             height: 1;
-            width: auto;
-            max-width: 1fr;
+            width: 1fr;
             margin: 0;
             padding: 0 1;
 
             &.-agent-tone-0 {
-                background: $agent-tone-0 42%;
+                background: $agent-tone-0 16%;
             }
             &.-agent-tone-1 {
-                background: $agent-tone-1 42%;
+                background: $agent-tone-1 16%;
             }
             &.-agent-tone-2 {
-                background: $agent-tone-2 42%;
+                background: $agent-tone-2 16%;
             }
             &.-agent-tone-3 {
-                background: $agent-tone-3 42%;
+                background: $agent-tone-3 16%;
             }
         }
 
@@ -140,7 +152,8 @@ Conversation {
                 height: 1;
                 width: 1fr;
                 margin: 0 1 0 0;
-                color: $text-secondary;
+                color: $primary;
+                text-style: dim;
                 text-overflow: ellipsis;
             }
 
@@ -180,12 +193,13 @@ Conversation {
     }
 
     AgentThought {
-        background: $primary-muted 20%;
+        background: $primary 6%;
         color: $text-primary;        
         min-height: 1;        
-        margin: 1 1 1 0;              
+        margin: 1 1 1 0;
         padding:  0 1 0 1;
-        border: blank transparent;
+        border-left: solid $primary 50%;
+        border-bottom: solid $primary 20%;
         overflow-x: auto;
         scrollbar-size-horizontal: 0;
         layout: stream;
@@ -195,6 +209,7 @@ Conversation {
        
         &.-loading {            
             background: transparent !important;
+            border: none;
             padding: 0;
             margin: 0;            
         }
@@ -208,7 +223,9 @@ Conversation {
     }
 
     ToolCall {    
-        margin: 0 0 0 1 !important;        
+        margin: 0 !important;
+        padding-left: 1;
+        border-left: solid $primary 25%;
         
         width: 1fr;
         layout: stream;
@@ -250,7 +267,7 @@ Conversation {
         }
         
         ToolCallHeader {  
-            color: $text-secondary;   
+            color: $primary;
             pointer: pointer;       
             width: auto;
             max-width: 1fr;   
@@ -320,30 +337,19 @@ Conversation {
          
     UserInput {        
         height: auto;
-        margin: 1 1 1 0;
+        margin: 0 1 1 0;
         padding: 0;
         align: right top;
 
         #user-bubble {
             width: 80%;
             height: auto;
-            border-right: blank $success;
-            background: $success 14%;
-            padding: 1 0 1 1;
-
-            #user-content {
-                height: auto;
-            }
-
-            #user-queue-status {
-                height: 1;
-                margin: 0 1 0 1;
-                color: $text-secondary;
-                text-style: italic;
-            }
+            border-right: solid $primary;
+            background: $primary 10%;
+            padding: 0 0 0 1;
 
             Markdown {
-                padding: 0 0 0 1;
+                padding: 0;
             }
             Markdown > MarkdownBlock:last-child {
                 margin-bottom: 0;
@@ -353,7 +359,8 @@ Conversation {
             }
             #prompt {
                 margin: 0 0 0 1;
-                color: $text-success;
+                color: $primary;
+                text-style: bold;
             }
         }
     }
@@ -377,7 +384,7 @@ ACPToolCallContent {
 
 
 Prompt {            
-    padding: 0 0 0 0;    
+    padding: 0;
     height: auto;  
     dock: bottom;  
    
@@ -477,13 +484,13 @@ Prompt {
             background: white 40%;
         }
         height: auto;
-        margin: 0 0 1 0;
-        border: tall transparent;
+        margin: 0;
+        border-bottom: solid $secondary 45%;
         border-subtitle-align: left;
         border-subtitle-style: reverse;
         
         &:focus-within {
-            border: tall $secondary;            
+            border-bottom: solid $secondary;
             #prompt {
                 text-opacity: 100%;
             }
@@ -499,12 +506,24 @@ Prompt {
             background: transparent;
             border: none;
             height: auto;
-            max-height: 40vh;
+            max-height: 3;
 
             &:blur {
                 text-opacity: 0.5;
             }
         }
+    }
+
+    QueuedMessages {
+        display: none;
+        height: auto;
+        max-height: 4;
+        overflow: hidden auto;
+        margin: 0 1;
+        padding: 0 1;
+        color: $text-secondary;
+        background: $secondary 8%;
+        border-left: tall $secondary 45%;
     }
 
     &.-working-directory-out-of-bounds #info-container CondensedPath {        
@@ -514,7 +533,7 @@ Prompt {
     #info-container {                
         
         height: 1;
-        margin: 1 1;
+        margin: 0 1;
         # padding: 1 0;
         
         AgentInfo {

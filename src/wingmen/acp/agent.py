@@ -377,7 +377,7 @@ class Agent(AgentBase):
 
     def request(self) -> jsonrpc.Request:
         """Create a request object."""
-        return API.request(self.send)
+        return API.request(self.send, owner=self)
 
     def post_message(self, message: Message) -> bool:
         """Post a message to the message target (the Conversation).
@@ -909,7 +909,7 @@ class Agent(AgentBase):
 
                 if isinstance(agent_data, dict):
                     if "result" in agent_data or "error" in agent_data:
-                        API.process_response(agent_data)
+                        API.process_response(agent_data, owner=self)
                         continue
 
                 elif isinstance(agent_data, list):
@@ -920,7 +920,7 @@ class Agent(AgentBase):
                         isinstance(datum, dict) and ("result" in datum or "error" in datum)
                         for datum in agent_data
                     ):
-                        API.process_response(agent_data)
+                        API.process_response(agent_data, owner=self)
                         continue
 
                 if not isinstance(agent_data, dict):

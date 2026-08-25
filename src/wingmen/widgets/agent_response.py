@@ -137,7 +137,7 @@ class AgentToolActivity(containers.VerticalGroup, can_focus=True):
         raw_title = tool_data.get("title", "Tool call") if tool_data else "Tool call"
         title = " ".join(str(raw_title).split())[:160] or "Tool call"
         noun = "tool" if len(self._tools) == 1 else "tools"
-        prefix = "✓" if self._finalized else "🔧"
+        prefix = "SYS OK //" if self._finalized else "SYS //"
         self.summary.update(f"{prefix} {title} · {len(self._tools)} {noun}")
 
     @property
@@ -209,7 +209,7 @@ class AgentToolActivity(containers.VerticalGroup, can_focus=True):
 
 
 class AgentMessage(containers.Vertical):
-    """One agent reply with Slack-style attribution and response content."""
+    """One agent reply with flight-dashboard attribution and response content."""
 
     DEFAULT_CLASSES = "block"
 
@@ -227,7 +227,10 @@ class AgentMessage(containers.Vertical):
         self.tone_class = f"-agent-tone-{tone_index % 4}"
         self.add_class(self.tone_class)
         self.header = Content.assemble(
-            (speaker, f"$agent-tone-{tone_index % 4} bold"),
+            (
+                speaker,
+                f"$agent-tone-{tone_index % 4} bold",
+            ),
             (f" · {timestamp}", "dim"),
         )
 

@@ -85,6 +85,16 @@ class PromptContainer(containers.HorizontalGroup):
             prompt_text_area.focus()
 
 
+class QueuedMessages(Label):
+    """A compact holding area for prompts waiting behind an active turn."""
+
+    messages: var[tuple[str, ...]] = var(())
+
+    def watch_messages(self, messages: tuple[str, ...]) -> None:
+        self.display = bool(messages)
+        self.update("\n".join(messages))
+
+
 class PromptTextArea(HighlightedTextArea):
     HELP = """\
 ## Prompt
@@ -326,6 +336,7 @@ class Prompt(containers.VerticalGroup):
     mode_owner: var[str] = var("")
     modes: var[dict[str, Mode] | None] = var(None)
     status: var[str | Content] = var("")
+    queued_messages: var[tuple[str, ...]] = var(())
 
     app = getters.app(WingmenApp)
 
@@ -545,10 +556,25 @@ class Prompt(containers.VerticalGroup):
 
     @on(SlashComplete.Completed)
     def on_slash_complete_completed(self, event: SlashComplete.Completed) -> None:
+        event.stop()
+        self.show_slash_complete = False
         self.prompt_text_area.clear()
-        self.prompt_text_area.insert(f"{event.command} ")
+        self.prompt_text_area.insert(event.command)
         self.prompt_text_area.suggestion = ""
-        self.focus()
+        if event.submit:
+            if self.prompt_text_area.agent_ready:
+                self.post_message(UserInputSubmitted(event.command))
+                self.prompt_text_area.clear()
+            else:
+                self.prompt_text_area.action_submit()
+        else:
+            self.prompt_text_area.insert(" ")
+            self.focus()
+
+    @on(SlashComplete.Previewed)
+    def on_slash_complete_previewed(self, event: SlashComplete.Previewed) -> None:
+        event.stop()
+        self.text = event.command
 
     @on(messages.Dismiss)
     def on_dismiss(self, event: messages.Dismiss) -> None:
@@ -600,6 +626,7 @@ class Prompt(containers.VerticalGroup):
     def compose(self) -> ComposeResult:
         yield PathSearch(self.project_path).data_bind(root=Prompt.project_path)
         yield SlashComplete().data_bind(slash_commands=Prompt.slash_commands)
+        yield QueuedMessages(markup=False).data_bind(messages=Prompt.queued_messages)
         with PromptContainer(id="prompt-container"):
             yield Question()
             with containers.HorizontalGroup(id="text-prompt"):

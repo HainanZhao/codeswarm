@@ -14,34 +14,36 @@ class Flash(Static):
     DEFAULT_CSS = """
     Flash {
         height: 1;
-        width: 1fr;
-        background: $success 10%;
-        color: $text-success;
-        text-align: center;
+        width: 100%;
+        margin-bottom: 1;
+        padding: 0 1;
+        background: $primary 18%;
+        color: $primary;
+        text-align: left;
         visibility: hidden;
         text-wrap: nowrap;
         text-overflow: ellipsis;     
         # overlay: screen;
         # offset-y: -1;           
         &.-default {
-            background: $primary 10%;
-            color: $text-primary;
+            background: $primary 18%;
+            color: $primary;
         }
         
         &.-success {
-            background: $success 10%;
-            color: $text-success;
+            background: $primary 18%;
+            color: $primary;
         }
         
         
         &.-warning {
-            background: $warning 10%;
-            color: $text-warning;
+            background: $primary 18%;
+            color: $primary;
         }
 
         &.-error {
-            background: $error 10%;
-            color: $text-error;
+            background: $primary 18%;
+            color: $primary;
         }
     }
     """

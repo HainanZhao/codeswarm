@@ -28,7 +28,9 @@ from wingmen.widgets import agent_response as agent_response_widget
 from wingmen.widgets.markdown_note import MarkdownNote
 from wingmen.widgets.note import Note
 from wingmen.widgets.path_search import PathSearch
-from wingmen.widgets.prompt import AgentInfo, InvokeFileSearch
+from wingmen.widgets.prompt import AgentInfo, InvokeFileSearch, QueuedMessages
+from wingmen.widgets.flash import Flash
+from wingmen.screens.config import ConfigScreen
 from wingmen.screens.permissions import PermissionsQuestion
 from wingmen.answer import Answer
 from wingmen.widgets.terminal_tool import TerminalTool
@@ -159,7 +161,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             first_status = flash.call_args.args[0]
                             self.assertEqual(
                                 first_status.plain,
-                                "Claude connected · Waiting for Gemini",
+                                "COMMS // Claude LINK ESTABLISHED · AWAITING Gemini",
                             )
                             self.assertFalse(conversation.agent_ready)
 
@@ -167,7 +169,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             final_status = flash.call_args.args[0]
                             self.assertEqual(
                                 final_status.plain,
-                                "Claude and Gemini connected",
+                                "FORMATION // Claude + Gemini ON STATION",
                             )
                             self.assertTrue(conversation.agent_ready)
 
@@ -245,6 +247,71 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                 for child in conversation.contents.children
                             ),
                         )
+
+        asyncio.run(scenario())
+
+    def test_returning_relay_agent_starts_with_a_fresh_timer(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        claude = _RosterAgent("Claude")
+                        gemini = _RosterAgent("Gemini")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.com",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                claude,  # type: ignore[arg-type]
+                            ),
+                            RosterEntry(
+                                AgentData(
+                                    identity="gemini.google.com",
+                                    name="Gemini",
+                                    short_name="gemini",
+                                ),
+                                gemini,  # type: ignore[arg-type]
+                            ),
+                        ]
+                        conversation._ready_agents = {id(claude), id(gemini)}
+                        conversation.session.relay = RelayConversation(
+                            (claude, gemini)  # type: ignore[arg-type]
+                        )
+
+                        clock = Mock(return_value=100.0)
+                        with patch("wingmen.widgets.conversation.monotonic", clock):
+                            await conversation._label_relay_turn_start(
+                                1, claude  # type: ignore[arg-type]
+                            )
+                            clock.return_value = 105.0
+                            await conversation._label_relay_turn(
+                                1, claude, "first"  # type: ignore[arg-type]
+                            )
+
+                            await conversation._label_relay_turn_start(
+                                2, gemini  # type: ignore[arg-type]
+                            )
+                            clock.return_value = 108.0
+                            await conversation._label_relay_turn(
+                                2, gemini, "second"  # type: ignore[arg-type]
+                            )
+
+                            await conversation._label_relay_turn_start(
+                                3, claude  # type: ignore[arg-type]
+                            )
+
+                            self.assertIn(
+                                "● Claude · 0:00", conversation.agent_info.plain
+                            )
+                            conversation._finish_agent_status(claude)  # type: ignore[arg-type]
 
         asyncio.run(scenario())
 
@@ -572,7 +639,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_user_message_is_a_right_aligned_green_bubble(self) -> None:
+    def test_user_message_is_a_right_aligned_hud_uplink(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
@@ -596,9 +663,163 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertEqual(
                             bubble.region.right, message.content_region.right
                         )
-                        self.assertEqual(bubble.styles.background.rgb, (163, 190, 140))
-                        self.assertEqual(bubble.styles.background.a, 0.14)
-                        self.assertEqual(bubble.query_one("#prompt").id, "prompt")
+                        self.assertEqual(bubble.styles.background.rgb, (45, 212, 191))
+                        self.assertEqual(bubble.styles.background.a, 0.10)
+                        self.assertEqual(bubble.styles.border_top[0], "")
+                        self.assertEqual(bubble.styles.border_right[0], "solid")
+                        self.assertEqual(bubble.styles.padding.top, 0)
+                        self.assertEqual(bubble.styles.padding.bottom, 0)
+                        self.assertEqual(
+                            bubble.query_one("#prompt").render().plain,
+                            "TX ▸",
+                        )
+
+        asyncio.run(scenario())
+
+    def test_prompt_footer_uses_compact_vertical_spacing(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        prompt_container = conversation.prompt.query_one(
+                            "#prompt-container"
+                        )
+                        info_container = conversation.prompt.query_one(
+                            "#info-container"
+                        )
+                        self.assertEqual(prompt_container.size.height, 1)
+                        self.assertEqual(prompt_container.styles.border_top[0], "")
+                        self.assertEqual(
+                            prompt_container.styles.border_bottom[0], "solid"
+                        )
+                        self.assertEqual(prompt_container.styles.border_left[0], "")
+                        self.assertEqual(conversation.prompt.styles.padding.bottom, 0)
+                        self.assertEqual(prompt_container.styles.margin.bottom, 0)
+                        self.assertEqual(info_container.styles.margin.top, 0)
+                        self.assertEqual(info_container.styles.margin.bottom, 0)
+                        self.assertEqual(
+                            conversation.prompt.prompt_text_area.styles.padding.right,
+                            1,
+                        )
+
+                        conversation.prompt.text = "\n".join(
+                            f"line {index}" for index in range(10)
+                        )
+                        await pilot.pause()
+                        self.assertLessEqual(
+                            conversation.prompt.prompt_text_area.size.height, 3
+                        )
+
+        asyncio.run(scenario())
+
+    def test_tab_advances_the_open_slash_command_popup(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        prompt = conversation.prompt
+                        prompt.slash_commands = [
+                            SlashCommand("/alpha", "First command"),
+                            SlashCommand("/bravo", "Second command"),
+                        ]
+                        prompt.text = "/"
+                        prompt.show_slash_complete = True
+                        await pilot.pause()
+
+                        popup = prompt.slash_complete
+                        self.assertTrue(popup.input.has_focus)
+                        self.assertEqual(popup.option_list.highlighted, 0)
+
+                        await pilot.press("tab")
+
+                        self.assertTrue(prompt.show_slash_complete)
+                        self.assertTrue(popup.input.has_focus)
+                        self.assertEqual(popup.option_list.highlighted, 1)
+                        self.assertEqual(prompt.text, "/bravo")
+
+        asyncio.run(scenario())
+
+    def test_enter_executes_an_argument_free_slash_command_from_the_popup(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        prompt = conversation.prompt
+                        prompt.agent_ready = True
+                        prompt.slash_commands = [
+                            SlashCommand("/config", "Configure Wingmen preferences")
+                        ]
+                        prompt.text = "/"
+                        prompt.show_slash_complete = True
+                        await pilot.pause()
+
+                        await pilot.press("enter")
+                        await pilot.pause(0.1)
+
+                        self.assertIsInstance(pilot.app.screen, ConfigScreen)
+                        self.assertEqual(prompt.text, "")
+
+        asyncio.run(scenario())
+
+    def test_conversation_notifications_use_a_spaced_full_width_flash_ribbon(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        await pilot.pause()
+                        pilot.app._notifications.clear()
+
+                        conversation.notify(
+                            "Mode could not be synchronized",
+                            title="Set Mode",
+                            severity="error",
+                        )
+                        await pilot.pause()
+
+                        ribbon = conversation.query_one(Flash)
+                        self.assertTrue(ribbon.visible)
+                        self.assertEqual(
+                            ribbon.render().plain,
+                            "Set Mode: Mode could not be synchronized",
+                        )
+                        self.assertTrue(ribbon.has_class("-error"))
+                        self.assertEqual(
+                            ribbon.styles.background.rgb,
+                            Color.parse(pilot.app.current_theme.primary).rgb,
+                        )
+                        self.assertEqual(ribbon.styles.background.a, 0.18)
+                        self.assertEqual(
+                            ribbon.outer_size.width, conversation.content_region.width
+                        )
+                        self.assertEqual(
+                            conversation.prompt.region.y - ribbon.region.bottom,
+                            1,
+                        )
+                        self.assertEqual(len(pilot.app._notifications), 0)
 
         asyncio.run(scenario())
 
@@ -623,6 +844,28 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             "wingmen-shell-smoke", terminal.tool_state.output
                         )
                         self.assertFalse(conversation._local_shells)
+
+        asyncio.run(scenario())
+
+    def test_flash_severities_share_the_teal_hud_palette(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        ribbon = conversation.query_one(Flash)
+                        primary = Color.parse(pilot.app.current_theme.primary).rgb
+
+                        for style in ("success", "warning", "error"):
+                            conversation.flash("HUD status", style=style)
+                            await pilot.pause()
+                            self.assertEqual(ribbon.styles.background.rgb, primary)
+                            self.assertEqual(ribbon.styles.color.rgb, primary)
 
         asyncio.run(scenario())
 
@@ -669,10 +912,13 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertEqual(response.styles.padding.left, 0)
                         self.assertEqual(response.styles.padding.right, 0)
                         self.assertEqual(response.styles.padding.bottom, 0)
-                        self.assertEqual(response.parent.styles.padding.top, 1)
+                        self.assertEqual(response.parent.styles.padding.top, 0)
                         self.assertEqual(response.parent.styles.padding.left, 1)
                         self.assertEqual(response.parent.styles.padding.right, 1)
-                        self.assertEqual(response.parent.styles.padding.bottom, 1)
+                        self.assertEqual(response.parent.styles.padding.bottom, 0)
+                        self.assertEqual(response.parent.styles.border_left[0], "solid")
+                        self.assertEqual(response.parent.styles.border_bottom[0], "solid")
+                        self.assertEqual(response.parent.styles.margin.top, 0)
                         self.assertEqual(response.parent.styles.margin.bottom, 0)
 
         asyncio.run(scenario())
@@ -1018,7 +1264,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertTrue(activity.summary.display)
                         self.assertEqual(
                             activity.summary.render().plain,
-                            "🔧 Run focused tests · 2 tools",
+                            "SYS // Run focused tests · 2 tools",
                         )
 
                         activity.focus()
@@ -1138,7 +1384,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         assert summary is not None
                         self.assertEqual(
                             summary.render().plain,
-                            "✓ Run Tests · 2 tools · 14s",
+                            "SYS OK // Run Tests · 2 tools · 14s",
                         )
                         self.assertTrue(summary.display)
                         self.assertTrue(
@@ -1207,7 +1453,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             for response in responses
                         ]
                         expected_colors = (
-                            "#88C0D0",
+                            "#2DD4BF",
                             "#EBCB8B",
                             "#A3BE8C",
                             "#D08770",
@@ -1223,20 +1469,20 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                 Color.parse(expected_color).rgb,
                             )
                             self.assertAlmostEqual(
-                                response.parent.styles.background.a, 0.08
+                                response.parent.styles.background.a, 0.05
                             )
                             self.assertTrue(header.has_class(f"-agent-tone-{index}"))
                             self.assertEqual(
                                 header.styles.background.rgb,
                                 Color.parse(expected_color).rgb,
                             )
-                            self.assertAlmostEqual(header.styles.background.a, 0.42)
+                            self.assertAlmostEqual(header.styles.background.a, 0.16)
                             available_width = (
                                 response.parent.size.width
                                 - response.parent.styles.padding.left
                                 - response.parent.styles.padding.right
                             )
-                            self.assertLess(header.size.width, available_width)
+                            self.assertEqual(header.size.width, available_width)
                         self.assertEqual(
                             [
                                 header.render().spans[0].style
@@ -1398,7 +1644,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
             command.command: command for command in conversation._build_slash_commands()
         }
 
-        self.assertEqual(commands["/about"].help, "About Wingmen and multi-agent relays")
+        self.assertEqual(commands["/about"].help, "An agent-defined about command")
         self.assertEqual(commands["/help"].help, "Show Wingmen commands")
         self.assertEqual(commands["/config"].help, "Configure Wingmen preferences")
         self.assertEqual(commands["/agent"].help, "Manage the relay roster")
@@ -1420,6 +1666,15 @@ class ConversationACPDispatchTests(unittest.TestCase):
         local_commands.add("/pause")
         for command in local_commands:
             self.assertIn(f"`{command}", manual)
+        self.assertNotIn("`/about`", manual)
+
+    def test_about_is_not_a_local_wingmen_command(self) -> None:
+        conversation = Conversation(Path.cwd())
+        conversation.agent_slash_commands = [
+            SlashCommand("/about", "Agent-owned command")
+        ]
+
+        self.assertFalse(asyncio.run(conversation.slash_command("/about")))
 
     def test_concise_and_legacy_agent_commands_use_the_local_roster_handler(self) -> None:
         async def scenario() -> None:
@@ -1724,11 +1979,96 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             )
 
                         flash.assert_not_called()
-                        queued_message = conversation.query(UserInput).last()
                         self.assertEqual(
-                            queued_message.queue_status.render().plain,
-                            "Queued for Gemini",
+                            conversation.queued_messages,
+                            ("TX HOLD // Gemini · use the existing parser",),
                         )
+                        self.assertEqual(list(conversation.query(UserInput)), [])
+
+                        await conversation._label_queued_relay_turn_start(
+                            2, gemini, "use the existing parser", False  # type: ignore[arg-type]
+                        )
+                        self.assertEqual(conversation.queued_messages, ())
+                        self.assertEqual(
+                            conversation.query(UserInput).last().content,
+                            "use the existing parser",
+                        )
+
+        asyncio.run(scenario())
+
+    def test_queued_message_renders_user_markup_literally(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        conversation.queued_messages = (
+                            "TX HOLD // Claude · [red]literal[/red]",
+                        )
+                        await pilot.pause()
+
+                        queued = conversation.query_one(QueuedMessages)
+                        self.assertEqual(
+                            queued.render().plain,
+                            "TX HOLD // Claude · [red]literal[/red]",
+                        )
+
+        asyncio.run(scenario())
+
+    def test_dropping_agent_removes_its_queued_message_preview(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        claude = _RosterAgent("Claude")
+                        gemini = _RosterAgent("Gemini")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.ai",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                claude,  # type: ignore[arg-type]
+                            ),
+                            RosterEntry(
+                                AgentData(
+                                    identity="gemini.google.com",
+                                    name="Gemini",
+                                    short_name="gemini",
+                                ),
+                                gemini,  # type: ignore[arg-type]
+                            ),
+                        ]
+                        conversation.session._build_relay(
+                            on_queued_turn_discarded=(
+                                conversation._discard_queued_prompt
+                            )
+                        )
+                        relay = conversation.session.relay
+                        assert relay is not None
+                        relay.last_active_index = 1
+
+                        self.assertTrue(relay.enqueue_human("check the parser"))
+                        conversation._add_queued_prompt(
+                            "check the parser", False, "Queued for Gemini"
+                        )
+                        self.assertTrue(conversation.queued_messages)
+
+                        await conversation.session.drop(1)
+
+                        self.assertEqual(conversation.queued_messages, ())
 
         asyncio.run(scenario())
 
@@ -1755,6 +2095,10 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             list(conversation._pending_solo_prompts),
                             ["Follow up after this"],
                         )
+                        self.assertEqual(
+                            conversation.queued_messages,
+                            ("TX HOLD // ACTIVE WINGMAN · Follow up after this",),
+                        )
 
                         with patch.object(
                             conversation, "send_prompt_to_agent"
@@ -1764,6 +2108,11 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         send_prompt.assert_called_once_with("Follow up after this")
                         self.assertEqual(conversation.turn, "agent")
                         self.assertEqual(list(conversation._pending_solo_prompts), [])
+                        self.assertEqual(conversation.queued_messages, ())
+                        self.assertEqual(
+                            conversation.query(UserInput).last().content,
+                            "Follow up after this",
+                        )
 
         asyncio.run(scenario())
 
@@ -1782,6 +2131,14 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             await conversation.agent_turn_over("end_turn")
 
                         notify.assert_called_once()
+                        self.assertEqual(
+                            notify.call_args.args,
+                            ("MISSION COMPLETE // Agent",),
+                        )
+                        self.assertEqual(
+                            notify.call_args.kwargs["title"],
+                            "AWAITING ORDERS",
+                        )
                         self.assertNotIn("sound", notify.call_args.kwargs)
 
         asyncio.run(scenario())
@@ -1796,7 +2153,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         self.assertTrue(
             conversation._queue_solo_prompt_if_busy(
-                "one too many", UserInput("one too many")
+                "one too many"
             )
         )
         self.assertEqual(len(conversation._pending_solo_prompts), MAX_QUEUED_PROMPTS)
@@ -1935,9 +2292,9 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         conversation.session.mark_failed.assert_not_called()
                         conversation.notify.assert_not_called()
                         conversation.post.assert_not_awaited()
-                        self.assertIn(
-                            "reconnecting",
-                            conversation.flash.call_args.args[0].lower(),
+                        self.assertEqual(
+                            conversation.flash.call_args.args[0],
+                            "COMMS LOST // Gemini · REACQUIRING LINK",
                         )
 
         asyncio.run(scenario())
@@ -1957,8 +2314,32 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
             self.assertEqual(conversation.turn, "agent")
             session.resume.assert_called_once()
+            conversation.flash.assert_called_once_with(
+                "FORMATION // FLIGHT RESUMED",
+                style="success",
+            )
             conversation.send_prompt_to_agent.assert_called_once_with(
                 "Resume the collaboration from the current shared workspace."
+            )
+
+        asyncio.run(scenario())
+
+    def test_pausing_a_relay_uses_flight_status_copy(self) -> None:
+        async def scenario() -> None:
+            conversation = Conversation(Path.cwd())
+            session = Mock()
+            session.relay_active = True
+            session.active_agents = []
+            conversation.session = session
+            conversation.flash = Mock()  # type: ignore[method-assign]
+
+            await conversation.action_toggle_pause.__wrapped__(conversation)
+
+            self.assertTrue(conversation.relay_paused)
+            session.pause.assert_called_once()
+            conversation.flash.assert_called_once_with(
+                "FORMATION // HOLDING PATTERN",
+                style="warning",
             )
 
         asyncio.run(scenario())
@@ -2132,7 +2513,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         # an agent as normal conversation turns.
                         with patch.object(conversation, "send_prompt_to_agent") as send:
                             conversation.post_message(
-                                messages.UserInputSubmitted("/about")
+                                messages.UserInputSubmitted("/help")
                             )
                             await pilot.pause(0.2)
                             send.assert_not_called()
