@@ -69,24 +69,19 @@ Conversation {
         height: auto;
         padding: 0 1 0 1;
         background: $foreground 4%;
-        border-left: vkey $primary;
-        border-bottom: solid $primary 25%;
+        border-left: vkey $primary 25%;
 
         &.-agent-tone-0 {
-            border-left: vkey $text-primary;
-            border-bottom: solid $text-primary 25%;
+            border-left: vkey $text-primary 25%;
         }
         &.-agent-tone-1 {
-            border-left: vkey $agent-tone-1;
-            border-bottom: solid $agent-tone-1 25%;
+            border-left: vkey $agent-tone-1 25%;
         }
         &.-agent-tone-2 {
-            border-left: vkey $agent-tone-2;
-            border-bottom: solid $agent-tone-2 25%;
+            border-left: vkey $agent-tone-2 25%;
         }
         &.-agent-tone-3 {
-            border-left: vkey $agent-tone-3;
-            border-bottom: solid $agent-tone-3 25%;
+            border-left: vkey $agent-tone-3 25%;
         }
 
         &.block {
@@ -94,7 +89,6 @@ Conversation {
         }
 
         &.-continues {
-            border-bottom: none;
             margin-bottom: 0;
         }
 

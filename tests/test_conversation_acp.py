@@ -946,7 +946,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertEqual(response.parent.styles.padding.right, 1)
                         self.assertEqual(response.parent.styles.padding.bottom, 0)
                         self.assertEqual(response.parent.styles.border_left[0], "vkey")
-                        self.assertEqual(response.parent.styles.border_bottom[0], "solid")
+                        self.assertEqual(response.parent.styles.border_bottom[0], "")
                         self.assertEqual(response.parent.styles.margin.top, 0)
                         self.assertEqual(response.parent.styles.margin.bottom, 1)
 
@@ -1636,8 +1636,12 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                 Color.parse(expected_color).rgb,
                             )
                             self.assertEqual(
-                                response.parent.styles.border_bottom[1].rgb,
-                                Color.parse(expected_color).rgb,
+                                response.parent.styles.border_left[1].a,
+                                0.25,
+                            )
+                            self.assertEqual(
+                                response.parent.styles.border_bottom[0],
+                                "",
                             )
                         self.assertEqual(
                             [
