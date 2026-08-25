@@ -83,21 +83,41 @@ Conversation {
             background: $agent-tone-0 5%;
             border-left: solid $agent-tone-0;
             border-bottom: solid $agent-tone-0 25%;
+
+            #tool-activity-summary,
+            ToolCallHeader {
+                color: $agent-tone-0;
+            }
         }
         &.-agent-tone-1 {
             background: $agent-tone-1 5%;
             border-left: solid $agent-tone-1;
             border-bottom: solid $agent-tone-1 25%;
+
+            #tool-activity-summary,
+            ToolCallHeader {
+                color: $agent-tone-1;
+            }
         }
         &.-agent-tone-2 {
             background: $agent-tone-2 5%;
             border-left: solid $agent-tone-2;
             border-bottom: solid $agent-tone-2 25%;
+
+            #tool-activity-summary,
+            ToolCallHeader {
+                color: $agent-tone-2;
+            }
         }
         &.-agent-tone-3 {
             background: $agent-tone-3 5%;
             border-left: solid $agent-tone-3;
             border-bottom: solid $agent-tone-3 25%;
+
+            #tool-activity-summary,
+            ToolCallHeader {
+                color: $agent-tone-3;
+            }
         }
 
         &.block {
@@ -152,12 +172,6 @@ Conversation {
                 margin: 0 !important;
             }
 
-            &:focus {
-                #tool-activity-summary,
-                ToolCallHeader {
-                    color: $text-primary;
-                }
-            }
         }
     }
 
@@ -176,6 +190,74 @@ Conversation {
         MarkdownHorizontalRule {
             padding-top: 0;
             margin-bottom: 0;
+        }
+
+        &.-agent-tone-0 {
+            MarkdownH1, MarkdownH2, MarkdownH3,
+            MarkdownH4, MarkdownH5, MarkdownH6 {
+                color: $agent-tone-0;
+            }
+            MarkdownBlockQuote {
+                border-left: outer $agent-tone-0 50%;
+            }
+            MarkdownHorizontalRule {
+                border-bottom: solid $agent-tone-0 45%;
+            }
+            MarkdownBlock > .code_inline {
+                color: $agent-tone-0;
+                background: $agent-tone-0 10%;
+            }
+        }
+
+        &.-agent-tone-1 {
+            MarkdownH1, MarkdownH2, MarkdownH3,
+            MarkdownH4, MarkdownH5, MarkdownH6 {
+                color: $agent-tone-1;
+            }
+            MarkdownBlockQuote {
+                border-left: outer $agent-tone-1 50%;
+            }
+            MarkdownHorizontalRule {
+                border-bottom: solid $agent-tone-1 45%;
+            }
+            MarkdownBlock > .code_inline {
+                color: $agent-tone-1;
+                background: $agent-tone-1 10%;
+            }
+        }
+
+        &.-agent-tone-2 {
+            MarkdownH1, MarkdownH2, MarkdownH3,
+            MarkdownH4, MarkdownH5, MarkdownH6 {
+                color: $agent-tone-2;
+            }
+            MarkdownBlockQuote {
+                border-left: outer $agent-tone-2 50%;
+            }
+            MarkdownHorizontalRule {
+                border-bottom: solid $agent-tone-2 45%;
+            }
+            MarkdownBlock > .code_inline {
+                color: $agent-tone-2;
+                background: $agent-tone-2 10%;
+            }
+        }
+
+        &.-agent-tone-3 {
+            MarkdownH1, MarkdownH2, MarkdownH3,
+            MarkdownH4, MarkdownH5, MarkdownH6 {
+                color: $agent-tone-3;
+            }
+            MarkdownBlockQuote {
+                border-left: outer $agent-tone-3 50%;
+            }
+            MarkdownHorizontalRule {
+                border-bottom: solid $agent-tone-3 45%;
+            }
+            MarkdownBlock > .code_inline {
+                color: $agent-tone-3;
+                background: $agent-tone-3 10%;
+            }
         }
     }
 

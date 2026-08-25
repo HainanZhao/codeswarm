@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Markdown headings, quote rails, rules, inline code, and tool activity inside
+  an agent bubble now use that bubble's roster tone instead of the first
+  agent's global teal accent.
 - Live tool changes no longer briefly resize the active agent message and jump
   the conversation window; tool history stays hidden behind its fixed one-row
   summary until deliberately focused.

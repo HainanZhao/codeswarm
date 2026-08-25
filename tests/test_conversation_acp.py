@@ -7,7 +7,11 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from textual.color import Color
-from textual.widgets._markdown import MarkdownHorizontalRule
+from textual.widgets._markdown import (
+    MarkdownBlockQuote,
+    MarkdownH1,
+    MarkdownHorizontalRule,
+)
 
 from wingmen.acp import messages as acp_messages
 from wingmen.acp.agent import Mode
@@ -1624,6 +1628,64 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                 for header in headers
                             ],
                             [f"$agent-tone-{index} bold" for index in range(4)],
+                        )
+
+        asyncio.run(scenario())
+
+    def test_agent_reply_markdown_accents_follow_the_bubble_tone(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        claude = _RosterAgent("Claude")
+                        gemini = _RosterAgent("Gemini")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.ai",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                claude,  # type: ignore[arg-type]
+                            ),
+                            RosterEntry(
+                                AgentData(
+                                    identity="gemini.google.com",
+                                    name="Gemini",
+                                    short_name="gemini",
+                                ),
+                                gemini,  # type: ignore[arg-type]
+                            ),
+                        ]
+                        conversation.begin_agent_output(gemini)  # type: ignore[arg-type]
+                        response = await conversation.post_agent_response(
+                            "# Heading\n\n> Quoted detail\n\n---\n\nBody"
+                        )
+                        assert response is not None
+                        await pilot.pause(0.1)
+
+                        tone = Color.parse("#FB7185").rgb
+                        self.assertEqual(
+                            response.query_one(MarkdownH1).styles.color.rgb,
+                            tone,
+                        )
+                        self.assertEqual(
+                            response.query_one(MarkdownBlockQuote)
+                            .styles.border_left[1]
+                            .rgb,
+                            tone,
+                        )
+                        self.assertEqual(
+                            response.query_one(MarkdownHorizontalRule)
+                            .styles.border_bottom[1]
+                            .rgb,
+                            tone,
                         )
 
         asyncio.run(scenario())
