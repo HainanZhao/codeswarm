@@ -216,8 +216,6 @@ it is never sent to an agent. Press `Ctrl+C` to stop a running command.
 | `/pause` | Pause or resume the multi-agent relay. |
 | `/mode` | Open the mode picker. |
 | `/mode chat` | Enter Chat mode directly. |
-| `/clear` | Clear the visible transcript. |
-| `/clear N` | Clear the transcript while preserving `N` recent lines. |
 | `/close` | Close this workspace and return to agent selection. |
 
 Roster member 1 owns the session and cannot be dropped; use `/close` instead.

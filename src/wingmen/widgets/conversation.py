@@ -1524,11 +1524,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             SlashCommand("/config", "Configure Wingmen preferences"),
             SlashCommand("/mode", "Open the mode picker"),
             SlashCommand(
-                "/clear",
-                "Clear conversation window",
-                "<optional number of lines to preserve>",
-            ),
-            SlashCommand(
                 "/close",
                 "Close the current session",
             ),
@@ -2093,7 +2088,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 - `/mode` — choose one mode for every active agent
 - `/mode chat` — chat without workspace inspection or tools
 - `/pause` — pause or resume a multi-agent relay
-- `/clear [lines]` — clear the conversation window
 - `/close` — close this workspace and return to agent selection
 
 ### Wingmen
@@ -2119,27 +2113,13 @@ Drag over conversation text and press `Ctrl+C` to copy it. Otherwise,
             else:
                 await self.action_mode_switcher()
             return True
-        # The concise forms are primary. Keep namespaced forms as quiet
-        # compatibility aliases for existing prompt histories and scripts.
-        if command in {"pause", "wingmen:pause"}:
+        if command == "pause":
             self.action_toggle_pause()
             return True
-        if command in {"agent", "wingmen:agent"}:
+        if command == "agent":
             await self._slash_agent(parameters.strip())
             return True
-        if command in {"clear", "wingmen:clear"}:
-            try:
-                line_count = max(0, int(parameters) if parameters.strip() else 0)
-            except ValueError:
-                self.notify(
-                    "Unable to clear—a number was expected",
-                    title="/clear",
-                    severity="error",
-                )
-                return True
-            await self.prune_window(line_count, line_count)
-            return True
-        elif command in {"close", "wingmen:session-close"}:
+        if command == "close":
             return await self._close_session()
         if any(
             slash.command.removeprefix("/") == command

@@ -1836,6 +1836,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
         conversation.agent_slash_commands = [
             SlashCommand("/about", "An agent-defined about command"),
             SlashCommand("/agent", "An agent-defined agent command"),
+            SlashCommand("/clear", "An agent-defined clear command"),
             SlashCommand("/review", "Review the current change"),
         ]
 
@@ -1848,7 +1849,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
         self.assertEqual(commands["/config"].help, "Configure Wingmen preferences")
         self.assertEqual(commands["/agent"].help, "Manage the relay roster")
         self.assertEqual(commands["/close"].help, "Close the current session")
-        self.assertIn("/clear", commands)
+        self.assertEqual(commands["/clear"].help, "An agent-defined clear command")
         self.assertNotIn("/wingmen:agent", commands)
         self.assertEqual(commands["/review"].help, "Review the current change")
         self.assertNotIn("/wingmen:rename", commands)
@@ -1875,16 +1876,22 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         self.assertFalse(asyncio.run(conversation.slash_command("/about")))
 
-    def test_concise_and_legacy_agent_commands_use_the_local_roster_handler(self) -> None:
+    def test_removed_local_commands_can_be_owned_by_an_agent(self) -> None:
         async def scenario() -> None:
             conversation = Conversation(Path.cwd())
-            with patch.object(conversation, "_slash_agent", new_callable=AsyncMock) as handler:
-                self.assertTrue(await conversation.slash_command("/agent list"))
-                handler.assert_awaited_once_with("list")
+            conversation.agent_slash_commands = [
+                SlashCommand("/clear", "Clear agent state"),
+                SlashCommand("/wingmen:agent", "Inspect agent state"),
+                SlashCommand("/wingmen:pause", "Pause agent work"),
+                SlashCommand("/wingmen:clear", "Clear agent state"),
+                SlashCommand("/wingmen:session-close", "Close agent session"),
+            ]
 
-                handler.reset_mock()
-                self.assertTrue(await conversation.slash_command("/wingmen:agent list"))
-                handler.assert_awaited_once_with("list")
+            for command in conversation.agent_slash_commands:
+                with self.subTest(command=command.command):
+                    self.assertFalse(
+                        await conversation.slash_command(f"{command.command} now")
+                    )
 
         asyncio.run(scenario())
 
