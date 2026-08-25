@@ -138,6 +138,23 @@ class AgentLifecycleTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_default_theme_uses_a_cool_avionics_semantic_palette(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with WingmenApp(setup_prompt=False).run_test() as pilot:
+                        theme = pilot.app.current_theme
+
+                        self.assertEqual(theme.warning, "#A78BFA")
+                        self.assertEqual(theme.error, "#FB7185")
+                        self.assertEqual(theme.success, "#34D399")
+                        self.assertEqual(theme.accent, "#67E8F9")
+
+        asyncio.run(scenario())
+
     def test_first_prompt_includes_wingmen_operating_instructions(self) -> None:
         async def scenario() -> None:
             data = cast(

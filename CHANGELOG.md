@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Replaced the remaining amber, olive, and orange accents with a cohesive cool
+  avionics palette of teal, sky, violet, emerald, and coral.
+
 - `@` is reserved for file attachments. Click a roster agent to select the
   recipient of the next normal message; prompt-level direct-message syntax was
   removed.

@@ -37,28 +37,28 @@ if TYPE_CHECKING:
     from wingmen.db import DB
 
 
-# A pure-black terminal palette with Wingmen's crisp teal accents.
+# A pure-black terminal palette with Wingmen's cool avionics accents.
 WINGMEN_TERMINAL_THEME = terminal_theme.TerminalTheme(
     background=(0, 0, 0),  # #000000
     foreground=(216, 222, 233),  # #D8DEE9
     normal=[
         (59, 66, 82),  # black - #3B4252
-        (191, 97, 106),  # red - #BF616A
-        (163, 190, 140),  # green - #A3BE8C
-        (235, 203, 139),  # yellow - #EBCB8B
-        (20, 184, 166),  # blue slot - teal #14B8A6
-        (180, 142, 173),  # magenta - #B48EAD
+        (251, 113, 133),  # red - coral #FB7185
+        (52, 211, 153),  # green - emerald #34D399
+        (167, 139, 250),  # yellow slot - violet #A78BFA
+        (56, 189, 248),  # blue - sky #38BDF8
+        (167, 139, 250),  # magenta - violet #A78BFA
         (45, 212, 191),  # cyan - teal #2DD4BF
         (229, 233, 240),  # white - #E5E9F0
     ],
     bright=[
         (76, 86, 106),  # bright black - #4C566A
-        (191, 97, 106),  # bright red - #BF616A
-        (163, 190, 140),  # bright green - #A3BE8C
-        (235, 203, 139),  # bright yellow - #EBCB8B
-        (94, 234, 212),  # bright blue slot - teal #5EEAD4
-        (180, 142, 173),  # bright magenta - #B48EAD
-        (45, 212, 191),  # bright cyan - teal #2DD4BF
+        (253, 164, 175),  # bright red - coral #FDA4AF
+        (110, 231, 183),  # bright green - emerald #6EE7B7
+        (196, 181, 253),  # bright yellow slot - violet #C4B5FD
+        (125, 211, 252),  # bright blue - sky #7DD3FC
+        (196, 181, 253),  # bright magenta - violet #C4B5FD
+        (94, 234, 212),  # bright cyan - teal #5EEAD4
         (236, 239, 244),  # bright white - #ECEFF4
     ],
 )
@@ -67,10 +67,10 @@ WINGMEN_BLACK_THEME = Theme(
     name="wingmen-black",
     primary="#2DD4BF",
     secondary="#14B8A6",
-    warning="#EBCB8B",
-    error="#BF616A",
-    success="#A3BE8C",
-    accent="#5EEAD4",
+    warning="#A78BFA",
+    error="#FB7185",
+    success="#34D399",
+    accent="#67E8F9",
     foreground="#D8DEE9",
     background="#000000",
     surface="#0A0D12",
@@ -78,9 +78,9 @@ WINGMEN_BLACK_THEME = Theme(
     dark=True,
     variables={
         "agent-tone-0": "#2DD4BF",
-        "agent-tone-1": "#EBCB8B",
-        "agent-tone-2": "#A3BE8C",
-        "agent-tone-3": "#D08770",
+        "agent-tone-1": "#38BDF8",
+        "agent-tone-2": "#A78BFA",
+        "agent-tone-3": "#FB7185",
         "block-cursor-background": "#2DD4BF",
         "block-cursor-foreground": "#000000",
         "input-selection-background": "#14B8A6 35%",
