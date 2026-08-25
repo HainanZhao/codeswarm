@@ -1099,6 +1099,9 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             conversation.cursor_block_child,
                             clicked_block,
                         )
+                        self.assertIsNone(
+                            conversation.query_one_optional("#cursor-container")
+                        )
 
         asyncio.run(scenario())
 

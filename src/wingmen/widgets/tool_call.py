@@ -183,14 +183,6 @@ class ToolCall(containers.VerticalGroup):
             self.query_one(ToolCallHeader).update(self.tool_call_header_content)
         except NoMatches:
             pass
-        from wingmen.widgets.conversation import Conversation
-
-        try:
-            conversation = self.query_ancestor(Conversation)
-        except NoMatches:
-            pass
-        else:
-            self.call_after_refresh(conversation.cursor.update_follow)
 
     @on(events.Click, "ToolCallHeader")
     def on_click_tool_call_header(self, event: events.Click) -> None:

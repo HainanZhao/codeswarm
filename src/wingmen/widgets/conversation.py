@@ -12,8 +12,6 @@ from time import monotonic
 
 from typing import Sequence
 
-from rich.segment import Segment
-
 from textual import on, work
 from textual.app import ComposeResult
 from textual import containers
@@ -25,13 +23,11 @@ from textual.content import Content
 from textual.geometry import clamp
 from textual.css.query import NoMatches
 from textual.widget import Widget
-from textual.widgets import Static
 from textual.widgets.markdown import MarkdownBlock, MarkdownFence
-from textual.geometry import Offset, Spacing, Region
+from textual.geometry import Offset, Spacing
 from textual.reactive import var
 from textual.layouts.grid import GridLayout
 from textual.layout import WidgetPlacement
-from textual.strip import Strip
 from textual.timer import Timer
 
 
@@ -163,53 +159,6 @@ NATIVE_MODE = Mode(
 )
 
 
-class Cursor(Static):
-    """The block 'cursor' -- A vertical line to the left of a block in the conversation that
-    is used to navigate the discussion history.
-    """
-
-    follow_widget: var[Widget | None] = var(None)
-    blink = var(True, toggle_class="-blink")
-
-    def on_mount(self) -> None:
-        self.visible = False
-        self.blink_timer = self.set_interval(0.5, self._update_blink, pause=True)
-
-    def _update_blink(self) -> None:
-        if self.query_ancestor(Window).has_focus and self.screen.is_active:
-            self.blink = not self.blink
-        else:
-            self.blink = False
-
-    def watch_follow_widget(self, widget: Widget | None) -> None:
-        self.visible = widget is not None
-
-    def update_follow(self) -> None:
-        if self.follow_widget and self.follow_widget.is_attached:
-            self.styles.height = max(1, self.follow_widget.outer_size.height)
-            follow_y = (
-                self.follow_widget.virtual_region.y
-                + self.follow_widget.parent.virtual_region.y
-            )
-            self.offset = Offset(0, follow_y)
-        else:
-            self.styles.height = None
-
-    def follow(self, widget: Widget | None) -> None:
-        self.follow_widget = widget
-        self.blink = False
-        if widget is None:
-            self.visible = False
-            self.blink_timer.reset()
-            self.blink_timer.pause()
-            self.styles.height = None
-        else:
-            self.visible = True
-            self.blink_timer.reset()
-            self.blink_timer.resume()
-            self.update_follow()
-
-
 class Contents(containers.VerticalGroup, can_focus=False):
     BLANK = True
 
@@ -231,16 +180,6 @@ class ContentsGrid(containers.Grid):
     def pre_layout(self, layout) -> None:
         assert isinstance(layout, GridLayout)
         layout.stretch_height = True
-
-
-class CursorContainer(containers.Vertical):
-    def render_lines(self, crop: Region) -> list[Strip]:
-        rich_style = self.visual_style.rich_style
-        strips = [Strip([Segment("▌", rich_style)], cell_length=1)] * crop.height
-        if crop.y == 0 and strips:
-            strips[0] = Strip([Segment(" ", rich_style)], cell_length=1)
-
-        return strips
 
 
 class Window(containers.VerticalScroll):
@@ -348,7 +287,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 
     contents = getters.query_one(Contents)
     window = getters.query_one(Window)
-    cursor = getters.query_one(Cursor)
     prompt = getters.query_one(Prompt)
     app = getters.app(WingmenApp)
 
@@ -639,8 +577,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
     def compose(self) -> ComposeResult:
         with Window():
             with ContentsGrid():
-                with CursorContainer(id="cursor-container"):
-                    yield Cursor()
                 yield Contents(id="contents")
         yield Flash()
         yield Prompt().data_bind(
@@ -700,14 +636,12 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             if isinstance(cursor_block, ExpandProtocol):
                 cursor_block.expand_block()
                 self.refresh_bindings()
-                self.call_after_refresh(self.cursor.follow, cursor_block)
 
     async def action_collapse_block(self) -> None:
         if (cursor_block := self.cursor_block) is not None:
             if isinstance(cursor_block, ExpandProtocol):
                 cursor_block.collapse_block()
                 self.refresh_bindings()
-                self.call_after_refresh(self.cursor.follow, cursor_block)
 
     async def post_agent_response(self, fragment: str = "") -> AgentResponse | None:
         """Get or create an agent response widget."""
@@ -1966,8 +1900,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 prune_children.append(child)
 
         self.cursor_offset = -1
-        self.cursor.visible = False
-        self.cursor.follow(None)
         contents.refresh(layout=True)
 
         if prune_children:
@@ -2086,7 +2018,6 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         """
         if reset_cursor:
             self.cursor_offset = -1
-            self.cursor.visible = False
         if scroll_end:
             self.window.scroll_end()
         self.prompt.focus()
@@ -2128,16 +2059,12 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
     def refresh_block_cursor(self) -> None:
         if (cursor_block := self.cursor_block_child) is not None:
             self.window.focus()
-            self.cursor.visible = True
-            self.cursor.follow(cursor_block)
             self.call_after_refresh(
                 self.window.scroll_to_center, cursor_block, immediate=True
             )
         else:
-            self.cursor.visible = False
             self.window.anchor(False)
             self.window.scroll_end(duration=2 / 10)
-            self.cursor.follow(None)
             self.prompt.focus()
         self.refresh_bindings()
 

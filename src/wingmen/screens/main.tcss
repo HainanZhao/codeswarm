@@ -66,28 +66,11 @@ Conversation {
     }    
 
     ContentsGrid {            
-        grid-size: 2;
-        grid-columns: 1 1fr;
+        grid-size: 1;
+        grid-columns: 1fr;
         grid-rows: auto;
         height: auto;                
     }
-
-    #cursor-container {            
-        height: auto;
-        width: 1;                    
-        color: $foreground 7%;            
-                
-        &> Cursor {
-            height: 0;            
-            width: 1;     
-                                 
-            border-left: outer $text-accent;
-            visibility: visible;
-            &.-blink {
-                border-left: outer $text-accent 20%;
-            } 
-        }
-    }        
 
     AgentMessage {
         height: auto;

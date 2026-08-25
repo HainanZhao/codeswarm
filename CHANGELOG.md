@@ -57,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The blinking left-side message selection rail and its private animation
+  timer; block navigation and selection continue without visual flashing.
 - The unsupported `wingwomen` executable alias and the redundant `/about`
   command.
 
