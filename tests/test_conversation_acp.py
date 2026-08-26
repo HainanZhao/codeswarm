@@ -14,6 +14,7 @@ from textual.widgets._markdown import (
     MarkdownHorizontalRule,
     MarkdownParagraph,
     MarkdownTable,
+    MarkdownTableContent,
 )
 
 from codeswarm import jsonrpc
@@ -1904,6 +1905,9 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         rule = response.query_one(MarkdownHorizontalRule)
                         fence = response.query_one(MarkdownFence)
                         table = response.query_one(MarkdownTable)
+                        table_header = response.query_one(MarkdownTableContent).query_one(
+                            ".header"
+                        )
                         quote = response.query_one(MarkdownBlockQuote)
                         inline_code = paragraph.get_component_rich_style(
                             "code_inline"
@@ -1922,7 +1926,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             inline_background.green,
                             inline_background.blue,
                         )
-                        self.assertEqual(inline_rgb, (212, 212, 212))
+                        self.assertEqual(inline_rgb, (156, 220, 254))
                         self.assertEqual(inline_background_rgb, (37, 37, 38))
                         format_colors = {
                             "inline code": inline_rgb,
@@ -1932,8 +1936,11 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             "table": table.styles.color.rgb,
                         }
 
-                        for color in [body_color.rgb, *format_colors.values()]:
-                            self.assertLessEqual(max(color) - min(color), 10)
+                        self.assertEqual(fence.styles.color.rgb, (184, 199, 217))
+                        self.assertEqual(
+                            table_header.styles.color.rgb,
+                            Color.parse("#E8C98A").rgb,
+                        )
                         for format_name, color in format_colors.items():
                             with self.subTest(format=format_name):
                                 self.assertNotEqual(color, body_color.rgb)

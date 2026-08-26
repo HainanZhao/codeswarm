@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.29] - 2026-08-26
+
+### Changed
+
+- Refined dark-terminal message formatting with distinct colors for inline
+  code, fenced code, table headers, quotes, and dividers.
+- Removed outdated screenshot references from the README.
+
 ## [0.6.28] - 2026-08-26
 
 ### Fixed

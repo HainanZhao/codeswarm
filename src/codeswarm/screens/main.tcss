@@ -155,29 +155,29 @@ Conversation {
         MarkdownBlock {
             &:dark > .code_inline {
                 background: #252526;
-                color: #D4D4D4;
+                color: #9CDCFE;
             }
 
             &:light > .code_inline {
                 background: #F3F3F3;
-                color: #24292F;
+                color: #0550AE;
             }
         }
 
         MarkdownHeader {
-            color: white;
+            color: #F5F7FA;
             background: transparent;
 
             &:light {
-                color: black;
+                color: #111827;
             }
         }
 
         MarkdownFence {
-            color: #D2D4D6;
+            color: #B8C7D9;
 
             &:light {
-                color: #383B3E;
+                color: #465A6E;
             }
         }
 
@@ -190,11 +190,11 @@ Conversation {
         }
 
         MarkdownTableContent > .header {
-            color: #F2F3F4;
+            color: #E8C98A;
         }
 
         MarkdownTableContent:light > .header {
-            color: #101214;
+            color: #8A5A00;
         }
 
         MarkdownBlockQuote {
@@ -208,12 +208,12 @@ Conversation {
         }
 
         MarkdownHorizontalRule {
-            border-bottom: solid #A6A8AA 45%;
+            border-bottom: solid #8B949E 45%;
             padding-top: 0;
             margin-bottom: 0;
 
             &:light {
-                border-bottom: solid #66696C 45%;
+                border-bottom: solid #6B7280 45%;
             }
         }
     }
