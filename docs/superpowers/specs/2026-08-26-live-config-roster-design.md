@@ -8,6 +8,9 @@ unchecked peers leave it without restarting Wingmen.
 
 ## User-visible behavior
 
+- `/config` remains available while agents are initializing or after an agent
+  connection failure. Opening local configuration does not depend on ACP
+  readiness.
 - The current session owner is always selected and cannot be unchecked. The
   owner remains roster index 0 and can only be ended with `/close`.
 - Saving while the conversation is idle starts newly selected agents and
@@ -26,6 +29,11 @@ unchecked peers leave it without restarting Wingmen.
   screen continues to edit only the next-workspace roster.
 
 ## Architecture
+
+Prompt submission no longer rejects every input before the conversation can
+classify it. Wingmen-owned slash commands are dispatched locally regardless of
+agent readiness. Prompts and agent-owned commands retain the readiness guard
+and are not sent until their target ACP agent is connected.
 
 `ConfigScreen` accepts an optional `Conversation`. When present, it uses the
 conversation's active roster as the checkbox membership source, locks the
@@ -62,6 +70,8 @@ entry rather than reactivating the tombstone.
 
 ## Testing
 
+- `WingmenApp.run_test` verifies that submitting `/config` opens the screen
+  while `agent_ready` is false, including submission through slash completion.
 - `WingmenApp.run_test` verifies that `/config` reflects the active roster,
   locks the owner, and adds/removes peers immediately on Save.
 - Integration coverage verifies that existing live order remains stable while
@@ -70,4 +80,3 @@ entry rather than reactivating the tombstone.
   preserves healthy peers and persists only the roster that is actually live.
 - Session-level tests continue to cover stable indices, owner protection,
   relay creation, queue discard, and adapter shutdown.
-
