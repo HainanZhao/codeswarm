@@ -8,6 +8,10 @@ unchecked peers leave it without restarting Wingmen.
 
 ## User-visible behavior
 
+- The roster-wide full-access permission policy is labeled **Auto pilot** in
+  the mode picker, status display, README, user manual, and project guidance.
+  Its semantics remain “automatically approve all tools and bypass permission
+  prompts.”
 - `/config` remains available while agents are initializing or after an agent
   connection failure. Opening local configuration does not depend on ACP
   readiness.
@@ -41,6 +45,12 @@ unchecked peers leave it without restarting Wingmen.
   screen continues to edit only the next-workspace roster.
 
 ## Architecture
+
+The full-access policy keeps its stable internal ID
+`wingmen:mode:full-access`, its native-adapter aliases, and its position as the
+default policy. Only the Wingmen-owned display name changes from `Fully Auto`
+to `Auto pilot`, so persisted state and adapter translation require no
+migration.
 
 Prompt submission no longer rejects every input before the conversation can
 classify it. Wingmen-owned slash commands are dispatched locally regardless of
@@ -93,6 +103,8 @@ entry rather than reactivating the tombstone.
 
 ## Testing
 
+- Mode-policy and conversation UI assertions expect the user-facing name
+  `Auto pilot` while continuing to select `wingmen:mode:full-access` by ID.
 - `WingmenApp.run_test` verifies that submitting `/config` opens the screen
   while `agent_ready` is false, including submission through slash completion.
 - `WingmenApp.run_test` verifies that `/config` reflects the active roster,
