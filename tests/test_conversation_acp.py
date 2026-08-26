@@ -475,6 +475,49 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_stop_token_adds_per_agent_batch_elapsed_summary(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(120, 40)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                claude = _RosterAgent("Claude")
+                gemini = _RosterAgent("Gemini")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.com", name="Claude", short_name="claude"
+                        ),
+                        claude,  # type: ignore[arg-type]
+                    ),
+                    RosterEntry(
+                        AgentData(
+                            identity="geminicli.com", name="Gemini", short_name="gemini"
+                        ),
+                        gemini,  # type: ignore[arg-type]
+                    ),
+                ]
+                conversation.session.relay = RelayConversation(
+                    (claude, gemini)  # type: ignore[arg-type]
+                )
+                conversation._agent_elapsed = {
+                    id(claude): 42,
+                    id(gemini): 8,
+                }
+                await conversation._post_collaboration_summary()
+                await pilot.pause(0.1)
+
+                summaries = [
+                    note.render().plain
+                    for note in conversation.query(Note)
+                    if "Batch complete" in note.render().plain
+                ]
+                self.assertEqual(summaries, ["Batch complete · Claude 0:42 · Gemini 0:08"])
+                conversation._begin_collaboration()
+                self.assertEqual(conversation._agent_elapsed, {})
+
+        asyncio.run(scenario())
+
     def test_mode_selection_targets_the_agent_that_advertised_it(self) -> None:
         async def scenario() -> None:
             conversation = Conversation(Path.cwd())
@@ -1492,6 +1535,168 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_thinking_only_output_has_an_attributed_thinking_header(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(120, 40)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                claude = _RosterAgent("Claude")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.ai",
+                            name="Claude",
+                            short_name="claude",
+                        ),
+                        claude,  # type: ignore[arg-type]
+                    )
+                ]
+                thinking = acp_messages.Thinking(
+                    "text", "Inspecting the workspace", claude  # type: ignore[arg-type]
+                )
+                conversation.post_message(thinking)
+                await pilot.pause(0.1)
+
+                turn = conversation.query_one(AgentMessage)
+                header = turn.query_one("#agent-message-header")
+                self.assertTrue(header.display)
+                self.assertIn("Claude", str(header.render()))
+                self.assertIn("Thinking", str(header.render()))
+                self.assertIsNotNone(turn.query_one(AgentThought))
+
+                conversation.post_message(
+                    acp_messages.Update("text", "Done", claude)  # type: ignore[arg-type]
+                )
+                await pilot.pause(0.1)
+                self.assertNotIn("Thinking", str(header.render()))
+
+        asyncio.run(scenario())
+
+    def test_thinking_and_tools_share_one_attributed_turn(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(120, 40)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                claude = _RosterAgent("Claude")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.ai",
+                            name="Claude",
+                            short_name="claude",
+                        ),
+                        claude,  # type: ignore[arg-type]
+                    )
+                ]
+
+                conversation.post_message(
+                    acp_messages.Thinking(
+                        "text", "Planning the next step", claude  # type: ignore[arg-type]
+                    )
+                )
+                await pilot.pause(0.1)
+                tool_message = acp_messages.ToolCall(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "inspect-workspace",
+                        "status": "in_progress",
+                        "title": "Inspect workspace",
+                    },
+                    claude,  # type: ignore[arg-type]
+                )
+                conversation.post_message(tool_message)
+                await pilot.pause(0.1)
+
+                turn = conversation.query_one(AgentMessage)
+                self.assertIsNotNone(turn.query_one(AgentThought))
+                self.assertIsNotNone(turn.query_one(AgentToolActivity))
+                self.assertIsNotNone(turn.query_one(ToolCall))
+                self.assertIn(
+                    "Claude",
+                    str(turn.query_one("#agent-message-header").render()),
+                )
+
+        asyncio.run(scenario())
+
+    def test_export_writes_only_user_and_agent_conversation_markdown(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as export_dir:
+                async with CodeSwarmApp(setup_prompt=False).run_test(
+                    size=(120, 40)
+                ) as pilot:
+                    conversation = pilot.app.screen.query_one(Conversation)
+                    conversation.project_path = Path(export_dir)
+                    claude = _RosterAgent("Claude")
+                    conversation.session.roster = [
+                        RosterEntry(
+                            AgentData(
+                                identity="claude.ai",
+                                name="Claude",
+                                short_name="claude",
+                            ),
+                            claude,  # type: ignore[arg-type]
+                        )
+                    ]
+                    await conversation.post(UserInput("What changed?"))
+                    conversation.begin_agent_output(claude)  # type: ignore[arg-type]
+                    await conversation.post_agent_thought(
+                        "Inspecting files", claude  # type: ignore[arg-type]
+                    )
+                    await conversation.post_agent_response(
+                        "The launch flow now restores the saved roster."
+                    )
+                    await pilot.pause(0.1)
+
+                    handled = await conversation.slash_command("/export")
+                    self.assertTrue(handled)
+                    exports = list(Path(export_dir).glob("codeswarm-conversation-*.md"))
+                    self.assertEqual(len(exports), 1)
+                    content = exports[0].read_text()
+                    self.assertIn("What changed?", content)
+                    self.assertIn("The launch flow now restores the saved roster.", content)
+                    self.assertNotIn("Inspecting files", content)
+                    self.assertNotIn("Thinking", content)
+
+        asyncio.run(scenario())
+
+    def test_streamed_agent_output_keeps_the_view_at_the_bottom(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(80, 12)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        agent = _RosterAgent("Claude")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.ai",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                agent,  # type: ignore[arg-type]
+                            )
+                        ]
+                        for index in range(12):
+                            await conversation.post(Note(f"History {index}"))
+                        await pilot.pause(0.1)
+                        conversation.window.scroll_end(animate=False)
+                        self.assertTrue(conversation.window.is_vertical_scroll_end)
+
+                        conversation.begin_agent_output(agent)  # type: ignore[arg-type]
+                        await conversation.post_agent_response("New streamed output")
+                        await pilot.pause(0.1)
+
+                        self.assertTrue(conversation.window.is_vertical_scroll_end)
+
+        asyncio.run(scenario())
+
     def test_tool_history_aligns_with_its_agent_response_content(self) -> None:
         """Tool history should not add an indent inside an agent message."""
 
@@ -1602,6 +1807,38 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_tool_preview_treats_agent_text_as_literal_markup(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(120, 40)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                claude = _RosterAgent("Claude")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.ai", name="Claude", short_name="claude"
+                        ),
+                        claude,  # type: ignore[arg-type]
+                    )
+                ]
+                tool_message = acp_messages.ToolCall(
+                    {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "literal-markup",
+                        "status": "in_progress",
+                        "title": "[red]{+}1",
+                    },
+                    claude,  # type: ignore[arg-type]
+                )
+                conversation.post_message(tool_message)
+                await pilot.pause(0.1)
+
+                summary = conversation.query_one("#tool-activity-summary")
+                self.assertIn("[red]{+}1", summary.render().plain)
+
+        asyncio.run(scenario())
+
     def test_new_tool_is_hidden_before_mount_to_avoid_activity_reflow(self) -> None:
         class MountProbeToolCall(ToolCall):
             display_when_mounted: bool | None = None
@@ -1639,6 +1876,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                 "toolCallId": "run-tests",
                                 "status": "in_progress",
                                 "title": "Run focused tests",
+                                "rawInput": {"command": "pytest tests/test_agy.py"},
                             }
                         )
 
@@ -1646,6 +1884,14 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
                         self.assertFalse(tool.display_when_mounted)
                         self.assertTrue(agent_message.tool_activity.summary.display)
+                        self.assertIn(
+                            "Run focused tests",
+                            agent_message.tool_activity.summary.render().plain,
+                        )
+                        self.assertIn(
+                            "pytest tests/test_agy.py",
+                            agent_message.tool_activity.summary.render().plain,
+                        )
                         await pilot.pause()
                         self.assertEqual(agent_message.tool_activity.outer_size.height, 1)
 
@@ -2074,8 +2320,48 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         await pilot.pause(0.1)
 
                         rule = response.query_one(MarkdownHorizontalRule)
+                        self.assertFalse(rule.display)
                         self.assertEqual(rule.styles.padding.top, 0)
                         self.assertEqual(rule.styles.margin.bottom, 0)
+
+        asyncio.run(scenario())
+
+    def test_agent_reply_blocks_use_compact_internal_spacing(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(80, 20)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        agent = _RosterAgent("Claude")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.ai",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                agent,  # type: ignore[arg-type]
+                            )
+                        ]
+                        conversation.begin_agent_output(agent)  # type: ignore[arg-type]
+                        response = await conversation.post_agent_response(
+                            "First\n\nSecond\n\n```text\ncode\n```\n\n> Quote"
+                        )
+                        assert response is not None
+                        await pilot.pause(0.1)
+
+                        blocks = list(response.children)
+                        self.assertGreater(len(blocks), 2)
+                        for block in blocks:
+                            with self.subTest(block=type(block).__name__):
+                                self.assertEqual(block.styles.margin.top, 0)
+                                self.assertEqual(block.styles.margin.bottom, 0)
+                        self.assertGreater(response.parent.styles.margin.bottom, 0)
 
         asyncio.run(scenario())
 
@@ -2552,6 +2838,46 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             conversation.query(UserInput).last().content,
                             "use the existing parser",
                         )
+
+        asyncio.run(scenario())
+
+    def test_busy_follow_up_names_selected_next_agent(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(120, 40)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                claude = _RosterAgent("Claude")
+                gemini = _RosterAgent("Gemini")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.ai", name="Claude", short_name="claude"
+                        ),
+                        claude,  # type: ignore[arg-type]
+                    ),
+                    RosterEntry(
+                        AgentData(
+                            identity="gemini.google.com",
+                            name="Gemini",
+                            short_name="gemini",
+                        ),
+                        gemini,  # type: ignore[arg-type]
+                    ),
+                ]
+                conversation.session._build_relay(on_turn_start=None, on_turn=None)
+                conversation.session.select_agent(0)
+                conversation._active_relay_agent = gemini  # type: ignore[assignment]
+                conversation.turn = "agent"
+
+                await conversation.on_user_input_submitted(
+                    messages.UserInputSubmitted("send this to Claude")
+                )
+
+                self.assertEqual(
+                    conversation.queued_messages,
+                    ("TX HOLD // Claude · send this to Claude",),
+                )
 
         asyncio.run(scenario())
 

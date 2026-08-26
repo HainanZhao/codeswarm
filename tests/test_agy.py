@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from codeswarm import jsonrpc
 from codeswarm.acp import messages
-from codeswarm.agent import AgentReady
+from codeswarm.agent import AgentFail, AgentReady
 from codeswarm.agent_schema import Agent as AgentData
 from codeswarm.agy import AgyAgent
 
@@ -128,6 +128,31 @@ class AgyAgentTests(unittest.TestCase):
             self.assertIn("--print-timeout", arguments)
             self.assertIn("60m", arguments)
             self.assertIn("--dangerously-skip-permissions", arguments)
+
+        asyncio.run(scenario())
+
+    def test_ctrl_c_cancellation_does_not_report_antigravity_timeout(self) -> None:
+        async def scenario() -> None:
+            agent = self.make_agent()
+            target = _MessageTarget()
+            process = _Process([])
+
+            def start_process(*_args: object, **_kwargs: object) -> _Process:
+                process.returncode = -2
+                agent._cancel_requested = True  # type: ignore[attr-defined]
+                return process
+
+            with patch(
+                "codeswarm.agy.asyncio.create_subprocess_exec",
+                side_effect=start_process,
+            ):
+                await agent.start(target)  # type: ignore[arg-type]
+                stop_reason = await agent.send_prompt("Cancel this")
+
+            self.assertEqual(stop_reason, "cancelled")
+            self.assertFalse(
+                any(isinstance(message, AgentFail) for message in target.messages)
+            )
 
         asyncio.run(scenario())
 
@@ -263,7 +288,12 @@ class AgyAgentTests(unittest.TestCase):
             self.assertEqual(tool_call["kind"], "execute")
             self.assertEqual(tool_call["status"], "in_progress")
             self.assertEqual(tool_call["rawInput"], {"CommandLine": "pwd"})
+            self.assertEqual(
+                tool_call["content"][0]["content"]["text"],
+                "CommandLine: pwd",
+            )
             self.assertEqual(tool_update["status"], "completed")
             self.assertEqual(tool_update["rawOutput"], {"output": "/workspace\n"})
+            self.assertIn("Output: /workspace", tool_update["content"][0]["content"]["text"])
 
         asyncio.run(scenario())

@@ -111,7 +111,9 @@ class AgentToolActivity(containers.VerticalGroup, can_focus=True):
         self.selected_index = -1
         self._tools: list[Widget] = []
         self._finalized = False
-        self.summary = Static("", id="tool-activity-summary")
+        # Agent-provided titles and previews are arbitrary text. Keep Rich
+        # markup disabled so command syntax such as ``[red]`` is not parsed.
+        self.summary = Static("", id="tool-activity-summary", markup=False)
         self.summary.display = False
 
     def compose(self) -> ComposeResult:
@@ -139,7 +141,31 @@ class AgentToolActivity(containers.VerticalGroup, can_focus=True):
         title = " ".join(str(raw_title).split())[:160] or "Tool call"
         noun = "tool" if len(self._tools) == 1 else "tools"
         prefix = "✓" if self._finalized else "🔧"
-        self.summary.update(f"{prefix} {title} · {len(self._tools)} {noun}")
+        preview = self._tool_preview(tool_data)
+        suffix = f" · {preview}" if preview else ""
+        self.summary.update(f"{prefix} {title}{suffix} · {len(self._tools)} {noun}")
+
+    @staticmethod
+    def _tool_preview(tool_data: object) -> str:
+        if not isinstance(tool_data, dict):
+            return ""
+        raw_output = tool_data.get("rawOutput")
+        if isinstance(raw_output, dict) and raw_output.get("output"):
+            value = raw_output["output"]
+            return f"output: {AgentToolActivity._compact_preview(value)}"
+        raw_input = tool_data.get("rawInput")
+        if not isinstance(raw_input, dict) or not raw_input:
+            return ""
+        key, value = next(iter(raw_input.items()))
+        label = str(key).lower().replace("_", " ")
+        if label in {"commandline", "cmd", "command"}:
+            label = "command"
+        return f"{label}: {AgentToolActivity._compact_preview(value)}"
+
+    @staticmethod
+    def _compact_preview(value: object, limit: int = 96) -> str:
+        text = " ".join(str(value).split())
+        return text[:limit] + ("…" if len(text) > limit else "")
 
     @property
     def selected_tool(self) -> Widget | None:
@@ -226,15 +252,20 @@ class AgentMessage(containers.Vertical):
         super().__init__()
         self.source_agent = source_agent
         self.response = response
+        self.thought: Widget | None = None
+        self._speaker = speaker
+        self._timestamp = timestamp
         self.tool_activity = AgentToolActivity()
         self.tone_class = f"-agent-tone-{tone_index % 4}"
         self.add_class(self.tone_class)
-        self.header = Content.assemble(
-            (
-                speaker,
-                "$text-primary bold",
-            ),
-            (f" · {timestamp}", "dim"),
+        self.header = self._build_header()
+
+    def _build_header(self) -> Content:
+        suffix = " · Thinking" if self.has_class("-thinking") else ""
+        return Content.assemble(
+            (self._speaker, "$text-primary bold"),
+            (f" · {self._timestamp}", "dim"),
+            ((suffix, "$primary dim") if suffix else ""),
         )
 
     def compose(self) -> ComposeResult:
@@ -242,9 +273,22 @@ class AgentMessage(containers.Vertical):
             self.header,
             id="agent-message-header",
         )
+        if self.thought is not None:
+            yield self.thought
         if self.response is not None:
             yield self.response
         yield self.tool_activity
+
+    async def add_thought(self, thought: Widget) -> None:
+        """Mount thought content before the response and tool history."""
+        self.thought = thought
+        await self.mount(thought, before=self.tool_activity)
+
+    def set_thinking(self, thinking: bool) -> None:
+        """Show the thinking state while this turn has no other activity."""
+        self.set_class(thinking, "-thinking")
+        header = self.query_one("#agent-message-header", NonSelectableLabel)
+        header.update(self._build_header())
 
     async def add_response(self, response: AgentResponse) -> None:
         """Mount the response before the turn's trailing tool history."""

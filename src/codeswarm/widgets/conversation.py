@@ -692,6 +692,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         """Get or create an agent response widget."""
         from codeswarm.widgets.agent_response import AgentMessage, AgentResponse
 
+        follow_output = self.window.is_vertical_scroll_end
         async with self._post_lock:
             if self._agent_response is None:
                 # ACP chunks carry their source agent. Prefer that immutable
@@ -718,7 +719,13 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                     await self.post(agent_response, new_block=False)
             else:
                 await self._agent_response.append_fragment(fragment)
+            self._scroll_output_if_following(follow_output)
             return self._agent_response
+
+    def _scroll_output_if_following(self, follow_output: bool) -> None:
+        """Keep new streamed content visible without hijacking manual scrolling."""
+        if follow_output:
+            self.call_after_refresh(self.window.scroll_end, animate=False)
 
     async def ensure_agent_message(self, agent: AgentBase) -> AgentMessage:
         """Get or create the attributed container for the current agent turn."""
@@ -759,18 +766,35 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             self._agent_thought = None
             self._agent_message = None
 
-    async def post_agent_thought(self, thought_fragment: str) -> AgentThought | None:
+    async def post_agent_thought(
+        self,
+        thought_fragment: str,
+        agent: AgentBase | None = None,
+    ) -> AgentThought | None:
         """Get or create an agent thought widget."""
+        from codeswarm.widgets.agent_response import AgentMessage
         from codeswarm.widgets.agent_thought import AgentThought
 
         async with self._post_lock:
+            agent_message: AgentMessage | None = None
+            if agent is not None:
+                agent_message = await self.ensure_agent_message(agent)
+                agent_message.set_thinking(True)
             if self._agent_thought is None:
                 if thought_fragment.strip():
                     self._agent_thought = AgentThought(thought_fragment)
-                    await self.post(self._agent_thought, new_block=False)
+                    if agent_message is not None:
+                        await agent_message.add_thought(self._agent_thought)
+                    else:
+                        await self.post(self._agent_thought, new_block=False)
             else:
                 await self._agent_thought.append_fragment(thought_fragment)
             return self._agent_thought
+
+    def clear_agent_thinking(self) -> None:
+        """Resolve the thinking indicator when another activity begins."""
+        if self._agent_message is not None:
+            self._agent_message.set_thinking(False)
 
     @property
     def cursor_block(self) -> Widget | None:
@@ -1071,7 +1095,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 self.send_direct_prompt_to_agent(agent_index, direct_prompt)
                 return
             if self._relay_active and self.turn == "agent":
-                active_agent = self._active_relay_agent
+                active_agent = self._routing_agent()
                 active_name = (
                     self._agent_display_name(active_agent)
                     if active_agent is not None
@@ -1273,6 +1297,29 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         self._active_relay_agent = None
         self._refresh_roster_info()
 
+    async def _post_collaboration_summary(self) -> None:
+        """Add the per-agent elapsed time label for a completed relay batch."""
+        if not self.session.active_agents:
+            return
+        elapsed_by_agent = [
+            (
+                self._agent_display_name(agent),
+                self._format_elapsed(self._agent_elapsed.get(id(agent), 0)),
+            )
+            for agent in self.session.active_agents
+        ]
+        parts: list[Content | tuple[str, str]] = [
+            ("Batch complete", "$text-primary bold")
+        ]
+        for name, elapsed in elapsed_by_agent:
+            parts.extend(
+                [
+                    (" · ", "dim"),
+                    (f"{name} {elapsed}", "$text-secondary"),
+                ]
+            )
+        await self.post(Note(Content.assemble(*parts)))
+
     def _routing_agent(self) -> AgentBase | None:
         """Return the agent that would receive the next user message."""
         active_agents = self.session.active_agents
@@ -1468,6 +1515,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                     )
                 elif result.reason == "stop_token":
                     self._mark_collaboration_complete()
+                    await self._post_collaboration_summary()
             except Exception as error:
                 await self._post_agent_communication_error(error)
             finally:
@@ -1588,6 +1636,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         slash_commands = [
             SlashCommand("/help", "Show CodeSwarm commands"),
             SlashCommand("/config", "Configure CodeSwarm preferences"),
+            SlashCommand("/export", "Export the conversation as Markdown"),
             SlashCommand("/mode", "Open the mode picker"),
             SlashCommand(
                 "/close",
@@ -2153,6 +2202,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 - `/mode` — choose one mode for every active agent
 - `/mode chat` — chat without workspace inspection or tools
 - `/pause` — pause or resume a multi-agent relay
+- `/export` — export the conversation as Markdown
 - `/close` — close this workspace and return to agent selection
 
 ### CodeSwarm
@@ -2169,6 +2219,14 @@ Drag over conversation text and press `Ctrl+C` to copy it. Otherwise,
             from codeswarm.screens.config import ConfigScreen
 
             self.app.push_screen(ConfigScreen(self))
+            return True
+        if command == "export":
+            try:
+                export_path = self._export_conversation()
+            except OSError as error:
+                self.flash(f"Export failed: {error}", style="error")
+            else:
+                self.flash(f"Conversation exported to {export_path}", style="success")
             return True
         if command == "mode":
             if parameters.strip().lower() in {"chat", "discuss", "discussion"}:
@@ -2193,3 +2251,38 @@ Drag over conversation text and press `Ctrl+C` to copy it. Otherwise,
             style="error",
         )
         return True
+
+    def _export_conversation(self) -> Path:
+        """Write the retained user/agent conversation as a Markdown file."""
+        from codeswarm.widgets.agent_response import AgentMessage, AgentResponse
+
+        lines = ["# CodeSwarm Conversation", ""]
+        for block in self.contents.displayed_children:
+            if isinstance(block, UserInput):
+                content = block.content.strip()
+                if content:
+                    lines.extend(["## User", "", content, ""])
+            elif isinstance(block, AgentMessage):
+                if block.response is None or not block.response.source.strip():
+                    continue
+                lines.extend(
+                    [
+                        f"## {block._speaker} · {block._timestamp}",
+                        "",
+                        block.response.source.strip(),
+                        "",
+                    ]
+                )
+            elif isinstance(block, AgentResponse) and block.source.strip():
+                lines.extend(["## Agent", "", block.source.strip(), ""])
+
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        export_dir = Path(self.project_path)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        export_path = export_dir / f"codeswarm-conversation-{stamp}.md"
+        suffix = 2
+        while export_path.exists():
+            export_path = export_dir / f"codeswarm-conversation-{stamp}-{suffix}.md"
+            suffix += 1
+        export_path.write_text("\n".join(lines).rstrip() + "\n")
+        return export_path

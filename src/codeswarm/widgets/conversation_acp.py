@@ -40,6 +40,7 @@ class ConversationACPHandlers(Widget):
     @on(acp_messages.Update)
     async def on_acp_agent_message(self, message: acp_messages.Update):
         message.stop()
+        self.clear_agent_thinking()
         self.begin_agent_output(message.agent)
         self._agent_thought = None
         await self.post_agent_response(message.text)
@@ -60,8 +61,9 @@ class ConversationACPHandlers(Widget):
     @on(acp_messages.Thinking)
     async def on_acp_agent_thinking(self, message: acp_messages.Thinking):
         message.stop()
+        self.clear_agent_thinking()
         self.begin_agent_output(message.agent)
-        await self.post_agent_thought(message.text)
+        await self.post_agent_thought(message.text, message.agent)
 
     @on(acp_messages.RequestPermission)
     async def on_acp_request_permission(self, message: acp_messages.RequestPermission):
@@ -82,10 +84,12 @@ class ConversationACPHandlers(Widget):
         from codeswarm.widgets.agent_response import AgentToolActivity
         from codeswarm.widgets.tool_call import ToolCall
 
+        follow_output = self.window.is_vertical_scroll_end
         tool_call = message.tool_call
         source_agent = (
             getattr(message, "agent", None) or self._active_relay_agent or self.agent
         )
+        self.clear_agent_thinking()
         self.begin_agent_output(source_agent)
         if tool_call.get("status", None) in (None, "completed"):
             self._agent_thought = None
@@ -109,6 +113,7 @@ class ConversationACPHandlers(Widget):
                     pass
                 else:
                     activity.refresh_preview()
+        self._scroll_output_if_following(follow_output)
 
     @on(acp_messages.AvailableCommandsUpdate)
     async def on_acp_available_commands_update(

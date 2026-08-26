@@ -31,6 +31,41 @@ _MODES = {
     "plan": Mode("plan", "Plan", "Plan-oriented execution."),
 }
 
+_TOOL_DETAIL_LIMIT = 1200
+
+
+def _compact_tool_value(value: object, *, limit: int = _TOOL_DETAIL_LIMIT) -> str:
+    """Make provider tool data readable without flooding the transcript."""
+    if isinstance(value, dict):
+        text = " ".join(
+            f"{key}={_compact_tool_value(item, limit=limit)}"
+            for key, item in value.items()
+        )
+    elif isinstance(value, (list, tuple)):
+        text = " ".join(_compact_tool_value(item, limit=limit) for item in value)
+    else:
+        text = str(value)
+    text = " ".join(text.split())
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _tool_detail_content(
+    parameters: dict[str, Any], output: str | None = None
+) -> list[dict[str, Any]]:
+    lines = [
+        f"{key}: {_compact_tool_value(value)}" for key, value in parameters.items()
+    ]
+    if output:
+        lines.append(f"Output: {_compact_tool_value(output)}")
+    if not lines:
+        return []
+    return [
+        {
+            "type": "content",
+            "content": {"type": "text", "text": "\n".join(lines)},
+        }
+    ]
+
 
 class AgyAgent(AgentBase):
     """Run Antigravity directly, without a third-party ACP bridge."""
@@ -58,6 +93,7 @@ class AgyAgent(AgentBase):
         self._last_response_parts: list[str] = []
         self._response_display_tail = ""
         self._tool_calls: dict[str, dict[str, Any]] = {}
+        self._cancel_requested = False
 
     @property
     def last_response(self) -> str:
@@ -108,6 +144,7 @@ class AgyAgent(AgentBase):
         self.post_message(AgentReady(self))
 
     async def send_prompt(self, prompt: str) -> str | None:
+        self._cancel_requested = False
         first_prompt = not self._operating_instructions_sent
         if first_prompt:
             roster_context = (
@@ -167,6 +204,9 @@ class AgyAgent(AgentBase):
                     await stderr_task
             if self._process is process:
                 self._process = None
+
+        if self._cancel_requested or exit_code == -signal.SIGINT:
+            return "cancelled"
 
         if result is None or result.get("status") != "SUCCESS":
             details = str(result.get("error") if result else stderr.strip())
@@ -246,6 +286,7 @@ class AgyAgent(AgentBase):
         raw_input = parameters if isinstance(parameters, dict) else {}
         output = info.get("output")
         raw_output = {"output": output} if isinstance(output, str) else {}
+        output_text = output if isinstance(output, str) else None
         state = update.get("state")
         if state == "ACTIVE":
             kind = "execute" if tool_name == "run_command" else "other"
@@ -256,6 +297,7 @@ class AgyAgent(AgentBase):
                 "kind": kind,
                 "status": "in_progress",
                 "rawInput": raw_input,
+                "content": _tool_detail_content(raw_input),
             }
             self._tool_calls[tool_id] = tool_call
             self.post_message(messages.ToolCall(deepcopy(tool_call)))
@@ -268,6 +310,7 @@ class AgyAgent(AgentBase):
             current["status"] = "completed"
             if raw_output:
                 current["rawOutput"] = raw_output
+            current["content"] = _tool_detail_content(raw_input, output_text)
             tool_update: dict[str, Any] = {
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": tool_id,
@@ -312,6 +355,7 @@ class AgyAgent(AgentBase):
     async def cancel(self) -> bool:
         if self._process is None or self._process.returncode is not None:
             return False
+        self._cancel_requested = True
         self._process.send_signal(signal.SIGINT)
         return True
 

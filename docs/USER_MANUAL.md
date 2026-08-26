@@ -210,6 +210,7 @@ it is never sent to an agent. Press `Ctrl+C` to stop a running command.
 | --- | --- |
 | `/help` | Show the concise command and control reference in the conversation. |
 | `/config` | Open CodeSwarm settings and the roster for the next workspace. |
+| `/export` | Export the conversation as a Markdown file in the workspace. |
 | `/pause` | Pause or resume the multi-agent relay. |
 | `/mode` | Open the mode picker. |
 | `/mode chat` | Enter Chat mode directly. |
