@@ -27,6 +27,10 @@ unchecked peers leave it without restarting Wingmen.
 - `Alt+Up` and `Alt+Down` remain available and move the row containing keyboard
   focus, whether focus is on its checkbox or either reorder control. The old
   global Move Up and Move Down buttons are removed.
+- Numeric preference inputs use validation that matches their schema type:
+  `integer` fields accept integers and `number` fields accept decimal numbers.
+  Flash Duration therefore renders its valid `3.0` default with the same
+  neutral border treatment as every other valid input.
 - If a newly selected agent cannot start, Wingmen keeps every healthy existing
   agent active, reports the failure in the conversation notification ribbon,
   and persists the roster that actually became active.
@@ -55,6 +59,10 @@ so button events directly identify the row to move. Reordering operates among
 selected rows: moving a selected row crosses the adjacent selected row while
 unchecked catalog entries remain outside the numbered relay order. Refreshing
 the rows updates numbering and button enabled states together.
+
+`ConfigRow` maps schema field types directly to Textual input types instead of
+mapping both `integer` and `number` to the integer validator. Save-time parsing
+continues to produce `int` for integer fields and `float` for number fields.
 
 `Conversation` owns the UI-facing reconciliation operation. It compares the
 requested identities with `SessionCoordinator.roster`, starts missing peers
@@ -94,6 +102,8 @@ entry rather than reactivating the tombstone.
   controls disable correctly, and unchecked rows cannot be reordered.
 - Keyboard coverage verifies that `Alt+Up` and `Alt+Down` move the row that owns
   the currently focused checkbox or inline reorder button.
+- Config input coverage verifies that Flash Duration starts valid with its
+  decimal default and still rejects non-numeric text.
 - Integration coverage verifies that existing live order remains stable while
   the saved next-workspace order follows the checkboxes.
 - Failure coverage verifies that a replacement external agent startup failure
