@@ -84,7 +84,7 @@ class ConversationACPHandlers(Widget):
         from codeswarm.widgets.agent_response import AgentToolActivity
         from codeswarm.widgets.tool_call import ToolCall
 
-        follow_output = self.window.is_vertical_scroll_end
+        follow_output = self.window.follow_output
         tool_call = message.tool_call
         source_agent = (
             getattr(message, "agent", None) or self._active_relay_agent or self.agent

@@ -68,6 +68,19 @@ class RelayConversationTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_cancel_queued_prompt_removes_only_the_requested_occurrence(self) -> None:
+        first = FakeAgent("A", [])
+        second = FakeAgent("B", [])
+        relay = RelayConversation((first, second))
+
+        self.assertTrue(relay.enqueue_human("same"))
+        self.assertTrue(relay.enqueue_human("keep"))
+        self.assertTrue(relay.enqueue_human("same"))
+
+        self.assertTrue(relay.cancel_queued("same", False, occurrence=1))
+        self.assertEqual(list(relay._steering_queue), [(0, "same"), (0, "keep")])
+
+
     def test_public_journal_is_hard_bounded(self) -> None:
         first = FakeAgent("A", [])
         second = FakeAgent("B", [])

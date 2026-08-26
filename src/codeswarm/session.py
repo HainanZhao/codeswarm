@@ -470,6 +470,13 @@ class SessionCoordinator:
             return self.relay.enqueue_direct(agent_index, prompt)
         return False
 
+    def cancel_queued_prompt(
+        self, prompt: str, direct: bool, *, occurrence: int = 0
+    ) -> bool:
+        if self.relay is None:
+            return False
+        return self.relay.cancel_queued(prompt, direct, occurrence=occurrence)
+
     def drain_relay_prompts_for_solo_agent(self) -> list[str]:
         """Preserve queued relay work if only one healthy agent remains."""
         if self.relay is None or self.primary_agent is None:

@@ -187,6 +187,27 @@ class RelayConversation:
         self._direct_queue.append((agent_index, prompt))
         return True
 
+    def cancel_queued(
+        self, prompt: str, direct: bool, *, occurrence: int = 0
+    ) -> bool:
+        """Remove one matching queued prompt without touching active work."""
+        queue = self._direct_queue if direct else self._steering_queue
+        matches = 0
+        retained: deque[tuple[int, str]] = deque()
+        removed = False
+        for target, queued_prompt in queue:
+            if not removed and queued_prompt == prompt:
+                if matches == occurrence:
+                    removed = True
+                    continue
+                matches += 1
+            retained.append((target, queued_prompt))
+        if direct:
+            self._direct_queue = retained
+        else:
+            self._steering_queue = retained
+        return removed
+
     def drain_for_solo_agent(self) -> list[str]:
         """Return queued work that can survive a relay collapsing to one agent.
 

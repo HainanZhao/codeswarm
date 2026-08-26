@@ -554,6 +554,32 @@ Prompt {
         color: $text-secondary;
         background: $secondary 8%;
         border-left: tall $secondary 45%;
+
+        .queued-message-row {
+            width: 1fr;
+            height: 1;
+        }
+
+        .queued-message-row Label {
+            width: 1fr;
+            height: 1;
+            content-align: left middle;
+        }
+
+        .queued-message-cancel {
+            width: 3;
+            height: 1;
+            min-width: 3;
+            padding: 0;
+            color: $text-secondary;
+            background: transparent;
+            border: none;
+
+            &:hover {
+                color: $text-error;
+                background: $text-error 15%;
+            }
+        }
     }
 
     &.-working-directory-out-of-bounds #info-container CondensedPath {        

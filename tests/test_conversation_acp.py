@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from textual.color import Color
+from textual.widgets import Label
 from textual.widgets._markdown import (
     MarkdownBlockQuote,
     MarkdownFence,
@@ -358,7 +359,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_returning_relay_agent_starts_with_a_fresh_timer(self) -> None:
+    def test_returning_relay_agent_preserves_batch_elapsed_timer(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
@@ -417,7 +418,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             )
 
                             self.assertIn(
-                                "● Claude · 0:00", conversation.agent_info.plain
+                                "● Claude · 0:05", conversation.agent_info.plain
                             )
                             conversation._finish_agent_status(claude)  # type: ignore[arg-type]
 
@@ -515,6 +516,73 @@ class ConversationACPDispatchTests(unittest.TestCase):
                 self.assertEqual(summaries, ["Batch complete · Claude 0:42 · Gemini 0:08"])
                 conversation._begin_collaboration()
                 self.assertEqual(conversation._agent_elapsed, {})
+
+        asyncio.run(scenario())
+
+    def test_batch_summary_waits_for_the_final_agent_reply_render(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(120, 40)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                claude = _RosterAgent("Claude")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.com", name="Claude", short_name="claude"
+                        ),
+                        claude,  # type: ignore[arg-type]
+                    )
+                ]
+                conversation.post_message(
+                    acp_messages.Update("text", "last agent reply", claude)  # type: ignore[arg-type]
+                )
+                await conversation._post_collaboration_summary()
+                await pilot.pause()
+
+                children = list(conversation.contents.children)
+                summary_index = next(
+                    index
+                    for index, child in enumerate(children)
+                    if isinstance(child, Note)
+                    and "Batch complete" in child.render().plain
+                )
+                response_index = next(
+                    index
+                    for index, child in enumerate(children)
+                    if isinstance(child, AgentMessage)
+                )
+                self.assertLess(response_index, summary_index)
+
+        asyncio.run(scenario())
+
+    def test_batch_elapsed_accumulates_repeated_agent_rounds(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(120, 40)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                claude = _RosterAgent("Claude")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.com", name="Claude", short_name="claude"
+                        ),
+                        claude,  # type: ignore[arg-type]
+                    )
+                ]
+                clock = Mock(return_value=100.0)
+                with patch("codeswarm.widgets.conversation.monotonic", clock):
+                    conversation._begin_collaboration()
+                    conversation._begin_agent_status(claude)  # type: ignore[arg-type]
+                    clock.return_value = 106.0
+                    conversation._finish_agent_status(claude)  # type: ignore[arg-type]
+
+                    conversation._begin_agent_status(claude)  # type: ignore[arg-type]
+                    clock.return_value = 110.0
+                    conversation._finish_agent_status(claude)  # type: ignore[arg-type]
+
+                self.assertEqual(conversation._agent_elapsed[id(claude)], 10)
 
         asyncio.run(scenario())
 
@@ -1694,6 +1762,54 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         await pilot.pause(0.1)
 
                         self.assertTrue(conversation.window.is_vertical_scroll_end)
+
+        asyncio.run(scenario())
+
+    def test_repeated_streamed_fragments_keep_following_the_bottom(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(80, 12)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                for index in range(40):
+                    await conversation.post(Note(f"History {index}"))
+                await pilot.pause(0.1)
+                conversation.window.scroll_end(animate=False)
+
+                conversation.begin_agent_output(None)
+                for _ in range(80):
+                    await conversation.post_agent_response("streamed output " * 4)
+                    await pilot.pause()
+
+                await pilot.pause(0.1)
+                self.assertTrue(conversation.window.is_vertical_scroll_end)
+
+        asyncio.run(scenario())
+
+    def test_scrolling_back_to_bottom_resumes_stream_following(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(80, 12)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                for index in range(40):
+                    await conversation.post(Note(f"History {index}"))
+                await pilot.pause(0.1)
+                conversation.window.scroll_home(animate=False)
+                await pilot.pause()
+                self.assertFalse(conversation.window.is_vertical_scroll_end)
+                self.assertFalse(conversation.window.follow_output)
+
+                conversation.window.scroll_end(animate=False, immediate=True)
+                self.assertTrue(conversation.window.is_vertical_scroll_end)
+                self.assertTrue(conversation.window.follow_output)
+                conversation.begin_agent_output(None)
+                for _ in range(80):
+                    await conversation.post_agent_response("resumed output " * 4)
+                    await pilot.pause()
+
+                await pilot.pause(0.1)
+                self.assertTrue(conversation.window.is_vertical_scroll_end)
 
         asyncio.run(scenario())
 
@@ -2899,7 +3015,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
                         queued = conversation.query_one(QueuedMessages)
                         self.assertEqual(
-                            queued.render().plain,
+                            queued.query_one(Label).render().plain,
                             "TX HOLD // Claude · [red]literal[/red]",
                         )
 
@@ -2997,6 +3113,41 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertEqual(
                             conversation.query(UserInput).last().content,
                             "Follow up after this",
+                        )
+
+        asyncio.run(scenario())
+
+    def test_cancel_button_removes_a_queued_solo_follow_up(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        conversation.agent = _RosterAgent("Claude")  # type: ignore[assignment]
+                        conversation.agent_ready = True
+                        conversation.turn = "agent"
+
+                        await conversation.on_user_input_submitted(
+                            messages.UserInputSubmitted("cancel this")
+                        )
+                        await conversation.on_user_input_submitted(
+                            messages.UserInputSubmitted("keep this")
+                        )
+                        await pilot.pause()
+                        await pilot.click("#queued-cancel-0")
+                        await pilot.pause()
+
+                        self.assertEqual(
+                            list(conversation._pending_solo_prompts), ["keep this"]
+                        )
+                        self.assertEqual(
+                            conversation.queued_messages,
+                            ("TX HOLD // ACTIVE WINGMAN · keep this",),
                         )
 
         asyncio.run(scenario())

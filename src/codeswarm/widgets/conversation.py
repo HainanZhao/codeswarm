@@ -52,7 +52,7 @@ from codeswarm.mode_policy import (
 )
 from codeswarm.widgets.flash import Flash
 from codeswarm.widgets.note import Note
-from codeswarm.widgets.prompt import Prompt
+from codeswarm.widgets.prompt import Prompt, QueuedMessages
 from codeswarm.widgets.user_input import UserInput
 from codeswarm.widgets.agent_response import format_reply_timestamp
 from codeswarm.acp.relay import MAX_QUEUED_PROMPTS
@@ -169,6 +169,28 @@ This is a view of your conversation with the agent.
 """
     BINDING_GROUP_TITLE = "View"
     BINDINGS = [Binding("end", "screen.focus_prompt", "Prompt")]
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.follow_output = True
+        self._programmatic_scroll = False
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        if self._programmatic_scroll or round(old_value) == round(new_value):
+            return
+        # A user scroll changes this state. Content growth may leave scroll_y
+        # unchanged while the maximum grows, so it does not accidentally turn
+        # following off between streamed fragments.
+        self.follow_output = self.is_vertical_scroll_end
+
+    def scroll_end_for_output(self) -> None:
+        """Follow streamed output without treating the move as user scrolling."""
+        self._programmatic_scroll = True
+        try:
+            self.scroll_end(animate=False, immediate=True)
+        finally:
+            self._programmatic_scroll = False
 
     def update_node_styles(self, animate: bool = True) -> None:
         pass
@@ -692,7 +714,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         """Get or create an agent response widget."""
         from codeswarm.widgets.agent_response import AgentMessage, AgentResponse
 
-        follow_output = self.window.is_vertical_scroll_end
+        follow_output = self.window.follow_output
         async with self._post_lock:
             if self._agent_response is None:
                 # ACP chunks carry their source agent. Prefer that immutable
@@ -725,7 +747,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
     def _scroll_output_if_following(self, follow_output: bool) -> None:
         """Keep new streamed content visible without hijacking manual scrolling."""
         if follow_output:
-            self.call_after_refresh(self.window.scroll_end, animate=False)
+            self.call_after_refresh(self.window.scroll_end_for_output)
 
     async def ensure_agent_message(self, agent: AgentBase) -> AgentMessage:
         """Get or create the attributed container for the current agent turn."""
@@ -1167,6 +1189,37 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 break
         self._refresh_queued_prompt_previews()
 
+    @on(QueuedMessages.CancelRequested)
+    def on_queued_message_cancel(
+        self, event: QueuedMessages.CancelRequested
+    ) -> None:
+        """Cancel the queued item represented by a visible preview row."""
+        event.stop()
+        previews = list(self._queued_prompt_previews)
+        if not 0 <= event.index < len(previews):
+            return
+        prompt, direct, _label = previews[event.index]
+        if self._relay_active:
+            occurrence = sum(
+                queued_prompt == prompt and queued_direct == direct
+                for queued_prompt, queued_direct, _ in previews[: event.index]
+            )
+            if not self.session.cancel_queued_prompt(
+                prompt, direct, occurrence=occurrence
+            ):
+                return
+        else:
+            pending = list(self._pending_solo_prompts)
+            try:
+                pending.remove(prompt)
+            except ValueError:
+                return
+            self._pending_solo_prompts.clear()
+            self._pending_solo_prompts.extend(pending)
+        previews.pop(event.index)
+        self._queued_prompt_previews = deque(previews)
+        self._refresh_queued_prompt_previews()
+
     async def _label_queued_relay_turn_start(
         self, _round_number: int, _agent: AgentBase, prompt: str, direct: bool
     ) -> None:
@@ -1265,7 +1318,10 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         """Start the compact roster timer for one sequential agent turn."""
         if self._agent_status_timer is not None:
             self._agent_status_timer.stop()
-        self._agent_elapsed[id(agent)] = 0
+        # A relay can return to the same agent for several rounds. The
+        # collaboration reset owns clearing this value; each turn only starts
+        # a new interval that is added when the turn finishes.
+        self._agent_elapsed.setdefault(id(agent), 0)
         self._working_agent = agent
         self._agent_started_at = monotonic()
         self._agent_status_timer = self.set_interval(1, self._refresh_roster_info)
@@ -1301,6 +1357,13 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         """Add the per-agent elapsed time label for a completed relay batch."""
         if not self.session.active_agents:
             return
+        # ACP adapters post their final streamed update to Textual before
+        # returning the relay result, but that message may still be waiting in
+        # Textual's queue. Let one refresh cycle drain it before appending the
+        # batch footer, otherwise the footer can appear above the final reply.
+        rendered = asyncio.Event()
+        self.call_after_refresh(rendered.set)
+        await rendered.wait()
         elapsed_by_agent = [
             (
                 self._agent_display_name(agent),

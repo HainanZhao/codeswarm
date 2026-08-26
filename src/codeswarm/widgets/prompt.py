@@ -14,7 +14,7 @@ from textual.binding import Binding
 from textual.content import Content
 from textual import getters
 from textual.message import Message
-from textual.widgets import OptionList, TextArea, Label
+from textual.widgets import Button, OptionList, TextArea, Label
 from textual import containers
 from textual.widget import Widget
 from textual.widgets.option_list import Option
@@ -85,14 +85,54 @@ class PromptContainer(containers.HorizontalGroup):
             prompt_text_area.focus()
 
 
-class QueuedMessages(Label):
+class QueuedMessages(containers.Vertical):
     """A compact holding area for prompts waiting behind an active turn."""
 
     messages: var[tuple[str, ...]] = var(())
 
     def watch_messages(self, messages: tuple[str, ...]) -> None:
         self.display = bool(messages)
-        self.update("\n".join(messages))
+        async def rebuild() -> None:
+            await self._rebuild_rows(messages)
+
+        self.run_worker(rebuild, exclusive=True)
+
+    async def _rebuild_rows(self, messages: tuple[str, ...]) -> None:
+        await self.remove_children()
+        for index, message in enumerate(messages):
+            row = containers.Horizontal(classes="queued-message-row")
+            await self.mount(row)
+            await row.mount(Label(message, markup=False))
+            await row.mount(
+                Button(
+                    "×",
+                    id=f"queued-cancel-{index}",
+                    classes="queued-message-cancel",
+                    compact=True,
+                    flat=True,
+                    tooltip="Cancel queued message",
+                )
+            )
+
+    class CancelRequested(Message):
+        """Request cancellation of the queued preview at a visible index."""
+
+        def __init__(self, index: int) -> None:
+            self.index = index
+            super().__init__()
+
+    @on(Button.Pressed)
+    def on_cancel_button(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        prefix = "queued-cancel-"
+        if not button_id.startswith(prefix):
+            return
+        try:
+            index = int(button_id[len(prefix) :])
+        except ValueError:
+            return
+        event.stop()
+        self.post_message(self.CancelRequested(index))
 
 
 class PromptTextArea(HighlightedTextArea):
