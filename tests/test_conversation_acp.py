@@ -9,41 +9,43 @@ from unittest.mock import AsyncMock, Mock, patch
 from textual.color import Color
 from textual.widgets._markdown import (
     MarkdownBlockQuote,
+    MarkdownFence,
     MarkdownH1,
     MarkdownHorizontalRule,
     MarkdownParagraph,
+    MarkdownTable,
 )
 
-from wingmen import jsonrpc
-from wingmen.acp import messages as acp_messages
-from wingmen.acp.agent import Mode
-from wingmen.acp.relay import MAX_QUEUED_PROMPTS, RelayConversation, RelayResult
-from wingmen.agent import AgentFail, AgentReady
-from wingmen.agent_schema import Agent as AgentData
-from wingmen.app import WingmenApp
-from wingmen import messages
-from wingmen.session import RosterEntry
-from wingmen.slash_command import SlashCommand
-from wingmen.widgets.conversation import AGENT_FAIL_HELP, Conversation
-from wingmen.widgets.agent_response import (
+from codeswarm import jsonrpc
+from codeswarm.acp import messages as acp_messages
+from codeswarm.acp.agent import Mode
+from codeswarm.acp.relay import MAX_QUEUED_PROMPTS, RelayConversation, RelayResult
+from codeswarm.agent import AgentFail, AgentReady
+from codeswarm.agent_schema import Agent as AgentData
+from codeswarm.app import CodeSwarmApp
+from codeswarm import messages
+from codeswarm.session import RosterEntry
+from codeswarm.slash_command import SlashCommand
+from codeswarm.widgets.conversation import AGENT_FAIL_HELP, Conversation
+from codeswarm.widgets.agent_response import (
     AgentMessage,
     AgentResponse,
     AgentToolActivity,
 )
-from wingmen.widgets.agent_thought import AgentThought
-from wingmen.widgets import agent_response as agent_response_widget
-from wingmen.widgets.markdown_note import MarkdownNote
-from wingmen.widgets.note import Note
-from wingmen.widgets.path_search import PathSearch
-from wingmen.widgets.prompt import AgentInfo, InvokeFileSearch, QueuedMessages
-from wingmen.widgets.flash import Flash
-from wingmen.screens.config import ConfigScreen
-from wingmen.screens.permissions import PermissionsQuestion
-from wingmen.answer import Answer
-from wingmen.widgets.terminal_tool import TerminalTool
-from wingmen.widgets.tool_call import ToolCall
-from wingmen.widgets.user_input import UserInput
-from wingmen.widgets.conversation_acp import is_mode_update_notice
+from codeswarm.widgets.agent_thought import AgentThought
+from codeswarm.widgets import agent_response as agent_response_widget
+from codeswarm.widgets.markdown_note import MarkdownNote
+from codeswarm.widgets.note import Note
+from codeswarm.widgets.path_search import PathSearch
+from codeswarm.widgets.prompt import AgentInfo, InvokeFileSearch, QueuedMessages
+from codeswarm.widgets.flash import Flash
+from codeswarm.screens.config import ConfigScreen
+from codeswarm.screens.permissions import PermissionsQuestion
+from codeswarm.answer import Answer
+from codeswarm.widgets.terminal_tool import TerminalTool
+from codeswarm.widgets.tool_call import ToolCall
+from codeswarm.widgets.user_input import UserInput
+from codeswarm.widgets.conversation_acp import is_mode_update_notice
 
 
 class _RosterAgent:
@@ -59,6 +61,104 @@ class _RosterAgent:
 
 
 class ConversationACPDispatchTests(unittest.TestCase):
+    def test_live_roster_adds_before_dropping_and_preserves_launcher_order(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(size=(120, 40)) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                owner = _RosterAgent("Claude")
+                peer = _RosterAgent("Gemini")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(identity="claude.com", name="Claude", short_name="claude"),
+                        owner,  # type: ignore[arg-type]
+                    ),
+                    RosterEntry(
+                        AgentData(identity="geminicli.com", name="Gemini", short_name="gemini"),
+                        peer,  # type: ignore[arg-type]
+                    ),
+                ]
+                conversation.agent = owner  # type: ignore[assignment]
+                conversation._ready_agents = {id(owner), id(peer)}
+                events: list[tuple[str, object]] = []
+
+                async def add(data: AgentData, _target: object, **_kwargs: object) -> None:
+                    events.append(("add", data["identity"]))
+                    conversation.session.roster.append(
+                        RosterEntry(data, _RosterAgent(data["name"]))  # type: ignore[arg-type]
+                    )
+
+                async def drop(index: int) -> RosterEntry:
+                    events.append(("drop", index))
+                    entry = conversation.session.roster[index]
+                    entry.active = False
+                    return entry
+
+                conversation.session.add = add  # type: ignore[method-assign]
+                conversation.session.drop = drop  # type: ignore[method-assign]
+                persist = AsyncMock()
+                conversation._persist_roster = persist  # type: ignore[method-assign]
+                catalog = {
+                    "claude.com": conversation.session.roster[0].data,
+                    "openai.com": AgentData(
+                        identity="openai.com", name="Codex", short_name="codex"
+                    ),
+                }
+
+                failures = await conversation.reconcile_roster(
+                    ["openai.com", "claude.com"], catalog
+                )
+
+                self.assertEqual(failures, [])
+                self.assertEqual(events, [("add", "openai.com"), ("drop", 1)])
+                self.assertEqual(
+                    [entry.data["identity"] for entry in conversation.session.roster if entry.active],
+                    ["claude.com", "openai.com"],
+                )
+                self.assertNotIn(id(peer), conversation._ready_agents)
+                persist.assert_awaited_once_with(["openai.com", "claude.com"])
+
+        asyncio.run(scenario())
+
+    def test_live_roster_add_failure_keeps_healthy_peer(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(size=(120, 40)) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                owner = _RosterAgent("Claude")
+                peer = _RosterAgent("Gemini")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(identity="claude.com", name="Claude", short_name="claude"),
+                        owner,  # type: ignore[arg-type]
+                    ),
+                    RosterEntry(
+                        AgentData(identity="geminicli.com", name="Gemini", short_name="gemini"),
+                        peer,  # type: ignore[arg-type]
+                    ),
+                ]
+                conversation.session.add = AsyncMock(  # type: ignore[method-assign]
+                    side_effect=RuntimeError("adapter unavailable")
+                )
+                conversation.session.drop = AsyncMock()  # type: ignore[method-assign]
+                persist = AsyncMock()
+                conversation._persist_roster = persist  # type: ignore[method-assign]
+                catalog = {
+                    "claude.com": conversation.session.roster[0].data,
+                    "openai.com": AgentData(
+                        identity="openai.com", name="Codex", short_name="codex"
+                    ),
+                }
+
+                failures = await conversation.reconcile_roster(
+                    ["claude.com", "openai.com"], catalog
+                )
+
+                self.assertEqual(failures, ["Codex"])
+                conversation.session.drop.assert_not_awaited()  # type: ignore[attr-defined]
+                self.assertTrue(conversation.session.roster[1].active)
+                persist.assert_awaited_once_with(["claude.com", "geminicli.com"])
+
+        asyncio.run(scenario())
+
     def test_token_only_reviewer_stop_renders_default_acknowledgment(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
@@ -66,12 +166,12 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
                         reviewer = _RosterAgent("Gemini")
-                        reviewer.last_response = "[WINGMEN:STOP]"
+                        reviewer.last_response = "[CODESWARM:STOP]"
                         conversation.session.roster = [
                             RosterEntry(
                                 AgentData(
@@ -136,7 +236,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -198,7 +298,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -227,7 +327,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         conversation.session.relay = relay
 
                         clock = Mock(return_value=100.0)
-                        with patch("wingmen.widgets.conversation.monotonic", clock):
+                        with patch("codeswarm.widgets.conversation.monotonic", clock):
                             await conversation._label_relay_turn_start(
                                 2, gemini  # type: ignore[arg-type]
                             )
@@ -264,7 +364,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -294,7 +394,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         )
 
                         clock = Mock(return_value=100.0)
-                        with patch("wingmen.widgets.conversation.monotonic", clock):
+                        with patch("codeswarm.widgets.conversation.monotonic", clock):
                             await conversation._label_relay_turn_start(
                                 1, claude  # type: ignore[arg-type]
                             )
@@ -329,7 +429,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -394,7 +494,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
             # Gemini's update must not replace Claude's visible mode list.
             self.assertEqual(
                 set(conversation.modes),
-                {"default", "wingmen:discuss"},
+                {"default", "codeswarm:discuss"},
             )
 
             conversation._select_agent_modes(gemini)  # type: ignore[arg-type]
@@ -413,7 +513,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -469,18 +569,18 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertEqual(
                             set(conversation.modes),
                             {
-                                "wingmen:discuss",
-                                "wingmen:mode:manual",
-                                "wingmen:mode:accept-edits",
-                                "wingmen:mode:plan",
-                                "wingmen:mode:full-access",
+                                "codeswarm:discuss",
+                                "codeswarm:mode:manual",
+                                "codeswarm:mode:accept-edits",
+                                "codeswarm:mode:plan",
+                                "codeswarm:mode:full-access",
                             },
                         )
                         self.assertNotIn("auto", conversation.modes)
                         self.assertNotIn("dontAsk", conversation.modes)
                         self.assertIsNotNone(conversation.current_mode)
                         assert conversation.current_mode is not None
-                        self.assertEqual(conversation.current_mode.name, "Fully Auto")
+                        self.assertEqual(conversation.current_mode.name, "Auto pilot")
                         ordered_mode_ids = [
                             conversation.prompt.mode_switcher.get_option_at_index(
                                 index
@@ -490,11 +590,11 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertEqual(
                             ordered_mode_ids,
                             [
-                                "wingmen:discuss",
-                                "wingmen:mode:plan",
-                                "wingmen:mode:manual",
-                                "wingmen:mode:accept-edits",
-                                "wingmen:mode:full-access",
+                                "codeswarm:discuss",
+                                "codeswarm:mode:plan",
+                                "codeswarm:mode:manual",
+                                "codeswarm:mode:accept-edits",
+                                "codeswarm:mode:full-access",
                             ],
                         )
                         self.assertEqual(
@@ -502,10 +602,10 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                 conversation.modes[mode_id].name
                                 for mode_id in ordered_mode_ids
                             ],
-                            ["Chat", "Plan", "Manual", "Accept Edits", "Fully Auto"],
+                            ["Chat", "Plan", "Manual", "Accept Edits", "Auto pilot"],
                         )
 
-                        # Adapter defaults are synchronized to Wingmen's
+                        # Adapter defaults are synchronized to CodeSwarm's
                         # roster-wide default as soon as all catalogs arrive.
                         await conversation._sync_desired_mode()
                         claude.set_mode.assert_awaited_once_with(
@@ -517,7 +617,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
                         with patch.object(conversation, "flash") as mode_flash:
                             await conversation.set_mode(
-                                "wingmen:mode:accept-edits"
+                                "codeswarm:mode:accept-edits"
                             )
                         mode_flash.assert_not_called()
 
@@ -527,12 +627,12 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         assert conversation.current_mode is not None
                         self.assertEqual(
                             conversation.current_mode.id,
-                            "wingmen:mode:accept-edits",
+                            "codeswarm:mode:accept-edits",
                         )
                         self.assertEqual(conversation.prompt.mode_owner, "")
 
                         # A native adapter update must not leave the roster in
-                        # a mixed state; Wingmen restores the desired policy.
+                        # a mixed state; CodeSwarm restores the desired policy.
                         claude.set_mode.reset_mock()
                         gemini.set_mode.reset_mock()
                         await conversation.on_mode_update(
@@ -544,8 +644,99 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         claude.set_mode.assert_not_awaited()
                         self.assertEqual(
                             conversation.current_mode.id,
-                            "wingmen:mode:accept-edits",
+                            "codeswarm:mode:accept-edits",
                         )
+
+        asyncio.run(scenario())
+
+    def test_startup_backed_auto_pilot_is_visible_and_switchable(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+
+                        class StartupAgent(_RosterAgent):
+                            def __init__(self, enabled: bool) -> None:
+                                super().__init__("Antigravity CLI")
+                                self.enabled = enabled
+
+                            @property
+                            def supports_startup_full_access(self) -> bool:
+                                return True
+
+                            @property
+                            def startup_full_access(self) -> bool:
+                                return self.enabled
+
+                        modes = {
+                            "default": Mode("default", "Default", "Prompt"),
+                            "accept-edits": Mode(
+                                "accept-edits", "Accept Edits", "Approve edits"
+                            ),
+                            "plan": Mode("plan", "Plan", "Read-only"),
+                        }
+                        agent = StartupAgent(True)
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="antigravity.google.com",
+                                    name="Antigravity CLI",
+                                    short_name="antigravity",
+                                ),
+                                agent,  # type: ignore[arg-type]
+                            )
+                        ]
+                        conversation.agent = agent  # type: ignore[assignment]
+                        conversation.set_agent_modes(modes, "default", agent)  # type: ignore[arg-type]
+
+                        self.assertIn(
+                            "codeswarm:mode:full-access", conversation.modes
+                        )
+                        self.assertEqual(
+                            conversation.current_mode.id,
+                            "codeswarm:mode:full-access",
+                        )
+                        self.assertEqual(
+                            conversation.prompt.mode_switcher.get_option_at_index(4).id,
+                            "codeswarm:mode:full-access",
+                        )
+
+                        replacements: list[tuple[StartupAgent, bool]] = []
+
+                        async def restart(
+                            old_agent: StartupAgent,
+                            _target: object,
+                            *,
+                            enabled: bool,
+                        ) -> StartupAgent:
+                            replacement = StartupAgent(enabled)
+                            replacement.session_id = "agy-session"  # type: ignore[attr-defined]
+                            conversation.session.roster[0].agent = replacement  # type: ignore[assignment]
+                            replacements.append((replacement, enabled))
+                            return replacement
+
+                        conversation.session.restart_for_startup_full_access = restart  # type: ignore[method-assign]
+
+                        conversation.turn = "agent"
+                        await conversation.set_mode("codeswarm:mode:manual")
+                        self.assertEqual(replacements, [])
+
+                        await conversation.agent_turn_over("end_turn")
+                        manual_agent = replacements[-1][0]
+                        conversation.set_agent_modes(modes, "default", manual_agent)  # type: ignore[arg-type]
+                        self.assertEqual(conversation.current_mode.name, "Manual")
+
+                        await conversation.set_mode("codeswarm:mode:full-access")
+                        auto_agent = replacements[-1][0]
+                        conversation.set_agent_modes(modes, "default", auto_agent)  # type: ignore[arg-type]
+                        self.assertEqual(replacements[-1][1], True)
+                        self.assertEqual(conversation.current_mode.name, "Auto pilot")
 
         asyncio.run(scenario())
 
@@ -557,7 +748,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
         self.assertNotIn("dropdown", help_text)
         self.assertNotIn("Install\"", help_text)
 
-    def test_resume_is_not_a_wingmen_command(self) -> None:
+    def test_resume_is_not_a_codeswarm_command(self) -> None:
         conversation = Conversation(Path.cwd())
 
         self.assertNotIn(
@@ -571,7 +762,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.1)
@@ -601,7 +792,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ), patch.object(PathSearch, "refresh_paths") as refresh_paths:
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.1)
@@ -623,7 +814,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -653,7 +844,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -688,7 +879,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -730,7 +921,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -749,7 +940,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -782,14 +973,14 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
                         prompt = conversation.prompt
-                        prompt.agent_ready = True
+                        prompt.agent_ready = False
                         prompt.slash_commands = [
-                            SlashCommand("/config", "Configure Wingmen preferences")
+                            SlashCommand("/config", "Configure CodeSwarm preferences")
                         ]
                         prompt.text = "/"
                         prompt.show_slash_complete = True
@@ -803,6 +994,27 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_config_command_opens_while_agent_is_loading(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        conversation.agent_ready = False
+                        conversation.prompt.text = "/config"
+
+                        conversation.prompt.prompt_text_area.action_submit()
+                        await pilot.pause(0.1)
+
+                        self.assertIsInstance(pilot.app.screen, ConfigScreen)
+
+        asyncio.run(scenario())
+
     def test_conversation_notifications_use_a_spaced_full_width_flash_ribbon(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
@@ -810,7 +1022,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -854,18 +1066,18 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
                         await conversation.run_local_shell.__wrapped__(
-                            conversation, "printf wingmen-shell-smoke"
+                            conversation, "printf codeswarm-shell-smoke"
                         )
 
                         terminal = conversation.query(TerminalTool).last()
                         self.assertEqual(terminal.return_code, 0)
                         self.assertIn(
-                            "wingmen-shell-smoke", terminal.tool_state.output
+                            "codeswarm-shell-smoke", terminal.tool_state.output
                         )
                         self.assertFalse(conversation._local_shells)
 
@@ -878,7 +1090,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -900,7 +1112,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.1)
@@ -961,7 +1173,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -979,7 +1191,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         conversation.begin_agent_output(gemini)  # type: ignore[arg-type]
 
                         with patch(
-                            "wingmen.widgets.conversation.format_reply_timestamp",
+                            "codeswarm.widgets.conversation.format_reply_timestamp",
                             return_value="5:42 PM",
                             create=True,
                         ) as format_timestamp:
@@ -1018,7 +1230,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1063,7 +1275,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1095,7 +1307,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1147,7 +1359,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1190,7 +1402,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1232,7 +1444,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1288,7 +1500,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1338,7 +1550,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1403,7 +1615,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1447,7 +1659,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1504,7 +1716,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1522,7 +1734,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         conversation._active_relay_agent = claude  # type: ignore[assignment]
 
                         clock = Mock(return_value=100.0)
-                        with patch("wingmen.widgets.conversation.monotonic", clock):
+                        with patch("codeswarm.widgets.conversation.monotonic", clock):
                             conversation._begin_agent_status(claude)  # type: ignore[arg-type]
                             for tool_id in ("read-file", "run-tests"):
                                 tool_message = acp_messages.ToolCall(
@@ -1574,7 +1786,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1653,14 +1865,14 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_agent_inline_code_uses_a_cool_companion_color(self) -> None:
+    def test_agent_message_body_uses_neutral_typographic_hierarchy(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1678,17 +1890,85 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         conversation.begin_agent_output(agent)  # type: ignore[arg-type]
 
                         response = await conversation.post_agent_response(
-                            "Use `wingmen` to launch."
+                            "# Heading\n\nBody with `codeswarm`.\n\n"
+                            "> Quoted detail\n\n---\n\n"
+                            "```python\nvalue = 'accent-free'\n```\n\n"
+                            "| Name | Value |\n| --- | --- |\n| mode | normal |"
                         )
                         await pilot.pause()
 
                         assert response is not None
-                        inline_code = response.query_one(
-                            MarkdownParagraph
-                        ).get_component_rich_style("code_inline")
+                        paragraph = response.query_one(MarkdownParagraph)
+                        body_color = paragraph.styles.color
+                        heading = response.query_one(MarkdownH1)
+                        rule = response.query_one(MarkdownHorizontalRule)
+                        fence = response.query_one(MarkdownFence)
+                        table = response.query_one(MarkdownTable)
+                        quote = response.query_one(MarkdownBlockQuote)
+                        inline_code = paragraph.get_component_rich_style(
+                            "code_inline"
+                        )
                         assert inline_code.color is not None
-                        color = inline_code.color.get_truecolor()
-                        self.assertGreater(color.green, color.red)
+                        assert inline_code.bgcolor is not None
+                        inline_color = inline_code.color.get_truecolor()
+                        inline_background = inline_code.bgcolor.get_truecolor()
+                        inline_rgb = (
+                            inline_color.red,
+                            inline_color.green,
+                            inline_color.blue,
+                        )
+                        inline_background_rgb = (
+                            inline_background.red,
+                            inline_background.green,
+                            inline_background.blue,
+                        )
+                        self.assertEqual(inline_rgb, (212, 212, 212))
+                        self.assertEqual(inline_background_rgb, (37, 37, 38))
+                        format_colors = {
+                            "inline code": inline_rgb,
+                            "heading": heading.styles.color.rgb,
+                            "divider": rule.styles.border_bottom[1].rgb,
+                            "code fence": fence.styles.color.rgb,
+                            "table": table.styles.color.rgb,
+                        }
+
+                        for color in [body_color.rgb, *format_colors.values()]:
+                            self.assertLessEqual(max(color) - min(color), 10)
+                        for format_name, color in format_colors.items():
+                            with self.subTest(format=format_name):
+                                self.assertNotEqual(color, body_color.rgb)
+                        self.assertGreater(
+                            sum(heading.styles.color.rgb), sum(body_color.rgb)
+                        )
+                        self.assertLess(sum(fence.styles.color.rgb), sum(body_color.rgb))
+                        self.assertLess(
+                            sum(inline_background_rgb), sum(inline_rgb)
+                        )
+                        self.assertLessEqual(
+                            max(inline_background_rgb) - min(inline_background_rgb), 10
+                        )
+                        self.assertEqual(heading.styles.background.a, 0)
+                        self.assertFalse(fence._content.spans)
+
+                        self.assertNotEqual(
+                            quote.styles.border_left[1].rgb, body_color.rgb
+                        )
+                        self.assertEqual(
+                            quote.styles.color.rgb, Color.parse("#B7D8D5").rgb
+                        )
+                        self.assertEqual(
+                            quote.styles.border_left[1].rgb,
+                            Color.parse("#5EEAD4").rgb,
+                        )
+                        self.assertEqual(
+                            response.parent.styles.border_left[1].rgb,
+                            Color.parse("#74E2D4").rgb,
+                        )
+                        header = response.parent.query_one("#agent-message-header")
+                        self.assertEqual(
+                            [span.style for span in header.render().spans],
+                            ["$text-primary bold", "dim"],
+                        )
 
         asyncio.run(scenario())
 
@@ -1699,7 +1979,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1764,7 +2044,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(80, 20)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1801,7 +2081,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1848,7 +2128,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -1910,16 +2190,16 @@ class ConversationACPDispatchTests(unittest.TestCase):
         }
 
         self.assertEqual(commands["/about"].help, "An agent-defined about command")
-        self.assertEqual(commands["/help"].help, "Show Wingmen commands")
-        self.assertEqual(commands["/config"].help, "Configure Wingmen preferences")
+        self.assertEqual(commands["/help"].help, "Show CodeSwarm commands")
+        self.assertEqual(commands["/config"].help, "Configure CodeSwarm preferences")
         self.assertEqual(commands["/agent"].help, "An agent-defined agent command")
         self.assertEqual(commands["/close"].help, "Close the current session")
         self.assertEqual(commands["/clear"].help, "An agent-defined clear command")
-        self.assertNotIn("/wingmen:agent", commands)
+        self.assertNotIn("/codeswarm:agent", commands)
         self.assertEqual(commands["/review"].help, "Review the current change")
-        self.assertNotIn("/wingmen:rename", commands)
+        self.assertNotIn("/codeswarm:rename", commands)
 
-    def test_user_manual_documents_every_wingmen_command(self) -> None:
+    def test_user_manual_documents_every_codeswarm_command(self) -> None:
         manual = (
             Path(__file__).parents[1] / "docs" / "USER_MANUAL.md"
         ).read_text("utf-8")
@@ -1933,7 +2213,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
             self.assertIn(f"`{command}", manual)
         self.assertNotIn("`/about`", manual)
 
-    def test_about_is_not_a_local_wingmen_command(self) -> None:
+    def test_about_is_not_a_local_codeswarm_command(self) -> None:
         conversation = Conversation(Path.cwd())
         conversation.agent_slash_commands = [
             SlashCommand("/about", "Agent-owned command")
@@ -1947,10 +2227,10 @@ class ConversationACPDispatchTests(unittest.TestCase):
             conversation.agent_slash_commands = [
                 SlashCommand("/agent", "Manage agent state"),
                 SlashCommand("/clear", "Clear agent state"),
-                SlashCommand("/wingmen:agent", "Inspect agent state"),
-                SlashCommand("/wingmen:pause", "Pause agent work"),
-                SlashCommand("/wingmen:clear", "Clear agent state"),
-                SlashCommand("/wingmen:session-close", "Close agent session"),
+                SlashCommand("/codeswarm:agent", "Inspect agent state"),
+                SlashCommand("/codeswarm:pause", "Pause agent work"),
+                SlashCommand("/codeswarm:clear", "Clear agent state"),
+                SlashCommand("/codeswarm:session-close", "Close agent session"),
             ]
 
             for command in conversation.agent_slash_commands:
@@ -1983,7 +2263,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -2033,7 +2313,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -2083,7 +2363,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -2132,7 +2412,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -2211,7 +2491,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -2275,7 +2555,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -2299,7 +2579,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -2351,7 +2631,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.1)
@@ -2395,7 +2675,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -2438,7 +2718,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.1)
@@ -2475,7 +2755,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.1)
@@ -2497,7 +2777,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -2518,7 +2798,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -2554,7 +2834,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
@@ -2642,7 +2922,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.1)
@@ -2698,7 +2978,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.5)
@@ -2740,25 +3020,25 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         )
                         self.assertIsNotNone(
                             conversation.prompt.mode_switcher.get_option(
-                                "wingmen:discuss"
+                                "codeswarm:discuss"
                             )
                         )
                         self.assertEqual(
                             conversation.prompt.mode_switcher.get_option_at_index(0).id,
-                            "wingmen:discuss",
+                            "codeswarm:discuss",
                         )
 
                         conversation.post_message(
-                            messages.ChangeMode("wingmen:discuss")
+                            messages.ChangeMode("codeswarm:discuss")
                         )
                         await pilot.pause(0.2)
                         self.assertTrue(conversation.discussion_mode)
                         self.assertEqual(
                             conversation.current_mode.id,
-                            "wingmen:discuss",
+                            "codeswarm:discuss",
                         )
 
-                        # Any real ACP mode exits Wingmen's discussion policy.
+                        # Any real ACP mode exits CodeSwarm's discussion policy.
                         conversation.post_message(messages.ChangeMode("default"))
                         await pilot.pause(0.2)
                         self.assertFalse(conversation.discussion_mode)
@@ -2809,7 +3089,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             await pilot.pause(0.2)
                             send.assert_not_called()
                         self.assertIn(
-                            "Wingmen",
+                            "CodeSwarm",
                             conversation.query(MarkdownNote).last().source,
                         )
 
@@ -2852,13 +3132,13 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
                         mode = Mode(
-                            "wingmen:mode:full-access",
-                            "Fully Auto",
+                            "codeswarm:mode:full-access",
+                            "Auto pilot",
                             "Approve all tools",
                         )
                         conversation.modes = {mode.id: mode}

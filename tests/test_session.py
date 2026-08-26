@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
-from wingmen.agent import AgentBase
-from wingmen.agent_schema import Agent as AgentData
-from wingmen.db import decode_session_meta
-from wingmen.session import SessionCoordinator
+from codeswarm.agent import AgentBase
+from codeswarm.agent_schema import Agent as AgentData
+from codeswarm.db import decode_session_meta
+from codeswarm.session import SessionCoordinator
 
 
 def agent_data(identity: str, name: str, short_name: str) -> AgentData:
@@ -146,6 +146,73 @@ class SessionCoordinatorTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_startup_full_access_restart_preserves_roster_and_session(self) -> None:
+        async def scenario() -> None:
+            owner = agent_data("claude.ai", "Claude", "claude")
+            peer = agent_data(
+                "antigravity.google.com", "Antigravity CLI", "antigravity"
+            )
+            created: list[FakeAgent] = []
+            calls: list[tuple[str, str | None, int | None, bool]] = []
+
+            class StartupAgent(FakeAgent):
+                def __init__(self, project_root: Path, name: str) -> None:
+                    super().__init__(project_root, name)
+                    self.enabled = True
+
+                @property
+                def supports_startup_full_access(self) -> bool:
+                    return True
+
+                @property
+                def startup_full_access(self) -> bool:
+                    return self.enabled
+
+                def configure_startup_full_access(self, enabled: bool) -> None:
+                    self.enabled = enabled
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                calls.append((data["short_name"], session_id, session_pk, persist))
+                agent: FakeAgent
+                if data["identity"] == "antigravity.google.com":
+                    agent = StartupAgent(project_root, data["name"])
+                else:
+                    agent = FakeAgent(project_root, data["name"])
+                agent.session_id = session_id  # type: ignore[attr-defined]
+                created.append(agent)
+                return agent
+
+            target = object()
+            coordinator = SessionCoordinator(
+                Path("."), owner, peers=(peer,), agent_factory=factory
+            )
+            await coordinator.start(target)
+            antigravity = created[1]
+            antigravity.session_id = "agy-session"  # type: ignore[attr-defined]
+
+            replacement = await coordinator.restart_for_startup_full_access(
+                antigravity, target, enabled=False
+            )
+
+            self.assertIs(replacement, created[2])
+            self.assertTrue(antigravity.stopped)
+            self.assertFalse(replacement.startup_full_access)
+            self.assertIs(coordinator.roster[1].agent, replacement)
+            self.assertIs(coordinator.agent_at(1), replacement)
+            self.assertEqual(
+                calls[-1], ("antigravity", "agy-session", None, False)
+            )
+            self.assertEqual(replacement.started_with, [target])
+
+        asyncio.run(scenario())
+
     def test_cancel_is_concurrent_and_a_hung_adapter_is_bounded(self) -> None:
         async def scenario() -> None:
             owner = agent_data("claude.ai", "Claude", "claude")
@@ -172,7 +239,7 @@ class SessionCoordinatorTests(unittest.TestCase):
             coordinator.roster[0].agent = hanging
             coordinator.roster[1].agent = healthy
 
-            with patch("wingmen.session.CANCEL_TIMEOUT_SECONDS", 0.01):
+            with patch("codeswarm.session.CANCEL_TIMEOUT_SECONDS", 0.01):
                 cancelled = await coordinator.cancel_active()
 
             self.assertTrue(cancelled)
@@ -229,6 +296,30 @@ class SessionCoordinatorTests(unittest.TestCase):
                 stored["launcher.roster"], "claude.ai\ngoogle.com"
             )
             self.assertEqual(saved, 1)
+
+        asyncio.run(scenario())
+
+    def test_persist_roster_can_keep_a_separate_next_launch_order(self) -> None:
+        async def scenario() -> None:
+            claude = agent_data("claude.ai", "Claude", "claude")
+            codex = agent_data("openai.com", "Codex", "codex")
+            coordinator = SessionCoordinator(Path("."), claude, peers=(codex,))
+            stored: dict[str, object] = {}
+
+            class Settings:
+                def set(self, key: str, value: object) -> None:
+                    stored[key] = value
+
+            async def save_settings() -> None:
+                pass
+
+            await coordinator.persist_roster(
+                Settings(), save_settings, ["openai.com", "claude.ai"]
+            )
+
+            self.assertEqual(
+                stored["launcher.roster"], "openai.com\nclaude.ai"
+            )
 
         asyncio.run(scenario())
 

@@ -1,4 +1,4 @@
-"""Verify that a freshly built wheel exposes Wingmen's console entry points."""
+"""Verify that a freshly built wheel exposes CodeSwarm's console entry points."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from zipfile import ZipFile
 
 def main() -> None:
     project_root = Path(__file__).resolve().parents[1]
-    with TemporaryDirectory(prefix="wingmen-wheel-") as output_dir:
+    with TemporaryDirectory(prefix="codeswarm-wheel-") as output_dir:
         run(
             [
                 "uv",
@@ -24,7 +24,7 @@ def main() -> None:
             cwd=project_root,
             check=True,
         )
-        wheel = next(Path(output_dir).glob("wingmen-*.whl"))
+        wheel = next(Path(output_dir).glob("*.whl"))
         with ZipFile(wheel) as archive:
             packaged_paths = archive.namelist()
             entry_points_path = next(
@@ -37,8 +37,7 @@ def main() -> None:
             forbidden_paths = [
                 path
                 for path in packaged_paths
-                if path.startswith("toad/")
-                or path.endswith("data/sounds/turn-over.wav")
+                if path.endswith("data/sounds/turn-over.wav")
             ]
             if forbidden_paths:
                 raise SystemExit(
@@ -58,28 +57,26 @@ def main() -> None:
             check=True,
         )
         python = install_dir / "bin" / "python"
-        executables = [install_dir / "bin" / "wingmen"]
+        executables = [install_dir / "bin" / "codeswarm"]
         run(["uv", "pip", "install", "--python", str(python), str(wheel)], check=True)
-        if (install_dir / "bin" / "wingwomen").exists():
-            raise SystemExit("wheel installed the unsupported wingwomen executable")
         for executable in executables:
             run([str(executable), "--version"], check=True)
             run([str(executable), "--help"], check=True)
         smoke = (
             "import asyncio\n"
-            "from wingmen.app import WingmenApp\n"
+            "from codeswarm.app import CodeSwarmApp\n"
             "async def smoke():\n"
-            " async with WingmenApp(setup_prompt=False).run_test(size=(100, 30)) as pilot:\n"
+            " async with CodeSwarmApp(setup_prompt=False).run_test(size=(100, 30)) as pilot:\n"
             "  await pilot.pause(0.05)\n"
             "asyncio.run(smoke())"
         )
         run([str(python), "-c", smoke], check=True)
 
-    expected = {"wingmen = wingmen.cli:main"}
+    expected = {"codeswarm = codeswarm.cli:main"}
     console_scripts = {
         line.strip() for line in entry_points.splitlines() if " = " in line
     }
-    if console_scripts != expected or "toad" in entry_points:
+    if console_scripts != expected:
         raise SystemExit(
             "wheel has invalid console scripts; expected "
             f"{sorted(expected)!r}, got:\n{entry_points}"

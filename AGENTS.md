@@ -1,23 +1,23 @@
-# Wingmen agent-development notes
+# CodeSwarm agent-development notes
 
 ## Project identity
 
-- Wingmen is the current project name and the only supported package identity.
+- CodeSwarm is the current project name and the only supported package identity.
 - The published Python distribution, import package, and executable are all
-  `wingmen`. There is no compatibility package or executable.
-- User-facing branding uses Wingmen and the `✈` symbol.
+  `codeswarm`. There is no compatibility package or executable.
+- User-facing branding uses CodeSwarm and the `✈` symbol.
 - No telemetry is collected. The upstream sponsor tile and testimonial/about
   UI were removed; `©` attribution to Will McGugan remains in the license.
 
 ## ACP relay behavior
 
-- Every session defaults to Wingmen's **Fully Auto** permission policy. After
-  all active agents advertise their mode catalogs, Wingmen translates the
+- Every session defaults to CodeSwarm's **Auto pilot** permission policy. After
+  all active agents advertise their mode catalogs, CodeSwarm translates the
   policy to each native mode ID and synchronizes the complete roster. A later
   user selection becomes the new desired roster-wide policy; `Mixed` is not a
   user-facing mode.
 - An unlimited-size roster of ACP agents relay turns sequentially in a ring
-  (`src/wingmen/acp/relay.py`, `RelayConversation`), never concurrently — a relay
+  (`src/codeswarm/acp/relay.py`, `RelayConversation`), never concurrently — a relay
   has a causal dependency on the previous response. Solo sessions (roster size
   1) never construct a relay; `Conversation._relay_active` gates every relay
   code path so the common single-agent case is untouched.
@@ -33,11 +33,11 @@
   receives the active agent's latest response as context.
 - Clicking an agent beside the prompt selects it as the first recipient for
   the next normal relay message. Duplicate names display their roster number.
-- `[WINGMEN:STOP]` is the safe word, but only an agent reviewing a different
+- `[CODESWARM:STOP]` is the safe word, but only an agent reviewing a different
   agent's response may use it. The first responder after any human message and
   direct/private turns cannot stop peer review. An eligible reviewer with
   nothing meaningful to add may send an emoji followed by the token; a
-  token-only response is displayed as `👍`. Wingmen always hides the token.
+  token-only response is displayed as `👍`. CodeSwarm always hides the token.
 - While work is active, the first `Ctrl+C` requests cancellation and a second
   press within three seconds quits; while idle, `Ctrl+C` quits immediately.
   Pause/resume is available for relays through `Ctrl+Shift+P` and `/pause`;
@@ -47,7 +47,7 @@
   it does not scale with roster size.
 ## Launch flow
 
-- Bare `wingmen` restores the last-used roster (`launcher.roster` setting,
+- Bare `codeswarm` restores the last-used roster (`launcher.roster` setting,
   written whenever the roster selection changes). If no saved roster resolves,
   it opens the agent store instead of auto-starting anything — detection
   (`agents.detect_preferred_agents`) only pre-selects candidates on that
@@ -68,7 +68,7 @@
 - Before the conversation prompt is available, Textual Toast notifications
   may be used for setup, store, configuration, and modal-screen feedback.
 - Once the conversation prompt is shown, all in-terminal notifications use
-  Wingmen's single-line, full-width Flash ribbon. Do not show Textual Toasts
+  CodeSwarm's single-line, full-width Flash ribbon. Do not show Textual Toasts
   over the conversation UI or introduce another notification style there.
 - Optional operating-system notifications sent through `system_notify()` are
   separate from this in-terminal presentation rule and remain supported.
@@ -82,7 +82,7 @@ make verify
 ```
 
 For Textual, ACP, and CLI changes, add a regression test at the integration
-boundary that failed: use `WingmenApp.run_test` for reactive UI flows and
+boundary that failed: use `CodeSwarmApp.run_test` for reactive UI flows and
 Click's `CliRunner` for entry points. Test invalid and replacement external
 state as well as the nominal state; adapters may omit, reorder, or replace
 values between messages.

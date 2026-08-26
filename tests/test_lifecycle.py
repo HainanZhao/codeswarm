@@ -13,15 +13,15 @@ from typing import cast
 from textual import events
 from textual.color import Color
 
-from wingmen.acp.agent import Agent, LOG_TRUNCATED_MESSAGE, MAX_INFLIGHT_AGENT_REQUESTS
-from wingmen.agent import AgentFail, AgentReady
-from wingmen.agent_schema import Agent as AgentData
-from wingmen.app import WingmenApp
-from wingmen.agents import AgentReadError
-from wingmen import messages
-from wingmen.screens.store import StoreScreen
-from wingmen import jsonrpc
-from wingmen.widgets.conversation import Conversation
+from codeswarm.acp.agent import Agent, LOG_TRUNCATED_MESSAGE, MAX_INFLIGHT_AGENT_REQUESTS
+from codeswarm.agent import AgentFail, AgentReady
+from codeswarm.agent_schema import Agent as AgentData
+from codeswarm.app import CodeSwarmApp
+from codeswarm.agents import AgentReadError
+from codeswarm import messages
+from codeswarm.screens.store import StoreScreen
+from codeswarm import jsonrpc
+from codeswarm.widgets.conversation import Conversation
 
 
 class _FakeProcess:
@@ -108,6 +108,7 @@ class _StoppingSession:
     def __init__(self) -> None:
         self.stopped = False
         self.cancelled = False
+        self.active_agents: list[AgentBase] = []
 
     async def cancel_active(self) -> bool:
         self.cancelled = True
@@ -125,7 +126,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         primary = Color.parse(pilot.app.current_theme.primary)
@@ -145,7 +146,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test() as pilot:
+                    async with CodeSwarmApp(setup_prompt=False).run_test() as pilot:
                         theme = pilot.app.current_theme
 
                         self.assertEqual(theme.warning, "#A78BFA")
@@ -155,7 +156,7 @@ class AgentLifecycleTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_first_prompt_includes_wingmen_operating_instructions(self) -> None:
+    def test_first_prompt_includes_codeswarm_operating_instructions(self) -> None:
         async def scenario() -> None:
             data = cast(
                 AgentData,
@@ -173,7 +174,7 @@ class AgentLifecycleTests(unittest.TestCase):
 
             with (
                 patch(
-                    "wingmen.acp.agent.build_prompt", return_value=[]
+                    "codeswarm.acp.agent.build_prompt", return_value=[]
                 ) as build_prompt,
                 patch.object(agent, "acp_session_prompt", new=AsyncMock()),
             ):
@@ -212,7 +213,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     "end_turn",
                 ]
             )
-            with patch("wingmen.acp.agent.build_prompt", return_value=[]) as build, patch.object(
+            with patch("codeswarm.acp.agent.build_prompt", return_value=[]) as build, patch.object(
                 agent, "acp_session_prompt", new=prompt
             ):
                 with self.assertRaises(jsonrpc.APIError):
@@ -224,9 +225,9 @@ class AgentLifecycleTests(unittest.TestCase):
             retry = build.call_args_list[1].args[1]
             follow_up = build.call_args_list[2].args[1]
             for submitted in (first_attempt, retry):
-                self.assertIn("Wingmen operating instructions", submitted)
+                self.assertIn("CodeSwarm operating instructions", submitted)
                 self.assertIn("Your collaborator is Claude Code", submitted)
-            self.assertNotIn("Wingmen operating instructions", follow_up)
+            self.assertNotIn("CodeSwarm operating instructions", follow_up)
 
         asyncio.run(scenario())
 
@@ -254,7 +255,7 @@ class AgentLifecycleTests(unittest.TestCase):
 
             agent._message_target = Target()  # type: ignore[assignment]
             with patch(
-                "wingmen.acp.agent.asyncio.create_subprocess_shell",
+                "codeswarm.acp.agent.asyncio.create_subprocess_shell",
                 new=AsyncMock(return_value=process),
             ):
                 await agent._run_agent()
@@ -268,10 +269,10 @@ class AgentLifecycleTests(unittest.TestCase):
 
     def test_launch_reports_an_unreadable_agent_catalog(self) -> None:
         async def scenario() -> None:
-            app = WingmenApp(mode="store")
+            app = CodeSwarmApp(mode="store")
             app.notify = Mock()  # type: ignore[method-assign]
             with patch(
-                "wingmen.agents.read_agents",
+                "codeswarm.agents.read_agents",
                 new=AsyncMock(side_effect=AgentReadError("broken catalog")),
             ):
                 await app._launch_agent("claude.com")
@@ -306,7 +307,7 @@ class AgentLifecycleTests(unittest.TestCase):
 
             with (
                 patch(
-                    "wingmen.acp.agent.asyncio.create_subprocess_shell",
+                    "codeswarm.acp.agent.asyncio.create_subprocess_shell",
                     new=AsyncMock(return_value=process),
                 ),
                 patch.object(agent, "run", new=AsyncMock()),
@@ -332,7 +333,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(mode="store").run_test() as pilot:
+                    async with CodeSwarmApp(mode="store").run_test() as pilot:
                         pilot.app.terminal_alert(False)
                         self.assertEqual(pilot.app.terminal_title_flash, 0)
 
@@ -345,7 +346,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ), patch("gc.freeze") as freeze:
-                    async with WingmenApp(setup_prompt=False).run_test() as pilot:
+                    async with CodeSwarmApp(setup_prompt=False).run_test() as pilot:
                         await pilot.pause(0.1)
 
                     freeze.assert_not_called()
@@ -354,7 +355,7 @@ class AgentLifecycleTests(unittest.TestCase):
 
     def test_replacing_a_workspace_stops_and_removes_existing_conversations(self) -> None:
         async def scenario() -> None:
-            app = WingmenApp(mode="store")
+            app = CodeSwarmApp(mode="store")
             old_session = app.session_tracker.new_session()
             conversation = Mock()
             conversation.shutdown = AsyncMock()
@@ -372,16 +373,16 @@ class AgentLifecycleTests(unittest.TestCase):
     def test_invalid_settings_file_uses_defaults_without_overwriting_it(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
-                config_path = Path(state_dir) / "wingmen" / "wingmen.json"
+                config_path = Path(state_dir) / "codeswarm" / "codeswarm.json"
                 config_path.parent.mkdir()
                 config_path.write_text("not valid json", encoding="utf-8")
                 with patch.dict(
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(mode="store").run_test(size=(120, 40)) as app:
+                    async with CodeSwarmApp(mode="store").run_test(size=(120, 40)) as app:
                         self.assertEqual(
-                            app.app.settings.get("ui.theme", str), "wingmen-black"
+                            app.app.settings.get("ui.theme", str), "codeswarm-black"
                         )
                         self.assertEqual(
                             app.app.current_theme.background, "#000000"
@@ -394,7 +395,7 @@ class AgentLifecycleTests(unittest.TestCase):
     def test_unsupported_saved_theme_is_migrated_before_styles_load(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
-                config_path = Path(state_dir) / "wingmen" / "wingmen.json"
+                config_path = Path(state_dir) / "codeswarm" / "codeswarm.json"
                 config_path.parent.mkdir()
                 config_path.write_text(
                     json.dumps({"ui": {"theme": "textual-dark"}}),
@@ -404,24 +405,24 @@ class AgentLifecycleTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(mode="store").run_test(
+                    async with CodeSwarmApp(mode="store").run_test(
                         size=(120, 40)
                     ) as app:
                         self.assertEqual(
                             app.app.settings.get("ui.theme", str),
-                            "wingmen-black",
+                            "codeswarm-black",
                         )
-                        self.assertEqual(app.app.current_theme.name, "wingmen-black")
+                        self.assertEqual(app.app.current_theme.name, "codeswarm-black")
 
                 saved = json.loads(config_path.read_text(encoding="utf-8"))
-                self.assertEqual(saved["ui"]["theme"], "wingmen-black")
+                self.assertEqual(saved["ui"]["theme"], "codeswarm-black")
 
         asyncio.run(scenario())
 
     def test_legacy_thin_scrollbar_is_migrated_to_normal(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
-                config_path = Path(state_dir) / "wingmen" / "wingmen.json"
+                config_path = Path(state_dir) / "codeswarm" / "codeswarm.json"
                 config_path.parent.mkdir()
                 config_path.write_text(
                     json.dumps({"ui": {"scrollbar": "thin"}}),
@@ -431,7 +432,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(mode="store").run_test(
+                    async with CodeSwarmApp(mode="store").run_test(
                         size=(120, 40)
                     ) as app:
                         self.assertEqual(
@@ -447,7 +448,7 @@ class AgentLifecycleTests(unittest.TestCase):
 
     def test_resume_with_invalid_session_metadata_uses_agent_catalog(self) -> None:
         async def scenario() -> None:
-            app = WingmenApp(mode="store", project_dir=Path.cwd())
+            app = CodeSwarmApp(mode="store", project_dir=Path.cwd())
             catalog_agent = cast(
                 AgentData,
                 {
@@ -468,9 +469,9 @@ class AgentLifecycleTests(unittest.TestCase):
                 return "session-1"
 
             with (
-                patch("wingmen.app.DB", return_value=db),
+                patch("codeswarm.app.DB", return_value=db),
                 patch(
-                    "wingmen.agents.read_agents",
+                    "codeswarm.agents.read_agents",
                     new=AsyncMock(return_value={"test.agent": catalog_agent}),
                 ),
                 patch.object(app, "replace_live_conversations", new=AsyncMock()),
@@ -484,7 +485,7 @@ class AgentLifecycleTests(unittest.TestCase):
 
     def test_resume_with_invalid_agent_snapshot_uses_agent_catalog(self) -> None:
         async def scenario() -> None:
-            app = WingmenApp(mode="store", project_dir=Path.cwd())
+            app = CodeSwarmApp(mode="store", project_dir=Path.cwd())
             catalog_agent = cast(
                 AgentData,
                 {
@@ -514,9 +515,9 @@ class AgentLifecycleTests(unittest.TestCase):
                 return "session-1"
 
             with (
-                patch("wingmen.app.DB", return_value=db),
+                patch("codeswarm.app.DB", return_value=db),
                 patch(
-                    "wingmen.agents.read_agents",
+                    "codeswarm.agents.read_agents",
                     new=AsyncMock(return_value={"test.agent": catalog_agent}),
                 ),
                 patch.object(app, "replace_live_conversations", new=AsyncMock()),
@@ -591,22 +592,101 @@ class AgentLifecycleTests(unittest.TestCase):
                     "run_command": {"*": "gemini --acp"},
                 },
             )
-            project_path = Path("/tmp/wingmen-gemini-project")
+            project_path = Path("/tmp/codeswarm-gemini-project")
             agent = Agent(project_path, data, None)
             agent._stopping = True
             process = _ExitedProcess()
 
             with patch(
-                "wingmen.acp.agent.asyncio.create_subprocess_shell",
+                "codeswarm.acp.agent.asyncio.create_subprocess_shell",
                 new=AsyncMock(return_value=process),
             ) as create_process:
                 await agent._run_agent()
 
             launch_env = create_process.await_args.kwargs["env"]
             self.assertEqual(launch_env.get("GEMINI_TELEMETRY_ENABLED"), "false")
-            self.assertEqual(launch_env.get("WINGMEN_CWD"), str(project_path))
+            self.assertEqual(launch_env.get("CODESWARM_CWD"), str(project_path))
 
         asyncio.run(scenario())
+
+    def test_agent_uses_a_compatible_installed_nvm_node(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as nvm_dir:
+                nvm_root = Path(nvm_dir)
+                old_bin = nvm_root / "versions" / "node" / "v22.0.0" / "bin"
+                new_bin = nvm_root / "versions" / "node" / "v22.18.0" / "bin"
+                for bin_path, version in (
+                    (old_bin, "v22.0.0"),
+                    (new_bin, "v22.18.0"),
+                ):
+                    bin_path.mkdir(parents=True)
+                    node = bin_path / "node"
+                    node.write_text(f"#!/bin/sh\necho {version}\n")
+                    node.chmod(0o755)
+
+                data = cast(
+                    AgentData,
+                    {
+                        "name": "Antigravity CLI",
+                        "identity": "antigravity.google.com",
+                        "run_command": {"*": "npx -y agy-acp"},
+                        "minimum_node_version": "22.18.0",
+                    },
+                )
+                agent = Agent(Path.cwd(), data, None)
+                agent._stopping = True
+                process = _ExitedProcess()
+
+                with (
+                    patch.dict(
+                        os.environ,
+                        {"NVM_DIR": str(nvm_root), "PATH": str(old_bin)},
+                    ),
+                    patch(
+                        "codeswarm.acp.agent.asyncio.create_subprocess_shell",
+                        new=AsyncMock(return_value=process),
+                    ) as create_process,
+                ):
+                    await agent._run_agent()
+
+                launch_path = create_process.await_args.kwargs["env"]["PATH"]
+                self.assertEqual(launch_path.split(os.pathsep)[0], str(new_bin))
+
+        asyncio.run(scenario())
+
+    def test_agent_defaults_to_declared_startup_full_access(self) -> None:
+        data = cast(
+            AgentData,
+            {
+                "name": "Antigravity CLI",
+                "identity": "antigravity.google.com",
+                "run_command": {"*": "npx -y agy-acp"},
+                "full_access_startup_argument": "--dangerously-skip-permissions",
+            },
+        )
+        agent = Agent(Path.cwd(), data, None)
+
+        self.assertTrue(agent.supports_startup_full_access)
+        self.assertTrue(agent.startup_full_access)
+        self.assertEqual(
+            agent.command,
+            "npx -y agy-acp --dangerously-skip-permissions",
+        )
+
+        agent._agent_data = cast(  # type: ignore[attr-defined]
+            AgentData,
+            {
+                "name": "Antigravity CLI",
+                "identity": "antigravity.google.com",
+                "run_command": {"*": "npx -y agy-acp"},
+            },
+        )
+        self.assertTrue(agent.supports_startup_full_access)
+
+        agent.configure_startup_full_access(False)
+
+        self.assertFalse(agent.startup_full_access)
+        self.assertEqual(agent.command, "npx -y agy-acp")
 
     def test_agent_exit_persists_code_runtime_and_failure_details(self) -> None:
         async def scenario() -> None:
@@ -632,7 +712,7 @@ class AgentLifecycleTests(unittest.TestCase):
             agent._message_target = Target()  # type: ignore[assignment]
             agent.log = Mock()  # type: ignore[method-assign]
             with patch(
-                "wingmen.acp.agent.asyncio.create_subprocess_shell",
+                "codeswarm.acp.agent.asyncio.create_subprocess_shell",
                 new=AsyncMock(return_value=_ExitedProcess(17)),
             ):
                 await agent._run_agent()
@@ -673,7 +753,7 @@ class AgentLifecycleTests(unittest.TestCase):
 
             agent._message_target = Target()  # type: ignore[assignment]
             with patch(
-                "wingmen.acp.agent.asyncio.create_subprocess_shell",
+                "codeswarm.acp.agent.asyncio.create_subprocess_shell",
                 new=AsyncMock(return_value=_ExitedProcess()),
             ):
                 await agent._run_agent()
@@ -701,7 +781,7 @@ class AgentLifecycleTests(unittest.TestCase):
                 scheduled.append(line)
 
         agent._message_target = Target()  # type: ignore[assignment]
-        with patch("wingmen.acp.agent.MAX_AGENT_LOG_BYTES", 5):
+        with patch("codeswarm.acp.agent.MAX_AGENT_LOG_BYTES", 5):
             agent.log("1234")
             agent.log("56")
             agent.log("ignored")
@@ -731,7 +811,7 @@ class AgentLifecycleTests(unittest.TestCase):
 
             agent._message_target = Target()  # type: ignore[assignment]
             with patch(
-                "wingmen.acp.agent.asyncio.create_subprocess_shell",
+                "codeswarm.acp.agent.asyncio.create_subprocess_shell",
                 new=AsyncMock(return_value=_ExitedProcess()),
             ):
                 await agent._run_agent()
@@ -819,7 +899,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.2)
@@ -840,7 +920,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.2)
@@ -879,7 +959,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         screen = pilot.app.screen
@@ -908,7 +988,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         screen = pilot.app.screen
@@ -936,7 +1016,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.2)
@@ -963,7 +1043,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ):
-                    async with WingmenApp(setup_prompt=False).run_test(
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.2)
@@ -998,7 +1078,7 @@ class AgentLifecycleTests(unittest.TestCase):
             agent._agent_task = asyncio.create_task(asyncio.sleep(60))
 
             if os.name == "posix":
-                with patch("wingmen.acp.agent.os.killpg") as killpg:
+                with patch("codeswarm.acp.agent.os.killpg") as killpg:
                     await agent.stop()
                 killpg.assert_called_once_with(process.pid, signal.SIGTERM)
             else:

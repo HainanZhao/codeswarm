@@ -2,7 +2,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from wingmen.agents import (
+from codeswarm.agents import (
     detect_preferred_agents,
     is_agent_available,
     read_agents,
@@ -15,20 +15,18 @@ class AgentCatalogTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.agents = asyncio.run(read_agents())
 
-    def test_core_agents_are_acp_entries(self) -> None:
+    def test_core_agents_declare_their_transport(self) -> None:
         self.assertEqual(
             {agent["short_name"] for agent in self.agents.values()},
-            {"claude", "codex", "gemini"},
+            {"antigravity", "claude", "codex", "gemini"},
         )
-        for short_name in ("claude", "codex", "gemini"):
-            with self.subTest(short_name=short_name):
-                agent = next(
-                    agent
-                    for agent in self.agents.values()
-                    if agent["short_name"] == short_name
-                )
-                self.assertEqual(agent["protocol"], "acp")
-                self.assertTrue(agent["run_command"]["*"])
+        transports = {
+            agent["short_name"]: agent["protocol"] for agent in self.agents.values()
+        }
+        self.assertEqual(transports["antigravity"], "native")
+        self.assertTrue(
+            all(transports[name] == "acp" for name in ("claude", "codex", "gemini"))
+        )
 
     def test_codex_uses_the_current_official_acp_adapter(self) -> None:
         codex = asyncio.run(resolve_agent("codex"))
@@ -38,6 +36,21 @@ class AgentCatalogTests(unittest.TestCase):
             codex["run_command"]["*"],
             "npx -y @agentclientprotocol/codex-acp",
         )
+
+    def test_antigravity_uses_the_native_cli_integration(self) -> None:
+        antigravity = asyncio.run(resolve_agent("antigravity"))
+        self.assertIsNotNone(antigravity)
+        assert antigravity is not None
+        self.assertEqual(
+            antigravity["run_command"]["*"],
+            "agy",
+        )
+        self.assertNotIn("minimum_node_version", antigravity)
+        self.assertEqual(
+            antigravity["full_access_startup_argument"],
+            "--dangerously-skip-permissions",
+        )
+        self.assertEqual(antigravity["detect_command"]["*"], "agy")
 
     def test_claude_and_gemini_use_the_current_acp_invocations(self) -> None:
         claude = asyncio.run(resolve_agent("claude"))
@@ -57,10 +70,23 @@ class AgentCatalogTests(unittest.TestCase):
         assert agent is not None
         self.assertEqual(agent["short_name"], "codex")
 
+    def test_resolve_agent_accepts_alias(self) -> None:
+        agent = asyncio.run(resolve_agent("agy"))
+        self.assertIsNotNone(agent)
+        assert agent is not None
+        self.assertEqual(agent["identity"], "antigravity.google.com")
+        self.assertEqual(agent["short_name"], "antigravity")
+
+        agent_codex = asyncio.run(resolve_agent("openai"))
+        self.assertIsNotNone(agent_codex)
+        assert agent_codex is not None
+        self.assertEqual(agent_codex["identity"], "openai.com")
+        self.assertEqual(agent_codex["short_name"], "codex")
+
     def test_preferred_detection_reuses_known_availability(self) -> None:
         async def scenario() -> None:
             with patch(
-                "wingmen.agents.available_identities", new=AsyncMock()
+                "codeswarm.agents.available_identities", new=AsyncMock()
             ) as probe:
                 agents = await detect_preferred_agents(
                     self.agents, {"claude.com", "geminicli.com"}
@@ -75,9 +101,9 @@ class AgentCatalogTests(unittest.TestCase):
     def test_availability_uses_the_current_platform_command(self) -> None:
         agent = self.agents["claude.com"]
         with patch(
-            "wingmen.agents.wingmen.get_os_matrix", return_value="platform-agent"
+            "codeswarm.agents.codeswarm.get_os_matrix", return_value="platform-agent"
         ) as get_command, patch(
-            "wingmen.agents.shutil.which", return_value="/bin/acp"
+            "codeswarm.agents.shutil.which", return_value="/bin/acp"
         ) as which:
             self.assertTrue(is_agent_available(agent))
 
@@ -86,7 +112,7 @@ class AgentCatalogTests(unittest.TestCase):
 
     def test_npx_adapters_are_not_detected_from_node_alone(self) -> None:
         claude = self.agents["claude.com"]
-        with patch("wingmen.agents.shutil.which") as which:
+        with patch("codeswarm.agents.shutil.which") as which:
             which.side_effect = lambda executable: (
                 "/usr/bin/npx" if executable == "npx" else None
             )

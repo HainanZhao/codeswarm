@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 
-from wingmen.jsonrpc import API, APIError, ErrorCode, Server
+from codeswarm.jsonrpc import API, APIError, ErrorCode, Server
 
 
 class JSONRPCTests(unittest.TestCase):

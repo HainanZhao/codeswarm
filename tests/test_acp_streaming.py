@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
-from wingmen import jsonrpc
-from wingmen.acp import messages
-from wingmen.acp.agent import Agent
-from wingmen.agent_schema import Agent as AgentData
+from codeswarm import jsonrpc
+from codeswarm.acp import messages
+from codeswarm.acp.agent import Agent
+from codeswarm.agent_schema import Agent as AgentData
 
 
 class _MessageTarget:
@@ -42,7 +42,7 @@ class ACPStreamingTests(unittest.TestCase):
         target = _MessageTarget()
         agent._message_target = target
 
-        for text in ("Finished. [WING", "MEN:STOP]", ""):
+        for text in ("Finished. [CODES", "WARM:STOP]", ""):
             agent.rpc_session_update(
                 "session-1",
                 {
@@ -58,8 +58,8 @@ class ACPStreamingTests(unittest.TestCase):
             if isinstance(message, messages.Update)
         )
         self.assertEqual(rendered, "Finished. ")
-        self.assertNotIn("[WINGMEN:STOP]", rendered)
-        self.assertEqual(agent.last_response, "Finished. [WINGMEN:STOP]")
+        self.assertNotIn("[CODESWARM:STOP]", rendered)
+        self.assertEqual(agent.last_response, "Finished. [CODESWARM:STOP]")
 
     def test_gemini_mode_control_chunk_is_state_not_agent_output(self) -> None:
         agent = self.make_agent()
@@ -91,8 +91,8 @@ class ACPStreamingTests(unittest.TestCase):
         target = _MessageTarget()
         agent._message_target = target
 
-        with patch("wingmen.acp.agent.MAX_RELAY_RESPONSE_CAPTURE_CHARS", 4), patch(
-            "wingmen.acp.agent.MAX_AGENT_RESPONSE_CHARS", 5
+        with patch("codeswarm.acp.agent.MAX_RELAY_RESPONSE_CAPTURE_CHARS", 4), patch(
+            "codeswarm.acp.agent.MAX_AGENT_RESPONSE_CHARS", 5
         ):
             for text in ("hello", "!"):
                 agent.rpc_session_update(
@@ -118,7 +118,7 @@ class ACPStreamingTests(unittest.TestCase):
         target = _MessageTarget()
         agent._message_target = target
 
-        with patch("wingmen.acp.agent.MAX_AGENT_THOUGHT_CHARS", 4):
+        with patch("codeswarm.acp.agent.MAX_AGENT_THOUGHT_CHARS", 4):
             agent.rpc_session_update(
                 "session-1",
                 {
@@ -139,7 +139,7 @@ class ACPStreamingTests(unittest.TestCase):
             for message in target.messages
             if isinstance(message, messages.Thinking)
         )
-        self.assertEqual(rendered, "abcd\n\n[Wingmen stopped rendering the rest of this unusually long thought.]\n")
+        self.assertEqual(rendered, "abcd\n\n[CodeSwarm stopped rendering the rest of this unusually long thought.]\n")
 
     def test_malformed_stream_updates_are_ignored(self) -> None:
         agent = self.make_agent()
@@ -242,7 +242,7 @@ class ACPStreamingTests(unittest.TestCase):
                     )
 
             with patch(
-                "wingmen.acp.agent.api.session_prompt",
+                "codeswarm.acp.agent.api.session_prompt",
                 return_value=FailedPrompt(),
             ):
                 with self.assertRaisesRegex(jsonrpc.APIError, "No capacity"):

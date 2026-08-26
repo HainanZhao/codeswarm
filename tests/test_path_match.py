@@ -1,8 +1,8 @@
 import unittest
 from pathlib import Path
 
-from wingmen._path_match import MAX_MATCH_COMBINATIONS, PathFuzzySearch
-from wingmen.widgets.path_search import MAX_SEARCH_RESULTS, PathSearch
+from codeswarm._path_match import MAX_MATCH_COMBINATIONS, PathFuzzySearch
+from codeswarm.widgets.path_search import MAX_SEARCH_RESULTS, PathSearch
 
 
 class PathMatchTests(unittest.TestCase):

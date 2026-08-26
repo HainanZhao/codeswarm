@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from typing import cast
 
-from wingmen.acp.agent import Agent, MAX_FILE_READ_BYTES
-from wingmen.agent_schema import Agent as AgentData
-from wingmen import jsonrpc
+from codeswarm.acp.agent import Agent, MAX_FILE_READ_BYTES
+from codeswarm.agent_schema import Agent as AgentData
+from codeswarm import jsonrpc
 
 
 def agent_data() -> AgentData:

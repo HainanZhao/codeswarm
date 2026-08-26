@@ -1,35 +1,35 @@
-# Wingmen User Manual
+# CodeSwarm User Manual
 
-Wingmen is a terminal workspace for one or more coding agents. It keeps their
+CodeSwarm is a terminal workspace for one or more coding agents. It keeps their
 conversation, tool activity, approvals, and sequential hand-offs in one place.
 
 ## Contents
 
 - [Quick Start](#quick-start)
 - [How the Relay Works](#how-a-multi-agent-conversation-works)
-- [Start and Choose Agents](#starting-wingmen)
+- [Start and Choose Agents](#starting-codeswarm)
 - [Send Messages](#sending-messages)
 - [Control the Relay](#control-the-relay)
 - [Modes and Permissions](#modes)
-- [Commands](#wingmen-slash-commands)
+- [Commands](#codeswarm-slash-commands)
 - [Navigate the Transcript](#navigate-the-transcript)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 
 ## Quick Start
 
-Install Wingmen and open the current directory:
+Install CodeSwarm and open the current directory:
 
 ```bash
-uv tool install wingmen
-wingmen
+uv tool install codeswarm
+codeswarm
 ```
 
 On the agent selection screen, use the arrow keys to highlight an agent,
 `Space` to add or remove it from the roster, and `Enter` to start. Selected
 agents run in the order shown in the roster strip.
 
-Type a request and press `Enter`. With multiple agents, Wingmen sends each
+Type a request and press `Enter`. With multiple agents, CodeSwarm sends each
 response to the next agent in sequence. The roster beside the prompt shows
 connection and speaker state:
 
@@ -54,32 +54,32 @@ connection and speaker state:
   and `Claude (2)`.
 - The first agent answering a human message cannot stop the relay; another agent
   always gets the chance to review it. If that reviewer has nothing meaningful
-  to correct or add, it may acknowledge with an emoji and Wingmen's internal
-  stop signal. Wingmen hides the signal and displays `👍` when no emoji was
+  to correct or add, it may acknowledge with an emoji and CodeSwarm's internal
+  stop signal. CodeSwarm hides the signal and displays `👍` when no emoji was
   supplied.
 - Agents leave the relay running when meaningful uncertainty, unfinished work,
   or useful independent review remains.
 - The automated-turn safety limit defaults to 100. Change it at launch with
   `--max-rounds`.
 
-## Starting Wingmen
+## Starting CodeSwarm
 
 ### Standard Launch
 
 ```bash
-wingmen [PATH]
+codeswarm [PATH]
 ```
 
 `PATH` is the project directory and defaults to the current directory. A
 standard launch restores the last usable roster. If no roster is saved,
-Wingmen opens agent selection.
+CodeSwarm opens agent selection.
 
 ### Choose Agents from the Command Line
 
 Repeat `--agent` (`-a`) in relay order:
 
 ```bash
-wingmen run -a claude -a codex -a gemini ~/projects/example
+codeswarm run -a claude -a codex -a gemini ~/projects/example
 ```
 
 Launch options:
@@ -89,18 +89,18 @@ Launch options:
 | `-a`, `--agent AGENT` | Add an agent by short name or identity; repeat in relay order. |
 | `--first-agent N` | Start with roster member `N` (1-based). |
 | `--max-rounds N` | Stop after `N` automated relay turns. |
-| `-v`, `--version` | Print the Wingmen version. |
+| `-v`, `--version` | Print the CodeSwarm version. |
 | `-h`, `--help` | Show command-line help. |
 
 ### Launch a Custom ACP Agent
 
 ```bash
-wingmen acp "COMMAND" [PATH]
+codeswarm acp "COMMAND" [PATH]
 ```
 
 | Option | Action |
 | --- | --- |
-| `-t`, `--title TITLE` | Set the agent name shown in Wingmen. |
+| `-t`, `--title TITLE` | Set the agent name shown in CodeSwarm. |
 | `-d`, `--project-dir PATH` | Set the workspace directory. This overrides the positional path. |
 
 The command must start an Agent Client Protocol server over standard input and
@@ -120,8 +120,8 @@ output.
 | Quit | `Ctrl+C` | — |
 
 Detected agents appear first and are initially selected. Press `Space` to
-remove any you do not want before starting. Wingmen will not launch an
-unavailable agent; install its CLI and reopen Wingmen so it can be detected
+remove any you do not want before starting. CodeSwarm will not launch an
+unavailable agent; install its CLI and reopen CodeSwarm so it can be detected
 again. Starting another workspace stops and replaces the current workspace.
 
 ## Sending Messages
@@ -140,7 +140,7 @@ again. Starting another workspace stops and replaces the current workspace.
 
 Selecting a path inserts a reference into the prompt; it does not open or show
 the file. Paths containing spaces are quoted automatically. Slash commands
-owned by Wingmen run locally. Commands advertised by an agent are sent to that
+owned by CodeSwarm run locally. Commands advertised by an agent are sent to that
 agent; an unknown slash command shows an error instead of becoming a prompt.
 
 ### Select the Next Agent
@@ -165,7 +165,7 @@ the agents to continue from the shared workspace state. Pause is available
 only when at least 2 agents are active.
 
 Follow-ups entered during active work are queued for that same agent instead
-of overlapping its current request. Wingmen names the target agent when a
+of overlapping its current request. CodeSwarm names the target agent when a
 prompt is queued and warns if the bounded queue is full. Multiple follow-ups
 are handled in the order entered before the relay advances.
 
@@ -175,23 +175,23 @@ Open the mode picker with `Ctrl+O` or click the mode at the lower right. The
 options are ordered from least to most automation:
 
 - **Chat** instructs every agent not to inspect or change the workspace.
-  Wingmen blocks ACP terminal creation, but the connected CLI ultimately
+  CodeSwarm blocks ACP terminal creation, but the connected CLI ultimately
   controls its own native tools. Use it for architecture, brainstorming, or
   general questions—not as a security boundary.
 - **Plan** is read-only planning with no tool execution.
 - **Manual** asks before operations that require permission.
 - **Accept Edits** automatically approves file edits while retaining other
   safeguards.
-- **Fully Auto** automatically approves all tools and bypasses permission
+- **Auto pilot** automatically approves all tools and bypasses permission
   prompts.
-- New sessions default to Fully Auto. Wingmen translates and applies that
+- New sessions default to Auto pilot. CodeSwarm translates and applies that
   policy to every agent as soon as the roster connects.
-- One selection applies to every active agent. Wingmen translates these shared
+- One selection applies to every active agent. CodeSwarm translates these shared
   names to each adapter's native mode—for example, Accept Edits maps to
   Claude's `acceptEdits` and Gemini's `autoEdit`.
 - Only modes supported by every active agent are shown. Agent-specific modes
   without an honest equivalent are omitted.
-- Wingmen keeps every agent synchronized to the selected shared mode; adapter
+- CodeSwarm keeps every agent synchronized to the selected shared mode; adapter
   defaults are never exposed as a mixed roster mode.
 - Choosing any permission mode exits Chat.
 - The check mark identifies the active mode.
@@ -200,7 +200,7 @@ options are ordered from least to most automation:
 `/mode` opens the same picker. `/mode chat` is a shortcut for Chat;
 choose any shared permission mode to leave it.
 
-## Wingmen Slash Commands
+## CodeSwarm Slash Commands
 
 Prefix a line with `!` to run it directly in the current workspace shell. For
 example, `!git status` runs locally and displays its output in the conversation;
@@ -209,14 +209,14 @@ it is never sent to an agent. Press `Ctrl+C` to stop a running command.
 | Command | Action |
 | --- | --- |
 | `/help` | Show the concise command and control reference in the conversation. |
-| `/config` | Open Wingmen settings and the roster for the next workspace. |
+| `/config` | Open CodeSwarm settings and the roster for the next workspace. |
 | `/pause` | Pause or resume the multi-agent relay. |
 | `/mode` | Open the mode picker. |
 | `/mode chat` | Enter Chat mode directly. |
 | `/close` | Close this workspace and return to agent selection. |
 
 Agents may advertise additional slash commands. They appear in command search
-and are forwarded to the active agent. A Wingmen command with the same name
+and are forwarded to the active agent. A CodeSwarm command with the same name
 always runs locally.
 
 ## Navigate the Transcript
@@ -254,7 +254,7 @@ Run `/config`, move between controls with `Tab` and `Shift+Tab`, and then use:
 
 Checked roster agents are used for the next workspace in numbered,
 top-to-bottom order. At least 1 agent must be selected. “Not detected” means
-the CLI must be installed and Wingmen reopened before that roster can launch.
+the CLI must be installed and CodeSwarm reopened before that roster can launch.
 Roster changes apply to the next workspace; the current session roster cannot
 be edited from the conversation.
 
@@ -313,7 +313,7 @@ permission. Permission choices are supplied by the active agent and may vary.
 ### An Agent Is Not Detected
 
 Confirm that the underlying CLI is installed and available on `PATH`, then
-restart Wingmen. The bundled catalog supports Claude Code, Codex CLI, and
+restart CodeSwarm. The bundled catalog supports Claude Code, Codex CLI, and
 Gemini CLI. Some agents also require an ACP adapter.
 
 ### Only One Agent Responds

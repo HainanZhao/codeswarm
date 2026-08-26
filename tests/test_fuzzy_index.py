@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 
-from wingmen.fuzzy_index import FuzzyIndex
+from codeswarm.fuzzy_index import FuzzyIndex
 
 
 class FuzzyIndexTests(unittest.TestCase):

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.28] - 2026-08-26
+
+### Fixed
+
+- Extended Antigravity print-mode turns to a 60-minute timeout.
+- Kept the internal CodeSwarm stop token out of native Antigravity message text.
+
 ## [0.6.27] - 2026-08-25
 
 ### Changed
@@ -14,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   icons, and a more distinct muted-gold secondary agent tone.
 - Agent startup and prompt failures now use a clear error presentation while
   preserving literal adapter details safely.
-- Corrected project and documentation links to the Wingmen repository.
+- Corrected project and documentation links to the CodeSwarm repository.
 
 ### Fixed
 
@@ -59,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recipient of the next normal message; prompt-level direct-message syntax was
   removed.
 - The terminal UI now uses a single teal fighter-HUD theme, full-width Flash
-  ribbons, compact message panels, and a wingmen-formation landing mark.
+  ribbons, compact message panels, and a codeswarm-formation landing mark.
 - Messages submitted behind active work remain in a bounded holding area above
   the prompt and enter the transcript only when their agent turn starts.
 - Adjacent messages from the same agent render as one compact visual stack
@@ -67,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Each agent's first prompt now identifies its Wingmen roster collaborators.
+- Each agent's first prompt now identifies its CodeSwarm roster collaborators.
 - New ACP sessions receive concise operating instructions: avoid speculation,
   answer questions without starting work, and stay within explicitly requested
   scope.
@@ -109,30 +116,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The two-agent relay now supports an unlimited-size roster. `-a/--agent` is
-  repeatable (`wingmen run -a claude -a codex -a gemini`); `/agent
+  repeatable (`codeswarm run -a claude -a codex -a gemini`); `/agent
   list|add <agent>|drop <n>` changes the roster inside a running session.
 - A detected-agent section in the launcher, populated from local agent
   detection. `space` now adds/removes an agent from a roster being built;
   `enter` launches that roster (or the highlighted agent solo if nothing is
   selected). Added a filter input.
 - `f4` closes the current workspace (previously only
-  `/wingmen:session-close`).
+  `/codeswarm:session-close`).
 - Direct `c`/`p` keys to copy the highlighted block to the clipboard or into
   the prompt.
 - Per-agent response headers, timestamps, work timers, and a compact rolling
   tool-activity line with focusable history.
 ### Changed
 
-- Bare `wingmen` (no `-a`) now restores the last-used agent roster. If none is
+- Bare `codeswarm` (no `-a`) now restores the last-used agent roster. If none is
   saved, it opens the agent store instead of silently auto-starting a relay
   from whatever agents happen to be detected — a fresh install now takes one
   extra step (pick a roster once) in exchange for never starting agents you
   didn't choose.
-- Rebranded the project from Taiji to Wingmen: PyPI distribution `taiji-cli` →
-  `wingmen`, primary command `taiji` → `wingmen`, relay safe word
-  `[TAIJI:STOP]` → `[WINGMEN:STOP]`, duplicate-agent tag/display suffixes
+- Rebranded the project from Taiji to CodeSwarm: PyPI distribution `taiji-cli` →
+  `codeswarm`, primary command `taiji` → `codeswarm`, relay safe word
+  `[TAIJI:STOP]` → `[CODESWARM:STOP]`, duplicate-agent tag/display suffixes
   `-yin`/`-yang` → `-1`/`-2`, and the app icon `☯` → `✈`. Settings and session
-  data now live under a `wingmen` config/state path instead of `taiji`;
+  data now live under a `codeswarm` config/state path instead of `taiji`;
   existing local settings and session history will not be picked up
   automatically. The old compatibility identity is no longer supported.
 - Style tweak for compact prompt
@@ -187,7 +194,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The relay's turn-taking core (`RelayConversation`, née `DuplexConversation`)
   is generalized from exactly two agents to N; the two-agent behavior is
   unchanged (10 pre-existing tests pass with only an import/rename edit).
-- `wingmen acp COMMAND PATH -d OTHER_PATH` silently discarded `-d` — the
+- `codeswarm acp COMMAND PATH -d OTHER_PATH` silently discarded `-d` — the
   positional and the option were bound to the same parameter name.
 - The block context menu's copy/maximize/etc. actions had no direct key
   binding, requiring three steps (engage cursor, open menu, pick a letter) to
@@ -406,7 +413,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added toad.db sqlite database for non-config data
+- Added codeswarm.db sqlite database for non-config data
 - Added Resume dialog (currently experimental, as agents don't yet support ACP)
 - Added setting to disable title blink
 
@@ -429,7 +436,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added display of slash command hints
-- Added /toad:clear slash command
+- Added /codeswarm:clear slash command
 
 ## [0.5.33] - 2026-01-16
 
@@ -528,7 +535,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Restored prompt history
-- The `/about` slash command has been renamed to `/toad:about`, to crate a namespace for future Toad commands
+- The `/about` slash command has been renamed to `/codeswarm:about`, to crate a namespace for future CodeSwarm commands
 
 ## [0.5.21] - 2026-01-05
 
@@ -553,7 +560,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added surfacing of "stop reason" from agents.
-- Added `TOAD_LOG` env var (takes a path) to direct logs to a path.
+- Added `CODESWARM_LOG` env var (takes a path) to direct logs to a path.
 
 ## [0.5.18] - 2026-01-03
 
@@ -652,14 +659,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added single character switches https://github.com/batrachianai/toad/pull/135
+- Added single character switches https://github.com/batrachianai/codeswarm/pull/135
 
 ## [0.5.6] - 2025-12-24
 
 ### Fixed
 
 - Fixed agent selector not focusing on run.
-- Added project directory as second argument to `toad acp` rather than a switch.
+- Added project directory as second argument to `codeswarm acp` rather than a switch.
 
 ## [0.5.5] - 2025-12-22
 
@@ -674,57 +681,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - First release. This document will be updated for subsequent releases.
 
 
-[0.6.20]: https://github.com/batrachianai/toad/compare/v0.6.18...v0.6.20
-[0.6.18]: https://github.com/batrachianai/toad/compare/v0.6.17...v0.6.18
-[0.6.17]: https://github.com/batrachianai/toad/compare/v0.6.16...v0.6.17
-[0.6.16]: https://github.com/batrachianai/toad/compare/v0.6.15...v0.6.16
-[0.6.15]: https://github.com/batrachianai/toad/compare/v0.6.14...v0.6.15
-[0.6.14]: https://github.com/batrachianai/toad/compare/v0.6.13...v0.6.14
-[0.6.13]: https://github.com/batrachianai/toad/compare/v0.6.12...v0.6.13
-[0.6.12]: https://github.com/batrachianai/toad/compare/v0.6.11...v0.6.12
-[0.6.11]: https://github.com/batrachianai/toad/compare/v0.6.10...v0.6.11
-[0.6.10]: https://github.com/batrachianai/toad/compare/v0.6.9...v0.6.10
-[0.6.9]: https://github.com/batrachianai/toad/compare/v0.6.8...v0.6.9
-[0.6.8]: https://github.com/batrachianai/toad/compare/v0.6.7...v0.6.8
-[0.6.7]: https://github.com/batrachianai/toad/compare/v0.6.6...v0.6.7
-[0.6.6]: https://github.com/batrachianai/toad/compare/v0.6.5...v0.6.6
-[0.6.5]: https://github.com/batrachianai/toad/compare/v0.6.4...v0.6.5
-[0.6.4]: https://github.com/batrachianai/toad/compare/v0.6.3...v0.6.4
-[0.6.3]: https://github.com/batrachianai/toad/compare/v0.6.2...v0.6.3
-[0.6.2]: https://github.com/batrachianai/toad/compare/v0.6.1...v0.6.2
-[0.6.1]: https://github.com/batrachianai/toad/compare/v0.6.0...v0.6.1
-[0.6.0]: https://github.com/batrachianai/toad/compare/v0.5.38...v0.6.0
-[0.5.38]: https://github.com/batrachianai/toad/compare/v0.5.37...v0.5.38
-[0.5.37]: https://github.com/batrachianai/toad/compare/v0.5.36...v0.5.37
-[0.5.36]: https://github.com/batrachianai/toad/compare/v0.5.35...v0.5.36
-[0.5.35]: https://github.com/batrachianai/toad/compare/v0.5.34...v0.5.35
-[0.5.34]: https://github.com/batrachianai/toad/compare/v0.5.33...v0.5.34
-[0.5.33]: https://github.com/batrachianai/toad/compare/v0.5.32...v0.5.33
-[0.5.32]: https://github.com/batrachianai/toad/compare/v0.5.31...v0.5.32
-[0.5.31]: https://github.com/batrachianai/toad/compare/v0.5.30...v0.5.31
-[0.5.30]: https://github.com/batrachianai/toad/compare/v0.5.29...v0.5.30
-[0.5.29]: https://github.com/batrachianai/toad/compare/v0.5.28...v0.5.29
-[0.5.28]: https://github.com/batrachianai/toad/compare/v0.5.27...v0.5.28
-[0.5.27]: https://github.com/batrachianai/toad/compare/v0.5.26...v0.5.27
-[0.5.26]: https://github.com/batrachianai/toad/compare/v0.5.25...v0.5.26
-[0.5.24]: https://github.com/batrachianai/toad/compare/v0.5.23...v0.5.24
-[0.5.23]: https://github.com/batrachianai/toad/compare/v0.5.22...v0.5.23
-[0.5.22]: https://github.com/batrachianai/toad/compare/v0.5.21...v0.5.22
-[0.5.21]: https://github.com/batrachianai/toad/compare/v0.5.20...v0.5.21
-[0.5.20]: https://github.com/batrachianai/toad/compare/v0.5.19...v0.5.20
-[0.5.19]: https://github.com/batrachianai/toad/compare/v0.5.18...v0.5.19
-[0.5.18]: https://github.com/batrachianai/toad/compare/v0.5.17...v0.5.18
-[0.5.17]: https://github.com/batrachianai/toad/compare/v0.5.16...v0.5.17
-[0.5.16]: https://github.com/batrachianai/toad/compare/v0.5.15...v0.5.16
-[0.5.15]: https://github.com/batrachianai/toad/compare/v0.5.14...v0.5.15
-[0.5.14]: https://github.com/batrachianai/toad/compare/v0.5.13...v0.5.14
-[0.5.13]: https://github.com/batrachianai/toad/compare/v0.5.12...v0.5.13
-[0.5.12]: https://github.com/batrachianai/toad/compare/v0.5.11...v0.5.12
-[0.5.11]: https://github.com/batrachianai/toad/compare/v0.5.10...v0.5.11
-[0.5.10]: https://github.com/batrachianai/toad/compare/v0.5.9...v0.5.10
-[0.5.9]: https://github.com/batrachianai/toad/compare/v0.5.8...v0.5.9
-[0.5.8]: https://github.com/batrachianai/toad/compare/v0.5.7...v0.5.8
-[0.5.7]: https://github.com/batrachianai/toad/compare/v0.5.6...v0.5.7
-[0.5.6]: https://github.com/batrachianai/toad/compare/v0.5.5...v0.5.6
-[0.5.5]: https://github.com/batrachianai/toad/compare/v0.5.0...v0.5.5
-[0.5.0]: https://github.com/batrachianai/toad/releases/tag/v0.5.0
+[0.6.20]: https://github.com/batrachianai/codeswarm/compare/v0.6.18...v0.6.20
+[0.6.18]: https://github.com/batrachianai/codeswarm/compare/v0.6.17...v0.6.18
+[0.6.17]: https://github.com/batrachianai/codeswarm/compare/v0.6.16...v0.6.17
+[0.6.16]: https://github.com/batrachianai/codeswarm/compare/v0.6.15...v0.6.16
+[0.6.15]: https://github.com/batrachianai/codeswarm/compare/v0.6.14...v0.6.15
+[0.6.14]: https://github.com/batrachianai/codeswarm/compare/v0.6.13...v0.6.14
+[0.6.13]: https://github.com/batrachianai/codeswarm/compare/v0.6.12...v0.6.13
+[0.6.12]: https://github.com/batrachianai/codeswarm/compare/v0.6.11...v0.6.12
+[0.6.11]: https://github.com/batrachianai/codeswarm/compare/v0.6.10...v0.6.11
+[0.6.10]: https://github.com/batrachianai/codeswarm/compare/v0.6.9...v0.6.10
+[0.6.9]: https://github.com/batrachianai/codeswarm/compare/v0.6.8...v0.6.9
+[0.6.8]: https://github.com/batrachianai/codeswarm/compare/v0.6.7...v0.6.8
+[0.6.7]: https://github.com/batrachianai/codeswarm/compare/v0.6.6...v0.6.7
+[0.6.6]: https://github.com/batrachianai/codeswarm/compare/v0.6.5...v0.6.6
+[0.6.5]: https://github.com/batrachianai/codeswarm/compare/v0.6.4...v0.6.5
+[0.6.4]: https://github.com/batrachianai/codeswarm/compare/v0.6.3...v0.6.4
+[0.6.3]: https://github.com/batrachianai/codeswarm/compare/v0.6.2...v0.6.3
+[0.6.2]: https://github.com/batrachianai/codeswarm/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/batrachianai/codeswarm/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/batrachianai/codeswarm/compare/v0.5.38...v0.6.0
+[0.5.38]: https://github.com/batrachianai/codeswarm/compare/v0.5.37...v0.5.38
+[0.5.37]: https://github.com/batrachianai/codeswarm/compare/v0.5.36...v0.5.37
+[0.5.36]: https://github.com/batrachianai/codeswarm/compare/v0.5.35...v0.5.36
+[0.5.35]: https://github.com/batrachianai/codeswarm/compare/v0.5.34...v0.5.35
+[0.5.34]: https://github.com/batrachianai/codeswarm/compare/v0.5.33...v0.5.34
+[0.5.33]: https://github.com/batrachianai/codeswarm/compare/v0.5.32...v0.5.33
+[0.5.32]: https://github.com/batrachianai/codeswarm/compare/v0.5.31...v0.5.32
+[0.5.31]: https://github.com/batrachianai/codeswarm/compare/v0.5.30...v0.5.31
+[0.5.30]: https://github.com/batrachianai/codeswarm/compare/v0.5.29...v0.5.30
+[0.5.29]: https://github.com/batrachianai/codeswarm/compare/v0.5.28...v0.5.29
+[0.5.28]: https://github.com/batrachianai/codeswarm/compare/v0.5.27...v0.5.28
+[0.5.27]: https://github.com/batrachianai/codeswarm/compare/v0.5.26...v0.5.27
+[0.5.26]: https://github.com/batrachianai/codeswarm/compare/v0.5.25...v0.5.26
+[0.5.24]: https://github.com/batrachianai/codeswarm/compare/v0.5.23...v0.5.24
+[0.5.23]: https://github.com/batrachianai/codeswarm/compare/v0.5.22...v0.5.23
+[0.5.22]: https://github.com/batrachianai/codeswarm/compare/v0.5.21...v0.5.22
+[0.5.21]: https://github.com/batrachianai/codeswarm/compare/v0.5.20...v0.5.21
+[0.5.20]: https://github.com/batrachianai/codeswarm/compare/v0.5.19...v0.5.20
+[0.5.19]: https://github.com/batrachianai/codeswarm/compare/v0.5.18...v0.5.19
+[0.5.18]: https://github.com/batrachianai/codeswarm/compare/v0.5.17...v0.5.18
+[0.5.17]: https://github.com/batrachianai/codeswarm/compare/v0.5.16...v0.5.17
+[0.5.16]: https://github.com/batrachianai/codeswarm/compare/v0.5.15...v0.5.16
+[0.5.15]: https://github.com/batrachianai/codeswarm/compare/v0.5.14...v0.5.15
+[0.5.14]: https://github.com/batrachianai/codeswarm/compare/v0.5.13...v0.5.14
+[0.5.13]: https://github.com/batrachianai/codeswarm/compare/v0.5.12...v0.5.13
+[0.5.12]: https://github.com/batrachianai/codeswarm/compare/v0.5.11...v0.5.12
+[0.5.11]: https://github.com/batrachianai/codeswarm/compare/v0.5.10...v0.5.11
+[0.5.10]: https://github.com/batrachianai/codeswarm/compare/v0.5.9...v0.5.10
+[0.5.9]: https://github.com/batrachianai/codeswarm/compare/v0.5.8...v0.5.9
+[0.5.8]: https://github.com/batrachianai/codeswarm/compare/v0.5.7...v0.5.8
+[0.5.7]: https://github.com/batrachianai/codeswarm/compare/v0.5.6...v0.5.7
+[0.5.6]: https://github.com/batrachianai/codeswarm/compare/v0.5.5...v0.5.6
+[0.5.5]: https://github.com/batrachianai/codeswarm/compare/v0.5.0...v0.5.5
+[0.5.0]: https://github.com/batrachianai/codeswarm/releases/tag/v0.5.0

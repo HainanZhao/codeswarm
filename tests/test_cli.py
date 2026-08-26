@@ -5,11 +5,11 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from wingmen.cli import main
-from wingmen.app import WingmenApp
-from wingmen.screens.main import MainScreen
-from wingmen.widgets.conversation import Conversation
-from wingmen.widgets.prompt import PromptTextArea
+from codeswarm.cli import main
+from codeswarm.app import CodeSwarmApp
+from codeswarm.screens.main import MainScreen
+from codeswarm.widgets.conversation import Conversation
+from codeswarm.widgets.prompt import PromptTextArea
 
 
 class _FakeApp:
@@ -32,7 +32,7 @@ class CLIEntryPointTests(unittest.TestCase):
         self.assertIn("Commands:", result.output)
 
     def test_ctrl_c_is_the_only_application_quit_binding(self) -> None:
-        bindings = {(binding.key, binding.action) for binding in WingmenApp.BINDINGS}
+        bindings = {(binding.key, binding.action) for binding in CodeSwarmApp.BINDINGS}
         self.assertIn(("ctrl+c", "interrupt_or_quit"), bindings)
         self.assertFalse(any(key == "ctrl+q" for key, _action in bindings))
 
@@ -44,14 +44,14 @@ class CLIEntryPointTests(unittest.TestCase):
         self.assertNotIn("multiline_submit", bindings)
 
     def test_no_persistent_footer_or_command_palette_is_exposed(self) -> None:
-        app_bindings = {binding.action: binding for binding in WingmenApp.BINDINGS}
+        app_bindings = {binding.action: binding for binding in CodeSwarmApp.BINDINGS}
         screen_bindings = {binding.action: binding for binding in MainScreen.BINDINGS}
         conversation_bindings = {
             binding.action: binding for binding in Conversation.BINDINGS
         }
 
         self.assertTrue(app_bindings["interrupt_or_quit"].show)
-        self.assertFalse(WingmenApp.ENABLE_COMMAND_PALETTE)
+        self.assertFalse(CodeSwarmApp.ENABLE_COMMAND_PALETTE)
         self.assertNotIn("toggle_help_panel", app_bindings)
         self.assertNotIn("cancel", conversation_bindings)
         self.assertTrue(conversation_bindings["toggle_pause"].show)
@@ -69,7 +69,7 @@ class CLIEntryPointTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as project_dir,
         ):
             with patch.dict("os.environ", {"XDG_CONFIG_HOME": config_dir}), patch(
-                "wingmen.cli.WingmenApp", _FakeApp
+                "codeswarm.cli.CodeSwarmApp", _FakeApp
             ):
                 result = runner.invoke(main, ["run", project_dir])
 
@@ -77,14 +77,14 @@ class CLIEntryPointTests(unittest.TestCase):
         self.assertTrue(_FakeApp.instances[-1].ran)
 
     def test_acp_entry_point_exits_cleanly_after_app_run(self) -> None:
-        with patch("wingmen.cli.WingmenApp", _FakeApp):
+        with patch("codeswarm.cli.CodeSwarmApp", _FakeApp):
             result = CliRunner().invoke(main, ["acp", "test-agent"])
 
         self.assertIsNone(result.exception, result.output)
         self.assertTrue(_FakeApp.instances[-1].ran)
 
     def test_acp_command_uses_a_safe_name_for_quoted_executables(self) -> None:
-        with patch("wingmen.cli.WingmenApp", _FakeApp):
+        with patch("codeswarm.cli.CodeSwarmApp", _FakeApp):
             result = CliRunner().invoke(
                 main, ["acp", '"/tmp/My Agent" --stdio']
             )

@@ -2,7 +2,7 @@
 
 ## Goal
 
-When a user submits an untagged message while an agent is working, Wingmen
+When a user submits an untagged message while an agent is working, CodeSwarm
 must send that message to the same agent before advancing the relay. This gives
 every supported ACP agent predictable steering without concurrent prompts or
 adapter-specific protocol extensions.
@@ -13,10 +13,10 @@ adapter-specific protocol extensions.
 - Messages are bounded by the existing `MAX_QUEUED_PROMPTS` limit and processed
   in FIFO order.
 - The active agent finishes its current ACP prompt before receiving queued
-  steering. Wingmen never overlaps two `session/prompt` requests for one agent.
+  steering. CodeSwarm never overlaps two `session/prompt` requests for one agent.
 - Each steering response replaces the relay context. After the steering queue
   for that turn is empty, the next active agent receives the latest response.
-- A trailing `[WINGMEN:STOP]` does not stop the relay while steering for that
+- A trailing `[CODESWARM:STOP]` does not stop the relay while steering for that
   agent remains queued. The stop marker from the superseded response remains
   hidden and is not forwarded.
 - A trailing stop marker from the final steered response keeps its existing

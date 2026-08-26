@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, Mock
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from wingmen.widgets.terminal_tool import (
+from codeswarm.widgets.terminal_tool import (
     DEFAULT_OUTPUT_BYTE_LIMIT,
     MAX_OUTPUT_BYTE_LIMIT,
     Command,
     TerminalTool,
 )
-from wingmen.widgets.terminal import Terminal
+from codeswarm.widgets.terminal import Terminal
 
 
 class TerminalToolTests(unittest.TestCase):
@@ -63,7 +63,7 @@ class TerminalToolTests(unittest.TestCase):
         terminal = TerminalTool(Command("sleep", ["60"], os.environ, os.curdir))
         terminal._process = SimpleNamespace(pid=12345, returncode=None)  # type: ignore[assignment]
 
-        with patch("wingmen.widgets.terminal_tool.os.killpg") as killpg:
+        with patch("codeswarm.widgets.terminal_tool.os.killpg") as killpg:
             self.assertTrue(terminal.kill())
 
         killpg.assert_called_once_with(12345, signal.SIGKILL)

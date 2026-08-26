@@ -6,7 +6,7 @@
 
 **Architecture:** Conversation owns readiness-aware local-command dispatch and live roster reconciliation; SessionCoordinator continues to own adapter and relay lifecycles. ConfigScreen receives an optional Conversation and delegates live changes while its focused row widgets own safe inline ordering controls.
 
-**Tech Stack:** Python 3.14, Textual 8.2.7, asyncio, unittest, `WingmenApp.run_test`
+**Tech Stack:** Python 3.14, Textual 8.2.7, asyncio, unittest, `CodeSwarmApp.run_test`
 
 **Spec:** `docs/superpowers/specs/2026-08-26-live-config-roster-design.md`
 
@@ -15,8 +15,8 @@
 - Keep roster index 0 as the current session owner; it cannot be removed.
 - Keep existing live roster indices and relative order stable; append new live peers.
 - Save checkbox order for the next workspace without reordering the live relay.
-- Keep the internal full-access ID `wingmen:mode:full-access` and native aliases unchanged.
-- Use Wingmen's Flash ribbon for conversation notifications; do not show Textual Toasts over the conversation.
+- Keep the internal full-access ID `codeswarm:mode:full-access` and native aliases unchanged.
+- Use CodeSwarm's Flash ribbon for conversation notifications; do not show Textual Toasts over the conversation.
 - Preserve unrelated uncommitted Antigravity catalog and alias work already in the worktree.
 
 ---
@@ -24,7 +24,7 @@
 ### Task 1: Rename the full-access display policy
 
 **Files:**
-- Modify: `src/wingmen/mode_policy.py:56-65`
+- Modify: `src/codeswarm/mode_policy.py:56-65`
 - Modify: `tests/test_conversation_acp.py:409-510,2818-2865`
 - Modify: `README.md:50-54`
 - Modify: `docs/USER_MANUAL.md:180-190`
@@ -32,7 +32,7 @@
 
 **Interfaces:**
 - Consumes: `ModePolicy(id, name, description, aliases)` and `DEFAULT_MODE_POLICY_ID`.
-- Produces: user-facing full-access name `Auto pilot` while retaining ID `wingmen:mode:full-access`.
+- Produces: user-facing full-access name `Auto pilot` while retaining ID `codeswarm:mode:full-access`.
 
 - [ ] **Step 1: Change UI assertions to require Auto pilot**
 
@@ -54,7 +54,7 @@ Expected: FAIL because the current display name is `Fully Auto`.
 
 ```python
 ModePolicy(
-    "wingmen:mode:full-access",
+    "codeswarm:mode:full-access",
     "Auto pilot",
     "Automatically approve all tools and bypass permission prompts",
     frozenset({"fullaccess", "yolo", "bypasspermissions", "skippermissions"}),
@@ -74,8 +74,8 @@ Expected: PASS.
 ### Task 2: Dispatch `/config` before ACP readiness
 
 **Files:**
-- Modify: `src/wingmen/widgets/prompt.py:200-230,560-570`
-- Modify: `src/wingmen/widgets/conversation.py:934-975,1977-1981`
+- Modify: `src/codeswarm/widgets/prompt.py:200-230,560-570`
+- Modify: `src/codeswarm/widgets/conversation.py:934-975,1977-1981`
 - Modify: `tests/test_conversation_acp.py:770-815`
 
 **Interfaces:**
@@ -87,7 +87,7 @@ Expected: PASS.
 ```python
 def test_config_command_opens_while_agent_is_loading(self) -> None:
     async def scenario() -> None:
-        async with WingmenApp(setup_prompt=False).run_test(size=(120, 40)) as pilot:
+        async with CodeSwarmApp(setup_prompt=False).run_test(size=(120, 40)) as pilot:
             conversation = pilot.app.screen.query_one(Conversation)
             conversation.agent_ready = False
             conversation.prompt.text = "/config"
@@ -138,7 +138,7 @@ Expected: PASS; `/config` opens while loading, unknown commands remain local err
 ### Task 3: Align numeric schema and Textual input validation
 
 **Files:**
-- Modify: `src/wingmen/screens/config.py:49-65`
+- Modify: `src/codeswarm/screens/config.py:49-65`
 - Modify: `tests/test_config.py:14-120`
 
 **Interfaces:**
@@ -183,8 +183,8 @@ Expected: PASS with a neutral valid border for the default and invalid state for
 ### Task 4: Replace global roster movement with inline row controls
 
 **Files:**
-- Modify: `src/wingmen/screens/config.py:45-292`
-- Modify: `src/wingmen/screens/config.tcss:38-75`
+- Modify: `src/codeswarm/screens/config.py:45-292`
+- Modify: `src/codeswarm/screens/config.tcss:38-75`
 - Modify: `tests/test_config.py`
 - Modify: `docs/USER_MANUAL.md:240-260`
 
@@ -249,9 +249,9 @@ Expected: PASS at narrow and normal terminal sizes.
 ### Task 5: Reconcile config membership with the live roster
 
 **Files:**
-- Modify: `src/wingmen/screens/config.py`
-- Modify: `src/wingmen/session.py:500-520`
-- Modify: `src/wingmen/widgets/conversation.py:1548-1600,1941-1982`
+- Modify: `src/codeswarm/screens/config.py`
+- Modify: `src/codeswarm/session.py:500-520`
+- Modify: `src/codeswarm/widgets/conversation.py:1548-1600,1941-1982`
 - Modify: `tests/test_session.py`
 - Modify: `tests/test_config.py`
 - Modify: `tests/test_conversation_acp.py`
@@ -354,7 +354,7 @@ Expected: package verification, all unittests, compileall, lock check, and mypy 
 
 - [ ] **Step 3: Inspect the final diff for unrelated changes**
 
-Run: `git status --short && git diff --stat HEAD && git diff HEAD -- src/wingmen tests docs README.md AGENTS.md`
+Run: `git status --short && git diff --stat HEAD && git diff HEAD -- src/codeswarm tests docs README.md AGENTS.md`
 
 Expected: only approved live-roster, config UX, numeric validation, Auto pilot rename, tests, and the user's pre-existing Antigravity work are present.
 

@@ -1,8 +1,8 @@
 import asyncio
 import unittest
 
-from wingmen import jsonrpc
-from wingmen.acp.relay import MAX_QUEUED_PROMPTS, MAX_RELAY_EVENTS, RelayConversation
+from codeswarm import jsonrpc
+from codeswarm.acp.relay import MAX_QUEUED_PROMPTS, MAX_RELAY_EVENTS, RelayConversation
 
 
 class FakeAgent:
@@ -33,7 +33,7 @@ class RelayConversationTests(unittest.TestCase):
                     return "end_turn"
 
             gemini = CapacityLimitedAgent("Gemini", [])
-            claude = FakeAgent("Claude", [("end_turn", "[WINGMEN:STOP]")])
+            claude = FakeAgent("Claude", [("end_turn", "[CODESWARM:STOP]")])
             relay = RelayConversation((gemini, claude))
 
             with self.assertRaises(jsonrpc.APIError):
@@ -56,7 +56,7 @@ class RelayConversationTests(unittest.TestCase):
             )
             gemini = FakeAgent(
                 "Gemini",
-                [("end_turn", "[WINGMEN:STOP]"), ("end_turn", "private reply")],
+                [("end_turn", "[CODESWARM:STOP]"), ("end_turn", "private reply")],
             )
             relay = RelayConversation((claude, gemini))
             await relay.run("Public question")
@@ -83,11 +83,11 @@ class RelayConversationTests(unittest.TestCase):
         async def scenario() -> None:
             claude = FakeAgent(
                 "Claude",
-                [("end_turn", "The answer is 42.\n[WINGMEN:STOP]")],
+                [("end_turn", "The answer is 42.\n[CODESWARM:STOP]")],
             )
             gemini = FakeAgent(
                 "Gemini",
-                [("end_turn", "👍\n[WINGMEN:STOP]")],
+                [("end_turn", "👍\n[CODESWARM:STOP]")],
             )
 
             result = await RelayConversation((claude, gemini)).run(
@@ -103,7 +103,7 @@ class RelayConversationTests(unittest.TestCase):
     def test_empty_reviewer_stop_uses_a_visible_default_acknowledgment(self) -> None:
         async def scenario() -> None:
             claude = FakeAgent("Claude", [("end_turn", "The fix is ready")])
-            gemini = FakeAgent("Gemini", [("end_turn", "[WINGMEN:STOP]")])
+            gemini = FakeAgent("Gemini", [("end_turn", "[CODESWARM:STOP]")])
             visible_turns: list[str] = []
 
             async def on_turn(round_number, agent, response) -> None:
@@ -120,7 +120,7 @@ class RelayConversationTests(unittest.TestCase):
 
     def test_turns_alternate_and_relay_previous_response(self) -> None:
         async def scenario() -> None:
-            claude = FakeAgent("Claude", [("end_turn", "review"), ("end_turn", "[WINGMEN:STOP]")])
+            claude = FakeAgent("Claude", [("end_turn", "review"), ("end_turn", "[CODESWARM:STOP]")])
             codex = FakeAgent("Codex", [("end_turn", "improve")])
             result = await RelayConversation((claude, codex)).run("build it")
 
@@ -147,7 +147,7 @@ class RelayConversationTests(unittest.TestCase):
 
     def test_configured_first_agent_receives_initial_prompt(self) -> None:
         async def scenario() -> None:
-            claude = FakeAgent("Claude", [("end_turn", "[WINGMEN:STOP]")])
+            claude = FakeAgent("Claude", [("end_turn", "[CODESWARM:STOP]")])
             codex = FakeAgent("Codex", [("end_turn", "Initial answer")])
             result = await RelayConversation((claude, codex)).run(
                 "build it", first_agent=1
@@ -162,15 +162,15 @@ class RelayConversationTests(unittest.TestCase):
 
     def test_stop_token_is_internal_and_is_not_forwarded(self) -> None:
         async def scenario() -> None:
-            claude = FakeAgent("Claude", [("end_turn", "Finished\n[WINGMEN:STOP]")])
-            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+            claude = FakeAgent("Claude", [("end_turn", "Finished\n[CODESWARM:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
             result = await RelayConversation((claude, codex)).run("finish it")
 
             self.assertEqual(result.reason, "stop_token")
-            self.assertIn("Do not use [WINGMEN:STOP]", claude.prompts[0])
+            self.assertIn("Do not use [CODESWARM:STOP]", claude.prompts[0])
             self.assertIn("reviewing another participant's answer", codex.prompts[0])
             self.assertIn("Finished", codex.prompts[0])
-            self.assertNotIn("Finished\n[WINGMEN:STOP]", codex.prompts[0])
+            self.assertNotIn("Finished\n[CODESWARM:STOP]", codex.prompts[0])
 
         asyncio.run(scenario())
 
@@ -178,7 +178,7 @@ class RelayConversationTests(unittest.TestCase):
         async def scenario() -> None:
             long_response = "A" * 20_000
             claude = FakeAgent("Claude", [("end_turn", long_response)])
-            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
             await RelayConversation((claude, codex)).run("build it")
 
             self.assertLess(len(codex.prompts[0]), 13_000)
@@ -189,7 +189,7 @@ class RelayConversationTests(unittest.TestCase):
     def test_turn_start_callback_identifies_active_agent(self) -> None:
         async def scenario() -> None:
             claude = FakeAgent("Claude", [("end_turn", "review")])
-            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
             started: list[str] = []
 
             async def on_turn_start(round_number, agent) -> None:
@@ -218,7 +218,7 @@ class RelayConversationTests(unittest.TestCase):
                     return "end_turn"
 
             claude = WaitingAgent("Claude", [])
-            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
 
             async def on_queued_turn_start(_round, _agent, prompt, direct) -> None:
                 dispatched.append((prompt, direct))
@@ -238,8 +238,8 @@ class RelayConversationTests(unittest.TestCase):
 
     def test_direct_prompt_targets_tagged_agent_without_relaying_response(self) -> None:
         async def scenario() -> None:
-            claude = FakeAgent("Claude", [("end_turn", "[WINGMEN:STOP]")])
-            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+            claude = FakeAgent("Claude", [("end_turn", "[CODESWARM:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
             relay = RelayConversation((claude, codex))
             relay.enqueue_direct(1, "inspect this specific file")
             result = await relay.run("continue")
@@ -253,7 +253,7 @@ class RelayConversationTests(unittest.TestCase):
     def test_pause_blocks_dispatch_until_resumed(self) -> None:
         async def scenario() -> None:
             claude = FakeAgent("Claude", [("end_turn", "finished")])
-            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
             relay = RelayConversation((claude, codex))
             relay.pause()
 
@@ -276,7 +276,7 @@ class RelayConversationTests(unittest.TestCase):
             )
             codex = FakeAgent(
                 "Codex",
-                [("end_turn", "[WINGMEN:STOP]"), ("end_turn", "[WINGMEN:STOP]")],
+                [("end_turn", "[CODESWARM:STOP]"), ("end_turn", "[CODESWARM:STOP]")],
             )
             relay = RelayConversation((claude, codex))
 
@@ -302,13 +302,13 @@ class RelayConversationTests(unittest.TestCase):
                 "Gemini",
                 [
                     ("end_turn", "Initial answer"),
-                    ("end_turn", "[WINGMEN:STOP]"),
+                    ("end_turn", "[CODESWARM:STOP]"),
                 ],
             )
             claude = FakeAgent(
                 "Claude",
                 [
-                    ("end_turn", "[WINGMEN:STOP]"),
+                    ("end_turn", "[CODESWARM:STOP]"),
                     ("end_turn", "Claude answered the follow-up"),
                 ],
             )
@@ -330,8 +330,8 @@ class RelayConversationTests(unittest.TestCase):
 
     def test_token_after_an_answer_ends_the_relay_and_keeps_the_answer(self) -> None:
         async def scenario() -> None:
-            claude = FakeAgent("Claude", [("end_turn", "The fix is ready [WINGMEN:STOP]")])
-            codex = FakeAgent("Codex", [("end_turn", "✅ [WINGMEN:STOP]")])
+            claude = FakeAgent("Claude", [("end_turn", "The fix is ready [CODESWARM:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "✅ [CODESWARM:STOP]")])
             visible_turns: list[str] = []
 
             async def on_turn(round_number, agent, response) -> None:
@@ -351,15 +351,15 @@ class RelayConversationTests(unittest.TestCase):
     def test_non_trailing_token_does_not_end_the_relay(self) -> None:
         async def scenario() -> None:
             claude = FakeAgent(
-                "Claude", [("end_turn", "The token [WINGMEN:STOP] is documented here.")]
+                "Claude", [("end_turn", "The token [CODESWARM:STOP] is documented here.")]
             )
-            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
 
             result = await RelayConversation((claude, codex)).run("Document it")
 
             self.assertEqual(result.reason, "stop_token")
             self.assertEqual(result.rounds, 2)
-            self.assertIn("[WINGMEN:STOP] is documented here", codex.prompts[0])
+            self.assertIn("[CODESWARM:STOP] is documented here", codex.prompts[0])
 
         asyncio.run(scenario())
 
@@ -369,7 +369,7 @@ class RelayConversationTests(unittest.TestCase):
                 "Claude",
                 [("end_turn", "reviewed"), ("end_turn", "revised")],
             )
-            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
             relay: RelayConversation
 
             async def inject_follow_up(round_number, agent, response) -> None:
@@ -405,7 +405,7 @@ class RelayConversationTests(unittest.TestCase):
                     return "end_turn"
 
             claude = WaitingAgent("Claude", [])
-            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
             relay = RelayConversation((claude, codex))
             task = asyncio.create_task(relay.run("build it"))
             await started.wait()
@@ -434,7 +434,7 @@ class RelayConversationTests(unittest.TestCase):
                     return "end_turn"
 
             claude = WaitingAgent("Claude", [])
-            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
             relay = RelayConversation((claude, codex), max_rounds=5)
             task = asyncio.create_task(relay.run("build it"))
 
@@ -462,13 +462,13 @@ class RelayConversationTests(unittest.TestCase):
                     if len(self.prompts) == 1:
                         started.set()
                         await release.wait()
-                        self.last_response = "Initial answer\n[WINGMEN:STOP]"
+                        self.last_response = "Initial answer\n[CODESWARM:STOP]"
                     else:
-                        self.last_response = "Revised answer\n[WINGMEN:STOP]"
+                        self.last_response = "Revised answer\n[CODESWARM:STOP]"
                     return "end_turn"
 
             claude = StoppingAgent("Claude", [])
-            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
             relay = RelayConversation((claude, codex))
             task = asyncio.create_task(relay.run("initial question"))
 
@@ -540,7 +540,7 @@ class RelayConversationRosterTests(unittest.TestCase):
         async def scenario() -> None:
             claude = FakeAgent("Claude", [("end_turn", "a")])
             codex = FakeAgent("Codex", [("end_turn", "b")])
-            gemini = FakeAgent("Gemini", [("end_turn", "[WINGMEN:STOP]")])
+            gemini = FakeAgent("Gemini", [("end_turn", "[CODESWARM:STOP]")])
             order: list[str] = []
 
             async def on_turn_start(round_number, agent) -> None:
@@ -558,7 +558,7 @@ class RelayConversationRosterTests(unittest.TestCase):
         async def scenario() -> None:
             claude = FakeAgent("Claude", [("end_turn", "should not run")])
             codex = FakeAgent("Codex", [("end_turn", "private answer")])
-            gemini = FakeAgent("Gemini", [("end_turn", "[WINGMEN:STOP]")])
+            gemini = FakeAgent("Gemini", [("end_turn", "[CODESWARM:STOP]")])
             relay = RelayConversation((claude, codex, gemini))
             relay.enqueue_direct(1, "inspect this specific file")
             result = await relay.run("continue")
@@ -578,7 +578,7 @@ class RelayConversationRosterTests(unittest.TestCase):
 
     def test_first_agent_out_of_range_raises(self) -> None:
         async def scenario() -> None:
-            claude = FakeAgent("Claude", [("end_turn", "[WINGMEN:STOP]")])
+            claude = FakeAgent("Claude", [("end_turn", "[CODESWARM:STOP]")])
             codex = FakeAgent("Codex", [])
             gemini = FakeAgent("Gemini", [])
             relay = RelayConversation((claude, codex, gemini))
@@ -589,7 +589,7 @@ class RelayConversationRosterTests(unittest.TestCase):
 
     def test_first_agent_two_on_three_roster(self) -> None:
         async def scenario() -> None:
-            claude = FakeAgent("Claude", [("end_turn", "[WINGMEN:STOP]")])
+            claude = FakeAgent("Claude", [("end_turn", "[CODESWARM:STOP]")])
             codex = FakeAgent("Codex", [])
             gemini = FakeAgent("Gemini", [("end_turn", "Initial answer")])
             relay = RelayConversation((claude, codex, gemini))
@@ -608,7 +608,7 @@ class RelayConversationRosterTests(unittest.TestCase):
                 "Claude", [("end_turn", "one"), ("end_turn", "three")]
             )
             codex = FakeAgent("Codex", [("end_turn", "two")])
-            gemini = FakeAgent("Gemini", [("end_turn", "[WINGMEN:STOP]")])
+            gemini = FakeAgent("Gemini", [("end_turn", "[CODESWARM:STOP]")])
             relay = RelayConversation((claude, codex), max_rounds=4)
 
             async def on_turn(round_number, agent, response) -> None:
@@ -626,7 +626,7 @@ class RelayConversationRosterTests(unittest.TestCase):
     def test_drop_agent_is_skipped_and_indices_are_stable(self) -> None:
         async def scenario() -> None:
             claude = FakeAgent(
-                "Claude", [("end_turn", "one"), ("end_turn", "[WINGMEN:STOP]")]
+                "Claude", [("end_turn", "one"), ("end_turn", "[CODESWARM:STOP]")]
             )
             codex = FakeAgent("Codex", [("end_turn", "should not run")])
             gemini = FakeAgent("Gemini", [("end_turn", "two")])
@@ -646,7 +646,7 @@ class RelayConversationRosterTests(unittest.TestCase):
 
     def test_next_agent_index_normalizes_past_a_dropped_agent(self) -> None:
         async def scenario() -> None:
-            claude = FakeAgent("Claude", [("end_turn", "one"), ("end_turn", "[WINGMEN:STOP]")])
+            claude = FakeAgent("Claude", [("end_turn", "one"), ("end_turn", "[CODESWARM:STOP]")])
             codex = FakeAgent("Codex", [])
             gemini = FakeAgent("Gemini", [("end_turn", "continued")])
             relay = RelayConversation((claude, codex, gemini))
@@ -680,7 +680,7 @@ class RelayConversationRosterTests(unittest.TestCase):
                 "Claude",
                 [("end_turn", "reviewed"), ("end_turn", "revised")],
             )
-            codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
             gemini = FakeAgent("Gemini", [("end_turn", "should not run")])
             relay: RelayConversation
 

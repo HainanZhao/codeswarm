@@ -1,0 +1,42 @@
+# Schema defined in agent_schema.py
+# https://antigravity.google/
+
+identity = "antigravity.google.com"
+name = "Antigravity CLI"
+short_name = "antigravity"
+aliases = ["agy"]
+url = "https://antigravity.google/"
+protocol = "native"
+author_name = "Google"
+author_url = "https://antigravity.google/"
+publisher_name = "Google"
+publisher_url = "https://antigravity.google/"
+type = "coding"
+description = "Google Antigravity CLI — AI-first coding and multi-agent workflows directly in your terminal."
+tags = []
+run_command."*" = "agy"
+full_access_startup_argument = "--dangerously-skip-permissions"
+detect_command."*" = "agy"
+
+help = '''
+# Antigravity CLI (`agy`)
+
+**AI-first coding and multi-agent workflows in your terminal**
+
+Google Antigravity CLI (`agy`) provides advanced agentic capabilities, reasoning, and context management. CodeSwarm connects directly through agy's structured stream-JSON interface.
+
+## Features
+
+- **Agent Client Protocol (ACP)**: Stdio adapter for seamless CodeSwarm multi-agent relay integration
+- **Subagents & Skills**: Multi-agent delegation and skill execution
+- **Terminal-First**: Built for fast interactive and automated development workflows
+
+## CodeSwarm integration
+
+CodeSwarm launches `agy` directly. This avoids a third-party ACP bridge and its private database parsing, while retaining streamed replies, tool cards, session resume, and relay support.
+
+## Installation
+
+Install Antigravity CLI:
+- Follow instructions at https://antigravity.google/docs/cli/reference
+'''

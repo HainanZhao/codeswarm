@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from wingmen.history import History
+from codeswarm.history import History
 
 
 class HistoryTests(unittest.TestCase):

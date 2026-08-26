@@ -4,7 +4,7 @@
 
 Saving `/config` updates the active conversation membership as well as the
 saved roster. Newly selected agents join the current conversation and
-unchecked peers leave it without restarting Wingmen.
+unchecked peers leave it without restarting CodeSwarm.
 
 ## User-visible behavior
 
@@ -35,10 +35,10 @@ unchecked peers leave it without restarting Wingmen.
   `integer` fields accept integers and `number` fields accept decimal numbers.
   Flash Duration therefore renders its valid `3.0` default with the same
   neutral border treatment as every other valid input.
-- If a newly selected agent cannot start, Wingmen keeps every healthy existing
+- If a newly selected agent cannot start, CodeSwarm keeps every healthy existing
   agent active, reports the failure in the conversation notification ribbon,
   and persists the roster that actually became active.
-- Saving during active agent work does not mutate the live roster. Wingmen
+- Saving during active agent work does not mutate the live roster. CodeSwarm
   keeps the configuration screen open and asks the user to retry when idle.
 - Opening `/config` inside a conversation reflects its active membership,
   including peers added or dropped since launch. Outside a conversation, the
@@ -47,13 +47,13 @@ unchecked peers leave it without restarting Wingmen.
 ## Architecture
 
 The full-access policy keeps its stable internal ID
-`wingmen:mode:full-access`, its native-adapter aliases, and its position as the
-default policy. Only the Wingmen-owned display name changes from `Fully Auto`
+`codeswarm:mode:full-access`, its native-adapter aliases, and its position as the
+default policy. Only the CodeSwarm-owned display name changes from `Fully Auto`
 to `Auto pilot`, so persisted state and adapter translation require no
 migration.
 
 Prompt submission no longer rejects every input before the conversation can
-classify it. Wingmen-owned slash commands are dispatched locally regardless of
+classify it. CodeSwarm-owned slash commands are dispatched locally regardless of
 agent readiness. Prompts and agent-owned commands retain the readiness guard
 and are not sent until their target ACP agent is connected.
 
@@ -104,10 +104,10 @@ entry rather than reactivating the tombstone.
 ## Testing
 
 - Mode-policy and conversation UI assertions expect the user-facing name
-  `Auto pilot` while continuing to select `wingmen:mode:full-access` by ID.
-- `WingmenApp.run_test` verifies that submitting `/config` opens the screen
+  `Auto pilot` while continuing to select `codeswarm:mode:full-access` by ID.
+- `CodeSwarmApp.run_test` verifies that submitting `/config` opens the screen
   while `agent_ready` is false, including submission through slash completion.
-- `WingmenApp.run_test` verifies that `/config` reflects the active roster,
+- `CodeSwarmApp.run_test` verifies that `/config` reflects the active roster,
   locks the owner, and adds/removes peers immediately on Save.
 - UI tests click a row's Up/Down control without focusing its checkbox and
   verify that membership is unchanged, selected order changes, boundary

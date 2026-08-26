@@ -2,7 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from wingmen.prompt.resource import (
+from codeswarm.prompt.resource import (
     MAX_RESOURCE_BYTES,
     ResourceNotRelative,
     ResourceTooLarge,

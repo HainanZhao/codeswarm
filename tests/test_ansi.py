@@ -2,7 +2,7 @@ import contextlib
 import io
 import unittest
 
-from wingmen.ansi._ansi import ANSIStream
+from codeswarm.ansi._ansi import ANSIStream
 
 
 class ANSIStreamTests(unittest.TestCase):

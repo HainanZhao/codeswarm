@@ -1,14 +1,14 @@
 import unittest
 
-from wingmen.settings import Schema, Settings
-from wingmen.settings_schema import SCHEMA
+from codeswarm.settings import Schema, Settings
+from codeswarm.settings_schema import SCHEMA
 
 
 class SettingsRuntimeTests(unittest.TestCase):
     def test_defaults_are_nested_and_runtime_keys_are_flattened(self) -> None:
         schema = Schema(SCHEMA)
         self.assertEqual(
-            schema.defaults["ui"]["theme"], "wingmen-black"  # type: ignore[index]
+            schema.defaults["ui"]["theme"], "codeswarm-black"  # type: ignore[index]
         )
         self.assertIn("ui.prompt_message", schema.keys)
         self.assertNotIn("shell.allow_commands", schema.keys)

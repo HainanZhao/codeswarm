@@ -1,5 +1,5 @@
 
-run := .venv/bin/wingmen
+run := .venv/bin/codeswarm
 python := PYTHONPATH=src .venv/bin/python
 
 .PHONY: run
@@ -20,7 +20,7 @@ lock:
 
 .PHONY: typecheck
 typecheck:
-	.venv/bin/mypy src/wingmen/acp/relay.py src/wingmen/session.py src/wingmen/mode_policy.py src/wingmen/settings.py src/wingmen/settings_schema.py src/wingmen/agents.py --follow-imports=skip --ignore-missing-imports
+	.venv/bin/mypy src/codeswarm/acp/relay.py src/codeswarm/session.py src/codeswarm/mode_policy.py src/codeswarm/settings.py src/codeswarm/settings_schema.py src/codeswarm/agents.py --follow-imports=skip --ignore-missing-imports
 
 .PHONY: package
 package:

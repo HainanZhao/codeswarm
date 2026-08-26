@@ -1,6 +1,6 @@
 [project]
-name = "wingmen"
-version = "0.6.27"
+name = "codeswarm"
+version = "0.6.28"
 description = "A focused terminal workspace for collaborating with ACP coding agents."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -40,20 +40,20 @@ dependencies = [
 ]
 
 [project.scripts]
-wingmen = "wingmen.cli:main"
+codeswarm = "codeswarm.cli:main"
 
 [project.urls]
-Documentation = "https://github.com/HainanZhao/wingmen/blob/main/docs/USER_MANUAL.md"
-Homepage = "https://github.com/HainanZhao/wingmen"
-Issues = "https://github.com/HainanZhao/wingmen/issues"
-Repository = "https://github.com/HainanZhao/wingmen"
+Documentation = "https://github.com/HainanZhao/codeswarm/blob/main/docs/USER_MANUAL.md"
+Homepage = "https://github.com/HainanZhao/codeswarm"
+Issues = "https://github.com/HainanZhao/codeswarm/issues"
+Repository = "https://github.com/HainanZhao/codeswarm"
 
 [build-system]
 requires = ["hatchling==1.28.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/wingmen"]
+packages = ["src/codeswarm"]
 
 [dependency-groups]
 dev = [

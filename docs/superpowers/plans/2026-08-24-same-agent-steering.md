@@ -24,7 +24,7 @@
 ### Task 1: Relay-owned same-agent steering queue
 
 **Files:**
-- Modify: `src/wingmen/acp/relay.py`
+- Modify: `src/codeswarm/acp/relay.py`
 - Test: `tests/test_relay.py`
 
 **Interfaces:**
@@ -53,7 +53,7 @@ def test_human_follow_up_returns_to_current_agent_before_handoff(self) -> None:
                 return "end_turn"
 
         claude = WaitingAgent("Claude", [])
-        codex = FakeAgent("Codex", [("end_turn", "[WINGMEN:STOP]")])
+        codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
         relay = RelayConversation((claude, codex), max_rounds=4)
         task = asyncio.create_task(relay.run("build it"))
         await started.wait()
@@ -109,14 +109,14 @@ Expected: all relay tests pass, including unchanged no-steering two-agent and N-
 - [ ] **Step 5: Commit the relay behavior**
 
 ```bash
-git add src/wingmen/acp/relay.py tests/test_relay.py
+git add src/codeswarm/acp/relay.py tests/test_relay.py
 git commit -m "feat: route busy follow-ups to active agent"
 ```
 
 ### Task 2: Conversation routing feedback
 
 **Files:**
-- Modify: `src/wingmen/widgets/conversation.py`
+- Modify: `src/codeswarm/widgets/conversation.py`
 - Test: `tests/test_conversation_acp.py`
 
 **Interfaces:**
@@ -180,7 +180,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit the UI feedback**
 
 ```bash
-git add src/wingmen/widgets/conversation.py tests/test_conversation_acp.py
+git add src/codeswarm/widgets/conversation.py tests/test_conversation_acp.py
 git commit -m "fix: describe active-agent steering in prompt status"
 ```
 

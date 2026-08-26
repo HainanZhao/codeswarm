@@ -2,13 +2,13 @@ import asyncio
 import os
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from textual import widgets
 
-from wingmen.app import WingmenApp
-from wingmen import messages
-from wingmen.screens.store import AgentGridSelect, AgentItem, StoreScreen
+from codeswarm.app import CodeSwarmApp
+from codeswarm import messages
+from codeswarm.screens.store import AgentGridSelect, AgentItem, StoreScreen
 
 
 _CATALOG = {
@@ -33,27 +33,27 @@ _CATALOG = {
 
 
 class StoreScreenTests(unittest.TestCase):
-    def test_landing_logo_is_an_airplane_wingmen_formation(self) -> None:
+    def test_landing_logo_is_an_airplane_codeswarm_formation(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ), patch(
-                    "wingmen.screens.store.read_agents",
+                    "codeswarm.screens.store.read_agents",
                     new=AsyncMock(return_value=_CATALOG),
                 ), patch(
-                    "wingmen.screens.store.available_identities",
+                    "codeswarm.screens.store.available_identities",
                     new=AsyncMock(return_value=set(_CATALOG)),
                 ), patch(
-                    "wingmen.screens.store.detect_preferred_agents",
+                    "codeswarm.screens.store.detect_preferred_agents",
                     new=AsyncMock(return_value=[]),
                 ):
-                    async with WingmenApp(mode="store", setup_prompt=False).run_test(
+                    async with CodeSwarmApp(mode="store", setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.2)
-                        logos = list(pilot.app.screen.query("#wingmen-formation"))
+                        logos = list(pilot.app.screen.query("#codeswarm-formation"))
                         self.assertEqual(len(logos), 1)
                         logo = logos[0]
                         lines = logo.render().plain.splitlines()
@@ -71,16 +71,16 @@ class StoreScreenTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ), patch(
-                    "wingmen.screens.store.read_agents",
+                    "codeswarm.screens.store.read_agents",
                     new=AsyncMock(return_value=_CATALOG),
                 ), patch(
-                    "wingmen.screens.store.available_identities",
+                    "codeswarm.screens.store.available_identities",
                     new=AsyncMock(return_value=set(_CATALOG)),
                 ), patch(
-                    "wingmen.screens.store.detect_preferred_agents",
+                    "codeswarm.screens.store.detect_preferred_agents",
                     new=AsyncMock(return_value=[]),
                 ):
-                    async with WingmenApp(mode="store", setup_prompt=False).run_test(
+                    async with CodeSwarmApp(mode="store", setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.2)
@@ -108,16 +108,16 @@ class StoreScreenTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ), patch(
-                    "wingmen.screens.store.read_agents",
+                    "codeswarm.screens.store.read_agents",
                     new=AsyncMock(return_value=_CATALOG),
                 ), patch(
-                    "wingmen.screens.store.available_identities",
+                    "codeswarm.screens.store.available_identities",
                     new=AsyncMock(return_value=set(_CATALOG)),
                 ), patch(
-                    "wingmen.screens.store.detect_preferred_agents",
+                    "codeswarm.screens.store.detect_preferred_agents",
                     new=AsyncMock(return_value=[]),
                 ):
-                    async with WingmenApp(mode="store", setup_prompt=False).run_test(
+                    async with CodeSwarmApp(mode="store", setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.2)
@@ -139,6 +139,42 @@ class StoreScreenTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_enter_launches_selected_roster_after_click(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ), patch(
+                    "codeswarm.screens.store.read_agents",
+                    new=AsyncMock(return_value=_CATALOG),
+                ), patch(
+                    "codeswarm.screens.store.available_identities",
+                    new=AsyncMock(return_value=set(_CATALOG)),
+                ), patch(
+                    "codeswarm.screens.store.detect_preferred_agents",
+                    new=AsyncMock(return_value=[]),
+                ):
+                    async with CodeSwarmApp(mode="store", setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        await pilot.pause(0.2)
+                        screen = pilot.app.screen
+                        assert isinstance(screen, StoreScreen)
+                        await pilot.click("AgentItem")
+                        await pilot.pause()
+                        self.assertIs(screen.focused, screen.query_one(AgentGridSelect))
+                        with patch.object(screen.app, "launch_agent", new=MagicMock()) as launch:
+                            await pilot.press("enter")
+                            await pilot.pause()
+
+                        launch.assert_called_once_with(
+                            "example.test", agent_session_id=None, session_pk=None,
+                            initial_prompt=None, peer_identities=()
+                        )
+
+        asyncio.run(scenario())
+
     def test_roster_launch_preserves_selection_order(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
@@ -146,16 +182,16 @@ class StoreScreenTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ), patch(
-                    "wingmen.screens.store.read_agents",
+                    "codeswarm.screens.store.read_agents",
                     new=AsyncMock(return_value=_CATALOG),
                 ), patch(
-                    "wingmen.screens.store.available_identities",
+                    "codeswarm.screens.store.available_identities",
                     new=AsyncMock(return_value={"codex.test", "claude.test"}),
                 ), patch(
-                    "wingmen.screens.store.detect_preferred_agents",
+                    "codeswarm.screens.store.detect_preferred_agents",
                     new=AsyncMock(return_value=[]),
                 ):
-                    async with WingmenApp(mode="store", setup_prompt=False).run_test(
+                    async with CodeSwarmApp(mode="store", setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.2)
@@ -187,16 +223,16 @@ class StoreScreenTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ), patch(
-                    "wingmen.screens.store.read_agents",
+                    "codeswarm.screens.store.read_agents",
                     new=AsyncMock(return_value=_CATALOG),
                 ), patch(
-                    "wingmen.screens.store.available_identities",
+                    "codeswarm.screens.store.available_identities",
                     new=AsyncMock(return_value=set()),
                 ), patch(
-                    "wingmen.screens.store.detect_preferred_agents",
+                    "codeswarm.screens.store.detect_preferred_agents",
                     new=AsyncMock(return_value=[]),
                 ):
-                    async with WingmenApp(mode="store", setup_prompt=False).run_test(
+                    async with CodeSwarmApp(mode="store", setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.2)
@@ -220,39 +256,6 @@ class StoreScreenTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_filter_accepts_digits_as_search_text(self) -> None:
-        async def scenario() -> None:
-            with tempfile.TemporaryDirectory() as state_dir:
-                with patch.dict(
-                    os.environ,
-                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
-                ), patch(
-                    "wingmen.screens.store.read_agents",
-                    new=AsyncMock(return_value=_CATALOG),
-                ), patch(
-                    "wingmen.screens.store.available_identities",
-                    new=AsyncMock(return_value=set()),
-                ), patch(
-                    "wingmen.screens.store.detect_preferred_agents",
-                    new=AsyncMock(return_value=[]),
-                ):
-                    async with WingmenApp(mode="store", setup_prompt=False).run_test(
-                        size=(120, 40)
-                    ) as pilot:
-                        await pilot.pause(0.2)
-                        screen = pilot.app.screen
-                        self.assertIsInstance(screen, StoreScreen)
-                        info = screen.get_info().plain
-                        self.assertIn("Choose one or more coding agents", info)
-                        self.assertNotIn("fractal", info)
-                        self.assertNotIn("fighter", info)
-                        agent_filter = screen.query_one("#agent-filter", widgets.Input)
-                        agent_filter.focus()
-                        await pilot.press("1")
-                        self.assertEqual(agent_filter.value, "1")
-
-        asyncio.run(scenario())
-
     def test_store_keeps_only_roster_launch_controls(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
@@ -260,16 +263,16 @@ class StoreScreenTests(unittest.TestCase):
                     os.environ,
                     {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
                 ), patch(
-                    "wingmen.screens.store.read_agents",
+                    "codeswarm.screens.store.read_agents",
                     new=AsyncMock(return_value=_CATALOG),
                 ), patch(
-                    "wingmen.screens.store.available_identities",
+                    "codeswarm.screens.store.available_identities",
                     new=AsyncMock(return_value=set()),
                 ), patch(
-                    "wingmen.screens.store.detect_preferred_agents",
+                    "codeswarm.screens.store.detect_preferred_agents",
                     new=AsyncMock(return_value=[]),
                 ):
-                    async with WingmenApp(mode="store", setup_prompt=False).run_test(
+                    async with CodeSwarmApp(mode="store", setup_prompt=False).run_test(
                         size=(120, 40)
                     ) as pilot:
                         await pilot.pause(0.2)

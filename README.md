@@ -1,6 +1,6 @@
-# ✈ Wingmen
+# ✈ CodeSwarm
 
-Wingmen is a focused terminal workspace for collaborating with one or more
+CodeSwarm is a focused terminal workspace for collaborating with one or more
 [Agent Client Protocol](https://agentclientprotocol.com/) (ACP) coding agents.
 Build a roster of Claude Code, Codex, Gemini CLI, or another ACP-compatible
 agent and let them work through a task sequentially in one shared conversation.
@@ -13,42 +13,42 @@ agent and let them work through a task sequentially in one shared conversation.
   roster beside the prompt.
 - Queue follow-up messages safely while an agent is working.
 - Use a compact fighter-HUD interface designed for terminal workflows.
-- Keep work local: Wingmen collects no telemetry.
+- Keep work local: CodeSwarm collects no telemetry.
 
 ## Install
 
 ```bash
-uv tool install wingmen
-# or: pip install wingmen
+uv tool install codeswarm
+# or: pip install codeswarm
 ```
 
-Wingmen requires Python 3.14 or later on macOS or Linux.
+CodeSwarm requires Python 3.14 or later on macOS or Linux.
 
 ## Run
 
 ```bash
-wingmen
+codeswarm
 ```
 
 On first launch, choose the agents for your roster. Later launches restore that
 roster. To select a project directory, pass it to the command:
 
 ```bash
-wingmen ~/projects/example
+codeswarm ~/projects/example
 ```
 
 Launch a specific roster directly when needed:
 
 ```bash
-wingmen run -a claude -a codex -a gemini ~/projects/example
+codeswarm run -a claude -a codex -a gemini ~/projects/example
 ```
 
 Agents take turns sequentially. Click an agent beside the prompt to choose who
 receives the next message. Press `Ctrl+C` to cancel work or quit; use
 `Ctrl+Shift+P` to pause or resume a multi-agent relay.
 
-New sessions default to **Fully Auto**, which allows agent tool requests
-without asking for confirmation. Wingmen translates that policy to each
+New sessions default to **Auto pilot**, which allows agent tool requests
+without asking for confirmation. CodeSwarm translates that policy to each
 agent's native permission mode and keeps the roster synchronized. You can
 change the policy from the mode selector beside the prompt.
 
@@ -65,26 +65,26 @@ change the policy from the mode selector beside the prompt.
 
 Messages submitted while an agent is working wait in a bounded holding area
 and are delivered in order before the relay advances. See the
-[user manual](https://github.com/HainanZhao/wingmen/blob/main/docs/USER_MANUAL.md)
+[user manual](https://github.com/HainanZhao/codeswarm/blob/main/docs/USER_MANUAL.md)
 for the complete launch flow, commands,
 permissions, and troubleshooting guide.
 
 ## ACP agents
 
-Wingmen bundles catalog entries for Claude Code, Codex, and Gemini CLI. To use
+CodeSwarm bundles catalog entries for Claude Code, Codex, and Gemini CLI. To use
 another ACP-compatible command:
 
 ```bash
-wingmen acp "node /path/to/agent-acp.js" ~/projects/example
+codeswarm acp "node /path/to/agent-acp.js" ~/projects/example
 ```
 
 The external agent and its ACP adapter must already be installed and
-authenticated. Wingmen starts the adapter but does not bundle provider CLIs or
+authenticated. CodeSwarm starts the adapter but does not bundle provider CLIs or
 manage their accounts.
 
 ## Privacy
 
-Wingmen does not collect telemetry. Agent prompts, responses, tool calls, and
+CodeSwarm does not collect telemetry. Agent prompts, responses, tool calls, and
 terminal activity remain subject to the policies of the agent and provider you
 choose.
 
@@ -96,7 +96,7 @@ make verify
 
 ## License
 
-Wingmen is licensed under
-[AGPL-3.0](https://github.com/HainanZhao/wingmen/blob/main/LICENSE). See the
-[commercial license notice](https://github.com/HainanZhao/wingmen/blob/main/COMMERCIAL_LICENSE.md)
+CodeSwarm is licensed under
+[AGPL-3.0](https://github.com/HainanZhao/codeswarm/blob/main/LICENSE). See the
+[commercial license notice](https://github.com/HainanZhao/codeswarm/blob/main/COMMERCIAL_LICENSE.md)
 for commercial licensing.
