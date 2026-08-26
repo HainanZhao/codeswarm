@@ -19,6 +19,14 @@ unchecked peers leave it without restarting Wingmen.
   Newly added agents append to the live relay in the order shown in `/config`.
 - Checkbox reordering is saved for the next workspace but does not reorder the
   current relay.
+- Every selected agent row has its own Up and Down controls. Clicking one moves
+  that exact row without first focusing or clicking its checkbox, so reordering
+  cannot accidentally change roster membership.
+- The first selected row's Up control and last selected row's Down control are
+  disabled. Unchecked rows do not offer active reorder controls.
+- `Alt+Up` and `Alt+Down` remain available and move the row containing keyboard
+  focus, whether focus is on its checkbox or either reorder control. The old
+  global Move Up and Move Down buttons are removed.
 - If a newly selected agent cannot start, Wingmen keeps every healthy existing
   agent active, reports the failure in the conversation notification ribbon,
   and persists the roster that actually became active.
@@ -40,6 +48,13 @@ conversation's active roster as the checkbox membership source, locks the
 owner control, and delegates live reconciliation after validating ordinary
 settings. Directly constructed configuration screens remain supported and
 retain next-workspace-only behavior.
+
+Each catalog agent is rendered by a focused roster-row component containing
+its membership checkbox and compact Up/Down buttons. The row owns its identity,
+so button events directly identify the row to move. Reordering operates among
+selected rows: moving a selected row crosses the adjacent selected row while
+unchecked catalog entries remain outside the numbered relay order. Refreshing
+the rows updates numbering and button enabled states together.
 
 `Conversation` owns the UI-facing reconciliation operation. It compares the
 requested identities with `SessionCoordinator.roster`, starts missing peers
@@ -74,6 +89,11 @@ entry rather than reactivating the tombstone.
   while `agent_ready` is false, including submission through slash completion.
 - `WingmenApp.run_test` verifies that `/config` reflects the active roster,
   locks the owner, and adds/removes peers immediately on Save.
+- UI tests click a row's Up/Down control without focusing its checkbox and
+  verify that membership is unchanged, selected order changes, boundary
+  controls disable correctly, and unchecked rows cannot be reordered.
+- Keyboard coverage verifies that `Alt+Up` and `Alt+Down` move the row that owns
+  the currently focused checkbox or inline reorder button.
 - Integration coverage verifies that existing live order remains stable while
   the saved next-workspace order follows the checkboxes.
 - Failure coverage verifies that a replacement external agent startup failure
