@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added manual Swarm collaboration mode, which keeps each prompt on the
+- Added Manual collaboration mode, which keeps each prompt on the
   selected agent until the user chooses another roster member.
 
 ### Changed
@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Shared collaboration context now remains available when switching between
-  sequential Roster and manual Swarm routing.
+  sequential Roster and manual routing.
 - Clean package builds expose the current `codeswarm` import package and
   console entry point for `uv` installations.
 

@@ -52,7 +52,7 @@ class FakeAgent(AgentBase):
 
 
 class SessionCoordinatorTests(unittest.TestCase):
-    def test_swarm_mode_uses_a_persistent_pinned_target(self) -> None:
+    def test_manual_mode_uses_a_persistent_pinned_target(self) -> None:
         async def scenario() -> None:
             owner = agent_data("claude.ai", "Claude", "claude")
             peer = agent_data("openai.com", "Codex", "codex")
@@ -76,7 +76,7 @@ class SessionCoordinatorTests(unittest.TestCase):
             await coordinator.start(object())
             self.assertIsInstance(coordinator.relay, RelayConversation)
 
-            coordinator.set_collaboration_mode("swarm")
+            coordinator.set_collaboration_mode("manual")
             self.assertIsInstance(coordinator.relay, PinnedConversation)
             coordinator.select_pinned_agent(1)
             await coordinator.send_prompt("send this to Codex")
@@ -84,7 +84,7 @@ class SessionCoordinatorTests(unittest.TestCase):
 
             self.assertEqual(created[0].prompts, [])
             self.assertEqual(len(created[1].prompts), 2)
-            self.assertEqual(coordinator.collaboration_mode, "swarm")
+            self.assertEqual(coordinator.collaboration_mode, "manual")
 
         asyncio.run(scenario())
 

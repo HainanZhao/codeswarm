@@ -2768,7 +2768,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_swarm_mode_pins_until_the_user_clicks_another_agent(self) -> None:
+    def test_manual_mode_pins_until_the_user_clicks_another_agent(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
@@ -2805,12 +2805,12 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         conversation.agent_ready = True
                         conversation._ready_agents = {id(claude), id(gemini)}
 
-                        await conversation.slash_command("/collab swarm")
+                        await conversation.slash_command("/collab manual")
                         await pilot.pause()
-                        self.assertEqual(conversation.session.collaboration_mode, "swarm")
+                        self.assertEqual(conversation.session.collaboration_mode, "manual")
                         self.assertEqual(
                             pilot.app.screen.query_one(CollaborationInfo).render().plain,
-                            "Swarm",
+                            "Manual",
                         )
                         self.assertIn("⌖ Claude", conversation.agent_info.plain)
 

@@ -1396,7 +1396,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         relay = self.session.relay
         if relay is None:
             return active_agents[0] if len(active_agents) == 1 else None
-        if self.session.collaboration_mode == "swarm":
+        if self.session.collaboration_mode == "manual":
             index = getattr(relay, "pinned_agent_index", None)
             if isinstance(index, int) and 0 <= index < len(self.session.roster):
                 entry = self.session.roster[index]
@@ -1435,7 +1435,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 index = self.session.index_of_agent(agent)
                 if index is not None:
                     try:
-                        if self.session.collaboration_mode == "swarm":
+                        if self.session.collaboration_mode == "manual":
                             self.session.select_pinned_agent(index)
                         else:
                             self.session.select_agent(index)
@@ -1496,13 +1496,13 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 elapsed += int(monotonic() - self._agent_started_at)
             if is_current:
                 marker = "●"
-            elif self.session.collaboration_mode == "swarm" and agent is routing_agent:
+            elif self.session.collaboration_mode == "manual" and agent is routing_agent:
                 marker = "⌖"
             else:
                 marker = "○" if is_ready else "…"
             prefix = (
                 ""
-                if self.session.collaboration_mode == "swarm"
+                if self.session.collaboration_mode == "manual"
                 else "→ " if agent is routing_agent else ""
             )
             timer = (
@@ -1523,8 +1523,8 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
     def _set_collaboration_mode(self, value: str) -> None:
         """Select the routing strategy without changing ACP permission modes."""
         mode = value.strip().lower()
-        if mode not in {"roster", "swarm"}:
-            self.flash("Use /collab roster or /collab swarm", style="error")
+        if mode not in {"roster", "manual"}:
+            self.flash("Use /collab roster or /collab manual", style="error")
             return
         if mode == self.session.collaboration_mode:
             return
@@ -1769,8 +1769,8 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             SlashCommand("/mode", "Open the mode picker"),
             SlashCommand(
                 "/collab",
-                "Choose Roster or manual Swarm routing",
-                "roster | swarm",
+                "Choose Roster or Manual routing",
+                "roster | manual",
             ),
             SlashCommand(
                 "/close",
@@ -2336,7 +2336,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 - `/mode` — choose one mode for every active agent
 - `/mode chat` — chat without workspace inspection or tools
 - `/collab roster` — sequential review relay around the active roster
-- `/collab swarm` — manually route each turn to the selected agent
+- `/collab manual` — manually route each turn to the selected agent
 - `/pause` — pause or resume a multi-agent relay
 - `/export` — export the conversation as Markdown
 - `/close` — close this workspace and return to agent selection
@@ -2376,7 +2376,7 @@ Drag over conversation text and press `Ctrl+C` to copy it. Otherwise,
             if parameters.strip():
                 self._set_collaboration_mode(parameters)
             else:
-                self.flash("Use /collab roster or /collab swarm", style="warning")
+                self.flash("Use /collab roster or /collab manual", style="warning")
             return True
         if command == "pause":
             self.action_toggle_pause()

@@ -17,7 +17,7 @@ from codeswarm.agent_schema import Agent as AgentData
 from codeswarm.db import decode_session_meta
 
 CANCEL_TIMEOUT_SECONDS = 2.0
-CollaborationMode = Literal["roster", "swarm"]
+CollaborationMode = Literal["roster", "manual"]
 DEFAULT_COLLABORATION_MODE: CollaborationMode = "roster"
 
 
@@ -252,7 +252,7 @@ class SessionCoordinator:
         self._collaboration_context = context
         collaboration_type = (
             PinnedConversation
-            if self.collaboration_mode == "swarm"
+            if self.collaboration_mode == "manual"
             else RelayConversation
         )
         kwargs = dict(
@@ -269,7 +269,7 @@ class SessionCoordinator:
             ),
             context=context,
         )
-        if self.collaboration_mode == "swarm":
+        if self.collaboration_mode == "manual":
             self.relay = PinnedConversation(
                 cast(
                     list[AgentLike],
@@ -302,7 +302,7 @@ class SessionCoordinator:
 
     def set_collaboration_mode(self, mode: CollaborationMode) -> None:
         """Switch collaboration orchestration while preserving shared state."""
-        if mode not in ("roster", "swarm"):
+        if mode not in ("roster", "manual"):
             raise ValueError("unknown collaboration mode")
         if mode == self.collaboration_mode:
             return
@@ -310,7 +310,7 @@ class SessionCoordinator:
             self.collaboration_mode = mode
             return
         current_target = self.first_agent
-        if mode == "swarm":
+        if mode == "manual":
             if self.selected_agent_index is not None:
                 current_target = self.selected_agent_index
             elif self.relay.next_agent_index is not None:
@@ -333,7 +333,7 @@ class SessionCoordinator:
         self.relay.set_turn_instructions(self._turn_instructions)
 
     def select_pinned_agent(self, index: int) -> None:
-        """Persist a user-selected target while Swarm mode is active."""
+        """Persist a user-selected target while Manual mode is active."""
         if self.relay is None or not isinstance(self.relay, PinnedConversation):
             raise IndexError("pinned collaboration is not active")
         cast(PinnedConversation, self.relay).select_agent(index)

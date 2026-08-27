@@ -34,7 +34,7 @@ response to the next agent in sequence. The roster beside the prompt shows
 connection and speaker state:
 
 - `→` — receives the next message
-- `⌖` — pinned target in Swarm mode
+- `⌖` — pinned target in Manual mode
 - `●` — currently working
 - `○` — connected and waiting
 - `…` — connecting
@@ -153,7 +153,7 @@ working, ordinary follow-ups still queue for that active agent.
 ### Choose Collaboration Routing
 
 Use `/collab roster` for the default sequential review relay. Use
-`/collab swarm` for manual routing: the selected agent stays pinned, and a
+`/collab manual` for manual routing: the selected agent stays pinned, and a
 message is sent to a different agent only after you click that agent beside
 the prompt. Prompts already queued stay with the agent selected when they were
 submitted.
@@ -224,7 +224,7 @@ it is never sent to an agent. Press `Ctrl+C` to stop a running command.
 | `/mode` | Open the mode picker. |
 | `/mode chat` | Enter Chat mode directly. |
 | `/collab roster` | Use the sequential review relay. |
-| `/collab swarm` | Manually route each turn to the selected pinned agent. |
+| `/collab manual` | Manually route each turn to the selected pinned agent. |
 | `/close` | Close this workspace and return to agent selection. |
 
 Agents may advertise additional slash commands. They appear in command search
