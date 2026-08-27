@@ -2,13 +2,13 @@ import asyncio
 import unittest
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import AsyncMock, call, patch
 
 from codeswarm.agent import AgentBase
 from codeswarm.agent_schema import Agent as AgentData
 from codeswarm.db import decode_session_meta
 from codeswarm.acp.pinned import PinnedConversation
-from codeswarm.acp.relay import RelayConversation
+from codeswarm.acp.relay import RelayConversation, RelayResult
 from codeswarm.session import SessionCoordinator
 
 
@@ -52,6 +52,48 @@ class FakeAgent(AgentBase):
 
 
 class SessionCoordinatorTests(unittest.TestCase):
+    def test_pair_mode_starts_each_batch_with_the_first_agent(self) -> None:
+        async def scenario() -> None:
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                return FakeAgent(project_root, data["name"])
+
+            coordinator = SessionCoordinator(
+                Path("."),
+                agent_data("claude.ai", "Claude", "claude"),
+                peers=(agent_data("openai.com", "Codex", "codex"),),
+                agent_factory=factory,
+            )
+            await coordinator.start(object())
+            coordinator.set_collaboration_mode("pair")
+            assert coordinator.relay is not None
+            coordinator.relay.run = AsyncMock(  # type: ignore[method-assign]
+                side_effect=[
+                    RelayResult(2, True, "stop_token"),
+                    RelayResult(2, True, "stop_token"),
+                ]
+            )
+            coordinator.relay.next_agent_index = 1
+
+            await coordinator.send_prompt("first batch")
+            await coordinator.send_prompt("second batch")
+
+            self.assertEqual(
+                coordinator.relay.run.await_args_list,  # type: ignore[attr-defined]
+                [
+                    call("first batch", first_agent=0),
+                    call("second batch", first_agent=0),
+                ],
+            )
+
+        asyncio.run(scenario())
+
     def test_manual_mode_uses_a_persistent_pinned_target(self) -> None:
         async def scenario() -> None:
             owner = agent_data("claude.ai", "Claude", "claude")

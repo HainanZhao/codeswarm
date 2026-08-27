@@ -158,6 +158,10 @@ message is sent to a different agent only after you click that agent beside
 the prompt. Prompts already queued stay with the agent selected when they were
 submitted.
 
+Use `/collab pair` for the doer→verifier pattern. Each new user batch starts
+with the first roster agent as the doer, then follows the normal relay to the
+verifier; the next batch starts over with that first agent.
+
 ## Control the Relay
 
 | Action | Control |
@@ -225,6 +229,7 @@ it is never sent to an agent. Press `Ctrl+C` to stop a running command.
 | `/mode chat` | Enter Chat mode directly. |
 | `/collab roster` | Use the sequential review relay. |
 | `/collab manual` | Manually route each turn to the selected pinned agent. |
+| `/collab pair` | Start each doer→verifier batch with the first roster agent. |
 | `/close` | Close this workspace and return to agent selection. |
 
 Agents may advertise additional slash commands. They appear in command search

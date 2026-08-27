@@ -2824,6 +2824,50 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_pair_mode_reports_the_doer_as_the_next_recipient(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(120, 40)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                claude = _RosterAgent("Claude")
+                gemini = _RosterAgent("Gemini")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.ai",
+                            name="Claude",
+                            short_name="claude",
+                        ),
+                        claude,  # type: ignore[arg-type]
+                    ),
+                    RosterEntry(
+                        AgentData(
+                            identity="gemini.google.com",
+                            name="Gemini",
+                            short_name="gemini",
+                        ),
+                        gemini,  # type: ignore[arg-type]
+                    ),
+                ]
+                conversation.session._build_relay(
+                    on_turn_start=None, on_turn=None
+                )
+                assert conversation.session.relay is not None
+                conversation.session.relay.next_agent_index = 1
+
+                await conversation.slash_command("/collab pair")
+                await pilot.pause()
+
+                self.assertEqual(conversation.session.collaboration_mode, "pair")
+                self.assertEqual(
+                    pilot.app.screen.query_one(CollaborationInfo).render().plain,
+                    "Pair",
+                )
+                self.assertIs(conversation._routing_agent(), claude)
+
+        asyncio.run(scenario())
+
     def test_batch_summary_text_aligns_with_agent_headers(self) -> None:
         async def scenario() -> None:
             async with CodeSwarmApp(setup_prompt=False).run_test(

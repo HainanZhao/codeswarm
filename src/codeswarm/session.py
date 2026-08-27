@@ -17,7 +17,7 @@ from codeswarm.agent_schema import Agent as AgentData
 from codeswarm.db import decode_session_meta
 
 CANCEL_TIMEOUT_SECONDS = 2.0
-CollaborationMode = Literal["roster", "manual"]
+CollaborationMode = Literal["roster", "manual", "pair"]
 DEFAULT_COLLABORATION_MODE: CollaborationMode = "roster"
 
 
@@ -302,7 +302,7 @@ class SessionCoordinator:
 
     def set_collaboration_mode(self, mode: CollaborationMode) -> None:
         """Switch collaboration orchestration while preserving shared state."""
-        if mode not in ("roster", "manual"):
+        if mode not in ("roster", "manual", "pair"):
             raise ValueError("unknown collaboration mode")
         if mode == self.collaboration_mode:
             return
@@ -310,7 +310,9 @@ class SessionCoordinator:
             self.collaboration_mode = mode
             return
         current_target = self.first_agent
-        if mode == "manual":
+        if mode == "pair":
+            current_target = 0
+        elif mode == "manual":
             if self.selected_agent_index is not None:
                 current_target = self.selected_agent_index
             elif self.relay.next_agent_index is not None:
@@ -527,7 +529,12 @@ class SessionCoordinator:
     ) -> RelayResult | str | None:
         if self.relay_active:
             assert self.relay is not None
-            if self.selected_agent_index is not None:
+            if self.collaboration_mode == "pair":
+                # Every new user batch begins with the doer. The relay itself
+                # still hands the response to the verifier and can continue
+                # its normal review loop within that batch.
+                self.relay.next_agent_index = None
+            elif self.selected_agent_index is not None:
                 self.relay.next_agent_index = self.selected_agent_index
                 self.selected_agent_index = None
             return await self.relay.run(prompt, first_agent=self.first_agent)

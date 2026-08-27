@@ -1396,6 +1396,10 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         relay = self.session.relay
         if relay is None:
             return active_agents[0] if len(active_agents) == 1 else None
+        if self.session.collaboration_mode == "pair":
+            if self.session.roster and self.session.roster[0].agent in active_agents:
+                return self.session.roster[0].agent
+            return None
         if self.session.collaboration_mode == "manual":
             index = getattr(relay, "pinned_agent_index", None)
             if isinstance(index, int) and 0 <= index < len(self.session.roster):
@@ -1437,6 +1441,8 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                     try:
                         if self.session.collaboration_mode == "manual":
                             self.session.select_pinned_agent(index)
+                        elif self.session.collaboration_mode == "pair":
+                            return
                         else:
                             self.session.select_agent(index)
                     except (IndexError, ValueError):
@@ -1523,8 +1529,8 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
     def _set_collaboration_mode(self, value: str) -> None:
         """Select the routing strategy without changing ACP permission modes."""
         mode = value.strip().lower()
-        if mode not in {"roster", "manual"}:
-            self.flash("Use /collab roster or /collab manual", style="error")
+        if mode not in {"roster", "manual", "pair"}:
+            self.flash("Use /collab roster, /collab manual, or /collab pair", style="error")
             return
         if mode == self.session.collaboration_mode:
             return
@@ -1769,8 +1775,8 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             SlashCommand("/mode", "Open the mode picker"),
             SlashCommand(
                 "/collab",
-                "Choose Roster or Manual routing",
-                "roster | manual",
+                "Choose Roster, Manual, or Pair routing",
+                "roster | manual | pair",
             ),
             SlashCommand(
                 "/close",
@@ -2337,6 +2343,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 - `/mode chat` — chat without workspace inspection or tools
 - `/collab roster` — sequential review relay around the active roster
 - `/collab manual` — manually route each turn to the selected agent
+- `/collab pair` — start each doer→verifier batch with the first agent
 - `/pause` — pause or resume a multi-agent relay
 - `/export` — export the conversation as Markdown
 - `/close` — close this workspace and return to agent selection
@@ -2376,7 +2383,10 @@ Drag over conversation text and press `Ctrl+C` to copy it. Otherwise,
             if parameters.strip():
                 self._set_collaboration_mode(parameters)
             else:
-                self.flash("Use /collab roster or /collab manual", style="warning")
+                self.flash(
+                    "Use /collab roster, /collab manual, or /collab pair",
+                    style="warning",
+                )
             return True
         if command == "pause":
             self.action_toggle_pause()

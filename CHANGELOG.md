@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added Manual collaboration mode, which keeps each prompt on the
   selected agent until the user chooses another roster member.
+- Added Pair collaboration mode for doer→verifier batches that restart with
+  the first roster agent.
 
 ### Changed
 
