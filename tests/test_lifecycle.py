@@ -799,11 +799,10 @@ class AgentLifecycleTests(unittest.TestCase):
             agent = Agent(Path.cwd(), data, None)
             agent._stopping = True
             agent._log_truncated = True
-            scheduled: list[str] = []
 
             class Target:
-                def call_later(self, callback, line: str) -> None:
-                    scheduled.append(line)
+                def call_later(self, callback, *args) -> None:
+                    pass
 
             agent._message_target = Target()  # type: ignore[assignment]
             with patch(
@@ -813,7 +812,10 @@ class AgentLifecycleTests(unittest.TestCase):
                 await agent._run_agent()
 
             self.assertTrue(
-                any(line.startswith("[process]") for line in scheduled)
+                any(
+                    line.startswith("[process]")
+                    for line in agent._log_pending
+                )
             )
 
         asyncio.run(scenario())
@@ -828,11 +830,11 @@ class AgentLifecycleTests(unittest.TestCase):
             },
         )
         agent = Agent(Path.cwd(), data, None)
-        scheduled: list[str] = []
+        flushes: list[object] = []
 
         class Target:
-            def call_later(self, callback, line: str) -> None:
-                scheduled.append(line)
+            def call_later(self, callback, *args) -> None:
+                flushes.append(callback)
 
         agent._message_target = Target()  # type: ignore[assignment]
         with patch("codeswarm.acp.agent.MAX_AGENT_LOG_BYTES", 5):
@@ -840,7 +842,11 @@ class AgentLifecycleTests(unittest.TestCase):
             agent.log("56")
             agent.log("ignored")
 
-        self.assertEqual(scheduled, ["1234", LOG_TRUNCATED_MESSAGE])
+        # Lines are buffered and flushed together, so the pending buffer is
+        # where the size limit is now observable.
+        self.assertEqual(agent._log_pending, ["1234", LOG_TRUNCATED_MESSAGE])
+        # A burst schedules one flush, not one callback per line.
+        self.assertEqual(len(flushes), 1)
 
     def test_clean_agent_process_exit_is_reported_as_a_failure(self) -> None:
         async def scenario() -> None:

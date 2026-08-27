@@ -228,6 +228,13 @@ class ConversationACPHandlers(Widget):
         if (terminal := self.get_terminal(message.terminal_id)) is not None:
             terminal.kill()
             terminal.release()
+            # `terminals` is the ACP handle registry, not the display owner:
+            # the widget stays in the transcript, but the id is dead once
+            # released and the registry must stop pinning it. Without this
+            # every command an agent ever ran was retained for the life of
+            # the session, along with its whole parsed scrollback, which is
+            # what made a long session slow and then unresponsive.
+            self.terminals.pop(message.terminal_id, None)
 
     @work
     @on(acp_messages.WaitForTerminalExit)

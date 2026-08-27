@@ -1,11 +1,16 @@
 import asyncio
 import os
 import signal
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from codeswarm.ansi._ansi import MAX_SCROLLBACK_LINES
+from codeswarm.app import CodeSwarmApp
+from codeswarm.widgets.conversation import Conversation
 from codeswarm.widgets.terminal_tool import (
     DEFAULT_OUTPUT_BYTE_LIMIT,
     MAX_OUTPUT_BYTE_LIMIT,
@@ -77,6 +82,74 @@ class TerminalToolTests(unittest.TestCase):
                 await asyncio.wait_for(terminal.start(), timeout=0.5)
 
             self.assertTrue(terminal._exit_event.is_set())
+
+        asyncio.run(scenario())
+
+
+    def test_scrollback_is_capped_for_a_verbose_command(self) -> None:
+        """A verbose build must not grow the buffer without limit.
+
+        Scrollback costs roughly a kilobyte per unfolded line and nothing
+        bounded it, so one noisy command could hold tens of megabytes for as
+        long as the terminal stayed in the transcript.
+        """
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(100, 30)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        terminal = TerminalTool(
+                            Command("printf", ["x"], {}, Path.cwd()),
+                            minimum_terminal_width=60,
+                        )
+                        await conversation.post(terminal)
+                        await pilot.pause(0.1)
+
+                        overflow = MAX_SCROLLBACK_LINES + 800
+                        # Fed through the widget, which is the production path
+                        # and the owner of the row-keyed render cache.
+                        await terminal.write(
+                            "".join(
+                                f"line {index:06d} compiling\r\n"
+                                for index in range(overflow)
+                            )
+                        )
+                        await pilot.pause(0.2)
+
+                        buffer = terminal.state.scrollback_buffer
+                        self.assertLessEqual(
+                            len(buffer.lines), MAX_SCROLLBACK_LINES
+                        )
+                        # The tail survives: that is where a failure appears.
+                        self.assertIn(
+                            f"line {overflow - 1:06d}",
+                            buffer.lines[-1].content.plain,
+                        )
+                        # And the renderer's indices still line up.
+                        self.assertEqual(
+                            len(buffer.line_to_fold), len(buffer.lines)
+                        )
+                        for fold in buffer.folded_lines:
+                            self.assertLess(fold.line_no, len(buffer.lines))
+                        # Rows were renumbered. The render cache is keyed on
+                        # the row, so a surviving entry would paint an evicted
+                        # line; check what is actually rendered, not the cache.
+                        first_row = terminal._render_line(0, 0, 60)
+                        rendered = "".join(
+                            segment.text for segment in first_row
+                        )
+                        self.assertIn(
+                            buffer.lines[0].content.plain.strip(),
+                            rendered,
+                        )
+                        self.assertNotIn("line 000000", rendered)
+                        terminal.kill()
 
         asyncio.run(scenario())
 

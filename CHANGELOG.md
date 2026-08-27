@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.34] - 2026-08-27
+
+### Fixed
+
+- A long session no longer grows until it becomes unresponsive. Releasing a
+  terminal killed and released it but never removed it from the conversation's
+  terminal registry, so every shell command an agent ran stayed registered for
+  the life of the session together with its entire parsed scrollback. Both
+  failure paths already deregistered; only the ordinary release path did not.
+  Measured over 25 commands: 25 terminals retained, 10,000 scrollback lines
+  and 11.2 MiB held after all of them had been released.
+- Terminal scrollback is now capped at 5,000 lines per terminal. It was
+  unbounded and costs roughly a kilobyte per line, so one verbose build or
+  test run could hold tens of megabytes — 52.6 MiB at 60,000 lines — for as
+  long as the terminal stayed in the transcript. The newest output is kept,
+  because a failure appears at the end of a log.
+- Agent protocol logging no longer writes one line at a time. A streaming
+  adapter emits a notification per token chunk and each one cost a Textual
+  callback, a thread-pool job and a file open; the write path alone was over
+  500x slower than batching at 8,000 lines, and the queued callbacks competed
+  with rendering. Lines are now coalesced into a single flush per burst.
+
 ## [0.6.33] - 2026-08-27
 
 ### Changed

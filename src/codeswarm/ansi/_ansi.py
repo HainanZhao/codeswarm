@@ -688,6 +688,15 @@ class ANSIStream:
                 return
 
 
+MAX_SCROLLBACK_LINES = 5_000
+"""Unfolded lines retained per terminal.
+
+Scrollback costs roughly a kilobyte per line, and nothing bounded it: one
+verbose build could hold tens of megabytes for as long as the terminal stayed
+in the transcript.
+"""
+
+
 class LineFold(NamedTuple):
     """A line from the terminal, folded for presentation."""
 
@@ -875,6 +884,45 @@ class Buffer:
         self.max_line_width = 0
         self.updates = updates
 
+    def trim(self, max_lines: int) -> bool:
+        """Drop the oldest lines, keeping the newest ``max_lines``.
+
+        Scrollback is otherwise unbounded: a verbose build or test run holds
+        roughly a kilobyte per line for as long as the terminal is on screen.
+        The tail is what a reader wants — an error is at the end of a log — so
+        the oldest lines go first.
+
+        Args:
+            max_lines: Number of unfolded lines to keep. Values below one
+                disable trimming.
+
+        Returns:
+            `True` if any line was dropped, which invalidates every row
+                number and so requires the caller to discard cached rows.
+        """
+        if max_lines <= 0 or len(self.lines) <= max_lines:
+            return False
+        removed = len(self.lines) - max_lines
+        folds_removed = self.line_to_fold[removed]
+        del self.lines[:removed]
+        # Rebuilt rather than patched. A fold carries its own line number, and
+        # the same fold objects live in both the line record and the flat
+        # folded_lines list, so the two have to be regenerated together or the
+        # renderer will index a line that no longer exists.
+        self.folded_lines.clear()
+        self.line_to_fold.clear()
+        for line_no, record in enumerate(self.lines):
+            record.folds[:] = [
+                fold._replace(line_no=line_no) for fold in record.folds
+            ]
+            self.line_to_fold.append(len(self.folded_lines))
+            self.folded_lines.extend(record.folds)
+        self.cursor_line = max(0, self.cursor_line - folds_removed)
+        # Every row moved, so per-row update tracking cannot be reused.
+        self._updated_lines = None
+        self.updates += 1
+        return True
+
     def remove_last_line(self) -> None:
         if not self.lines:
             return
@@ -1007,6 +1055,17 @@ class TerminalState:
         yield "auto_wrap", self.auto_wrap, True
         yield "dec_state", self.dec_state
         yield "mouse_tracking", self.mouse_tracking, None
+
+    def trim_scrollback(self, max_lines: int = MAX_SCROLLBACK_LINES) -> bool:
+        """Bound scrollback growth.
+
+        Never trims while an alternate screen is active: that buffer is a
+        full-screen application's viewport, already bounded by the height, and
+        its lines are addressed directly.
+        """
+        if self.alternate_screen:
+            return False
+        return self.scrollback_buffer.trim(max_lines)
 
     async def write_stdin(self, text: str) -> bool:
         if self._write_stdin is not None:

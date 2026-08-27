@@ -932,6 +932,55 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_released_terminal_is_not_left_registered(self) -> None:
+        """A released terminal id must leave the registry.
+
+        The two failure paths already dropped it, but the ordinary release
+        path did not, so every command an agent ran stayed registered for the
+        life of the session together with its whole parsed scrollback. That
+        registry is a plain dict: it never evicts, so a long session grew
+        until it became unresponsive.
+        """
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        await pilot.pause(0.1)
+                        conversation = pilot.app.screen.query_one(Conversation)
+
+                        for index in range(3):
+                            terminal_id = f"terminal-{index}"
+                            result: asyncio.Future[bool] = (
+                                asyncio.get_running_loop().create_future()
+                            )
+                            conversation.post_message(
+                                acp_messages.CreateTerminal(
+                                    terminal_id, "printf", result, args=["x"]
+                                )
+                            )
+                            await pilot.pause(0.2)
+                            self.assertTrue(await result)
+                            self.assertIn(terminal_id, conversation.terminals)
+
+                            conversation.post_message(
+                                acp_messages.ReleaseTerminal(terminal_id)
+                            )
+                            await pilot.pause(0.2)
+                            self.assertNotIn(
+                                terminal_id, conversation.terminals
+                            )
+
+                        # Nothing accumulates across commands.
+                        self.assertEqual(conversation.terminals, {})
+
+        asyncio.run(scenario())
+
     def test_file_indexing_is_on_demand(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:

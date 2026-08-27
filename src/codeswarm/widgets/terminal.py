@@ -243,6 +243,12 @@ Tap escape *twice* to exit.
         scrollback_delta, alternate_delta = await self.state.write(
             text, hide_output=hide_output
         )
+        if self.state.trim_scrollback():
+            # Trimming renumbers every row, and the render cache is keyed on
+            # the row, so a surviving entry would paint the wrong line.
+            self._terminal_render_cache.clear()
+            # `None` is this method's existing "everything changed" sentinel.
+            scrollback_delta = None
         self._update_from_state(scrollback_delta, alternate_delta)
         scrollback_changed = bool(scrollback_delta is None or scrollback_delta)
         alternate_changed = bool(alternate_delta is None or alternate_delta)

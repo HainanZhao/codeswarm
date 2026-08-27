@@ -300,6 +300,8 @@ class Agent(AgentBase):
             self._log_file_path = paths.get_log() / log_filename
         self._log_bytes = 0
         self._log_truncated = False
+        self._log_pending: list[str] = []
+        self._log_flush_scheduled = False
 
         self._token_usage: TokenUsage | None = None
         self._context_usage: ContextUsage | None = None
@@ -397,7 +399,7 @@ class Agent(AgentBase):
         if force:
             # Lifecycle records explain why a capped/noisy adapter stopped;
             # they must remain available even after ordinary logging ends.
-            self._message_target.call_later(self._log, line)
+            self._queue_log(line)
             return
         if self._log_truncated:
             return
@@ -405,33 +407,51 @@ class Agent(AgentBase):
         line_bytes = len(line.rstrip().encode("utf-8", "replace")) + 1
         if self._log_bytes + line_bytes > MAX_AGENT_LOG_BYTES:
             self._log_truncated = True
-            self._message_target.call_later(self._log, LOG_TRUNCATED_MESSAGE)
+            self._queue_log(LOG_TRUNCATED_MESSAGE)
             return
 
         self._log_bytes += line_bytes
-        self._message_target.call_later(self._log, line)
+        self._queue_log(line)
 
-    async def _log(self, line: str) -> None:
-        """Write text to the agent log file.
+    def _queue_log(self, line: str) -> None:
+        """Buffer a log line and schedule at most one flush.
 
-        Intended to be called from `log`
-
-        Args:
-            line: Text to be logged.
+        A streaming adapter emits one protocol notification per token chunk
+        and every one is logged. Writing them individually cost one Textual
+        callback, one thread-pool job and one file open per line, which is
+        both far slower than batching and enough queued callbacks to compete
+        with rendering. Lines are coalesced instead, so a burst costs one
+        flush regardless of size.
         """
+        assert self._message_target is not None
+        self._log_pending.append(line)
+        if self._log_flush_scheduled:
+            return
+        self._log_flush_scheduled = True
+        self._message_target.call_later(self._flush_log)
 
+    async def _flush_log(self) -> None:
+        """Write every buffered line in one thread job.
+
+        Intended to be called from `_queue_log`.
+        """
+        self._log_flush_scheduled = False
+        pending = self._log_pending
+        if not pending:
+            return
+        self._log_pending = []
         if self._message_target is None:
             return
 
-        def write_log(log_file_path: Path, line: str):
+        def write_log(log_file_path: Path, lines: list[str]) -> None:
             """Write log in a thread."""
             try:
                 with log_file_path.open("at") as log_file:
-                    log_file.write(f"{line.rstrip()}\n")
+                    log_file.writelines(f"{line.rstrip()}\n" for line in lines)
             except OSError:
                 pass
 
-        await asyncio.to_thread(write_log, self._log_file_path, line)
+        await asyncio.to_thread(write_log, self._log_file_path, pending)
 
     def get_info(self) -> Content:
         agent_name = self._agent_data["name"]
