@@ -66,6 +66,10 @@ class ModeInfo(Label):
     pass
 
 
+class CollaborationInfo(Label):
+    pass
+
+
 class StatusLine(Label):
     status: var[str | Content] = var("")
 
@@ -373,6 +377,7 @@ class Prompt(containers.VerticalGroup):
     _ask: var[Ask | None] = var(None)
     agent_ready: var[bool] = var(False)
     current_mode: var[Mode | None] = var(None)
+    collaboration_mode = var("Roster")
     mode_owner: var[str] = var("")
     modes: var[dict[str, Mode] | None] = var(None)
     status: var[str | Content] = var("")
@@ -419,6 +424,11 @@ class Prompt(containers.VerticalGroup):
 
     def watch_mode_owner(self) -> None:
         self.watch_current_mode(self.current_mode)
+
+    def watch_collaboration_mode(self, mode: str) -> None:
+        info = self.query_one_optional(CollaborationInfo)
+        if info is not None:
+            info.update(mode)
 
     async def watch_project_path(self, old_path: Path, new_path: Path) -> None:
         """Refresh an already-opened file index after a project switch."""
@@ -680,6 +690,7 @@ class Prompt(containers.VerticalGroup):
             yield CondensedPath().data_bind(path=Prompt.working_directory)
             yield StatusLine(markup=False).data_bind(status=Prompt.status)
             yield ModeSwitcher()
+            yield CollaborationInfo("Roster")
             yield ModeInfo("mode")
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:

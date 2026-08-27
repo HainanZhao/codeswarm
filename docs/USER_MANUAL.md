@@ -34,6 +34,7 @@ response to the next agent in sequence. The roster beside the prompt shows
 connection and speaker state:
 
 - `→` — receives the next message
+- `⌖` — pinned target in Swarm mode
 - `●` — currently working
 - `○` — connected and waiting
 - `…` — connecting
@@ -149,6 +150,14 @@ Click an agent beside the prompt. The `→` marker moves to the selected agent;
 your next normal message starts the relay with that agent. While an agent is
 working, ordinary follow-ups still queue for that active agent.
 
+### Choose Collaboration Routing
+
+Use `/collab roster` for the default sequential review relay. Use
+`/collab swarm` for manual routing: the selected agent stays pinned, and a
+message is sent to a different agent only after you click that agent beside
+the prompt. Prompts already queued stay with the agent selected when they were
+submitted.
+
 ## Control the Relay
 
 | Action | Control |
@@ -214,6 +223,8 @@ it is never sent to an agent. Press `Ctrl+C` to stop a running command.
 | `/pause` | Pause or resume the multi-agent relay. |
 | `/mode` | Open the mode picker. |
 | `/mode chat` | Enter Chat mode directly. |
+| `/collab roster` | Use the sequential review relay. |
+| `/collab swarm` | Manually route each turn to the selected pinned agent. |
 | `/close` | Close this workspace and return to agent selection. |
 
 Agents may advertise additional slash commands. They appear in command search
@@ -332,3 +343,14 @@ resume.
 
 Press `Ctrl+C` to interrupt current work or `/pause` to pause the relay. On the
 next launch, lower the safety limit with `--max-rounds N`.
+
+### The `codeswarm` Launcher Says `No module named 'codeswarm'`
+
+The launcher may be an editable uv installation pointing to an old checkout.
+Reinstall it from the current CodeSwarm checkout and verify the executable:
+
+```bash
+uv tool install --editable . --force
+codeswarm --version
+codeswarm --help
+```

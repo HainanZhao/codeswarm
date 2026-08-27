@@ -6,6 +6,17 @@ from dataclasses import dataclass
 from collections import deque
 from typing import Awaitable, Callable, Protocol, Sequence
 
+from codeswarm.acp.collaboration import (
+    CollaborationContext,
+    DEFAULT_STOP_ACKNOWLEDGMENT,
+    MAX_RELAY_EVENTS,
+    MAX_RELAY_HISTORY_CHARS,
+    MAX_RELAY_JOURNAL_CHARS,
+    MAX_RELAY_RESPONSE_CHARS,
+    RelayEvent,
+    STOP_TOKEN,
+)
+
 
 class AgentLike(Protocol):
     """The small portion of an ACP agent required by the relay."""
@@ -17,12 +28,6 @@ class AgentLike(Protocol):
     def get_info(self) -> object: ...
 
 
-STOP_TOKEN = "[CODESWARM:STOP]"
-DEFAULT_STOP_ACKNOWLEDGMENT = "👍"
-MAX_RELAY_RESPONSE_CHARS = 12_000
-MAX_RELAY_HISTORY_CHARS = 24_000
-MAX_RELAY_JOURNAL_CHARS = 48_000
-MAX_RELAY_EVENTS = 200
 MAX_QUEUED_PROMPTS = 100
 
 
@@ -33,14 +38,6 @@ class RelayResult:
     rounds: int
     stopped: bool
     reason: str
-
-
-@dataclass(frozen=True)
-class RelayEvent:
-    """One public conversation update that other agents may not have seen."""
-
-    speaker: str
-    text: str
 
 
 class RelayConversation:
@@ -62,6 +59,7 @@ class RelayConversation:
         | None = None,
         on_queued_turn_discarded: Callable[[str, bool], None] | None = None,
         on_turn: Callable[[int, AgentLike, str], Awaitable[None] | None] | None = None,
+        context: CollaborationContext | None = None,
     ) -> None:
         if len(agents) < 2:
             raise ValueError("RelayConversation requires at least two agents")
@@ -80,15 +78,44 @@ class RelayConversation:
         self.paused = False
         self.last_active_index = 0
         self.next_agent_index: int | None = None
-        self._shared_task: str | None = None
-        self._public_events: list[RelayEvent] = []
-        self._seen_event_count: list[int] = [0] * len(self.agents)
-        self._history_truncated: list[bool] = [False] * len(self.agents)
-        self.turn_instructions = ""
+        self.context = context or CollaborationContext(len(self.agents))
+        self.context.ensure_agent_count(len(self.agents))
 
     def set_turn_instructions(self, instructions: str) -> None:
         """Set CodeSwarm-owned guidance applied to every future relay turn."""
-        self.turn_instructions = instructions.strip()
+        self.context.set_turn_instructions(instructions)
+
+    @property
+    def _shared_task(self) -> str | None:
+        return self.context.shared_task
+
+    @_shared_task.setter
+    def _shared_task(self, value: str | None) -> None:
+        self.context.shared_task = value
+
+    @property
+    def _public_events(self) -> list[RelayEvent]:
+        return self.context.public_events
+
+    @property
+    def _seen_event_count(self) -> list[int]:
+        return self.context.seen_event_count
+
+    @_seen_event_count.setter
+    def _seen_event_count(self, value: list[int]) -> None:
+        self.context.seen_event_count = value
+
+    @property
+    def _history_truncated(self) -> list[bool]:
+        return self.context.history_truncated
+
+    @property
+    def turn_instructions(self) -> str:
+        return self.context.turn_instructions
+
+    @turn_instructions.setter
+    def turn_instructions(self, value: str) -> None:
+        self.context.turn_instructions = value
 
     @property
     def active_indices(self) -> list[int]:
@@ -108,8 +135,7 @@ class RelayConversation:
         """
         self.agents.append(agent)
         self.active.append(True)
-        self._seen_event_count.append(0)
-        self._history_truncated.append(False)
+        self.context.add_agent()
         return len(self.agents) - 1
 
     async def send_direct_prompt(self, agent_index: int, prompt: str) -> str | None:
@@ -117,7 +143,7 @@ class RelayConversation:
         if not 0 <= agent_index < len(self.agents) or not self.active[agent_index]:
             raise ValueError("agent_index must name an active agent")
         agent = self.agents[agent_index]
-        task = self._shared_task or prompt
+        task = self.context.shared_task or prompt
         turn_prompt = self._build_turn_prompt(
             task,
             prompt,
@@ -126,7 +152,7 @@ class RelayConversation:
             can_stop=False,
         )
         result = await agent.send_prompt(turn_prompt)
-        self._seen_event_count[agent_index] = len(self._public_events)
+        self.context.seen_event_count[agent_index] = len(self.context.public_events)
         return result
 
     def drop_agent(self, index: int) -> None:
@@ -253,15 +279,15 @@ class RelayConversation:
         )
         if not self.active[current]:
             current = self._advance(current)
-        new_shared_task = self._shared_task is None
+        new_shared_task = self.context.shared_task is None
         if new_shared_task:
-            self._shared_task = prompt
+            self.context.shared_task = prompt
             relay = prompt
             context_event_index: int | None = None
         else:
             relay = f"Human follow-up:\n{prompt}"
             context_event_index = self._record_event("Human", prompt)
-        task = self._shared_task
+        task = self.context.shared_task
         assert task is not None
         context_agent: AgentLike | None = None
         for round_number in range(1, self.max_rounds + 1):
@@ -317,7 +343,7 @@ class RelayConversation:
                 stop_reason = await agent.send_prompt(turn_prompt)
             except Exception:
                 if new_shared_task and round_number == 1:
-                    self._shared_task = None
+                    self.context.shared_task = None
                 raise
             raw_response = getattr(agent, "last_response", "") or ""
             response_without_stop, requested_stop = self._strip_trailing_stop_token(
@@ -332,7 +358,7 @@ class RelayConversation:
                 # The target has now seen every public update included above,
                 # but its private instruction and answer never enter the
                 # journal for other agents.
-                self._seen_event_count[current] = len(self._public_events)
+                self.context.seen_event_count[current] = len(self.context.public_events)
                 response_event_index = None
             else:
                 response_event_index = (
@@ -343,7 +369,7 @@ class RelayConversation:
                 # An agent already knows the answer it just produced. Mark the
                 # journal through that answer so it receives only later diffs
                 # on its next turn.
-                self._seen_event_count[current] = len(self._public_events)
+                self.context.seen_event_count[current] = len(self.context.public_events)
 
             if self.on_turn is not None:
                 result = self.on_turn(round_number, agent, response)
@@ -407,106 +433,23 @@ class RelayConversation:
         can_stop: bool = False,
     ) -> str:
         """Give every agent the task before its turn-specific context."""
-        previous = (
-            "This is the first turn."
-            if previous_agent is None
-            else f"Previous participant: {self._name(previous_agent)}."
-        )
-        work_instruction = (
-            self.turn_instructions
-            or "Inspect the shared workspace and make useful progress."
-        )
-        updates = (
-            "Conversation updates since your previous turn:\n"
-            f"{unseen_updates}\n\n"
-            if unseen_updates
-            else ""
-        )
-        if can_stop:
-            stop_instruction = (
-                "You are reviewing another participant's answer. If it needs no "
-                "meaningful correction or addition, reply with an optional "
-                "acknowledgment emoji followed by "
-                f"{self.stop_token} as the final line. If you provide no emoji, "
-                f"CodeSwarm displays {DEFAULT_STOP_ACKNOWLEDGMENT}. If you add "
-                "substantive content, do not use the token; let the next "
-                "participant review your contribution."
-            )
-        else:
-            stop_instruction = (
-                f"Do not use {self.stop_token} on this turn. Your response must "
-                "be offered to another participant for review, even when you are "
-                "highly confident it is correct."
-            )
-        return (
-            f"You are one participant in a {len(self.active_agents)}-agent "
-            "automated collaboration.\n\n"
-            f"Shared task:\n{task}\n\n"
-            f"{updates}"
-            f"Turn context:\n{context}\n\n"
-            f"{previous}\n"
-            f"{work_instruction}\n\n"
-            f"{stop_instruction}\n"
-            "The token is internal: CodeSwarm hides it from the conversation."
+        return self.context.build_turn_prompt(
+            task,
+            context,
+            active_agents=self.active_agents,
+            previous_agent=previous_agent,
+            unseen_updates=unseen_updates,
+            can_stop=can_stop,
+            stop_token=self.stop_token,
         )
 
     def _record_event(self, speaker: str, text: str) -> int:
         """Append one bounded public event and return its journal index."""
-        self._prune_public_events()
-        self._public_events.append(
-            RelayEvent(speaker, self._compact_response(text).strip())
-        )
-        return len(self._public_events) - 1
-
-    def _prune_public_events(self) -> None:
-        """Discard consumed history and hard-bound permanently unseen events."""
-        active = self.active_indices
-        consumed = min((self._seen_event_count[index] for index in active), default=0)
-        if consumed:
-            del self._public_events[:consumed]
-            self._seen_event_count = [max(0, count - consumed) for count in self._seen_event_count]
-
-        retained_chars = sum(len(event.speaker) + len(event.text) for event in self._public_events)
-        while self._public_events and (
-            len(self._public_events) >= MAX_RELAY_EVENTS
-            or retained_chars >= MAX_RELAY_JOURNAL_CHARS
-        ):
-            removed = self._public_events.pop(0)
-            retained_chars -= len(removed.speaker) + len(removed.text)
-            for index, count in enumerate(self._seen_event_count):
-                if count:
-                    self._seen_event_count[index] = count - 1
-                elif self.active[index]:
-                    self._history_truncated[index] = True
+        return self.context.record_event(speaker, text, self.active)
 
     def _unseen_updates(self, agent_index: int, *, excluding: int | None) -> str:
         """Render public events not included in this agent's prior prompts."""
-        start = self._seen_event_count[agent_index]
-        parts = [
-            f"{event.speaker}:\n{event.text}"
-            for index, event in enumerate(self._public_events[start:], start)
-            if index != excluding and event.text
-        ]
-        rendered = "\n\n".join(parts)
-        if self._history_truncated[agent_index]:
-            marker = "[CodeSwarm omitted older unseen updates to protect context.]"
-            rendered = f"{marker}\n\n{rendered}" if rendered else marker
-            self._history_truncated[agent_index] = False
-        if len(rendered) <= MAX_RELAY_HISTORY_CHARS:
-            return rendered
-
-        marker = "[CodeSwarm omitted older unseen updates to protect context.]"
-        remaining = MAX_RELAY_HISTORY_CHARS - len(marker) - 2
-        newest: list[str] = []
-        used = 0
-        for part in reversed(parts):
-            added = len(part) + (2 if newest else 0)
-            if used + added > remaining:
-                break
-            newest.append(part)
-            used += added
-        newest.reverse()
-        return f"{marker}\n\n" + "\n\n".join(newest)
+        return self.context.unseen_updates(agent_index, excluding=excluding)
 
     def _strip_trailing_stop_token(self, response: str) -> tuple[str, bool]:
         """Remove a final relay stop marker and report whether it was present."""
@@ -518,12 +461,4 @@ class RelayConversation:
     @staticmethod
     def _compact_response(response: str) -> str:
         """Keep relay context bounded without forwarding tool/UI history."""
-        if len(response) <= MAX_RELAY_RESPONSE_CHARS:
-            return response
-        head_size = MAX_RELAY_RESPONSE_CHARS // 2
-        tail_size = MAX_RELAY_RESPONSE_CHARS - head_size
-        return (
-            response[:head_size]
-            + "\n\n[CodeSwarm omitted the middle of this response to protect context.]\n\n"
-            + response[-tail_size:]
-        )
+        return CollaborationContext.compact_response(response)

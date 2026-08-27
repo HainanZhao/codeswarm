@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.32] - 2026-08-27
+
+### Added
+
+- Added manual Swarm collaboration mode, which keeps each prompt on the
+  selected agent until the user chooses another roster member.
+
+### Changed
+
+- Brightened agent and user message bubbles with vivid per-agent surfaces and
+  high-contrast rails while retaining the teal terminal foundation.
+- Aligned batch completion labels with agent message headers.
+
+### Fixed
+
+- Shared collaboration context now remains available when switching between
+  sequential Roster and manual Swarm routing.
+- Clean package builds expose the current `codeswarm` import package and
+  console entry point for `uv` installations.
+
 ## [0.6.29] - 2026-08-26
 
 ### Changed

@@ -7,6 +7,8 @@ from unittest.mock import patch
 from codeswarm.agent import AgentBase
 from codeswarm.agent_schema import Agent as AgentData
 from codeswarm.db import decode_session_meta
+from codeswarm.acp.pinned import PinnedConversation
+from codeswarm.acp.relay import RelayConversation
 from codeswarm.session import SessionCoordinator
 
 
@@ -50,6 +52,51 @@ class FakeAgent(AgentBase):
 
 
 class SessionCoordinatorTests(unittest.TestCase):
+    def test_swarm_mode_uses_a_persistent_pinned_target(self) -> None:
+        async def scenario() -> None:
+            owner = agent_data("claude.ai", "Claude", "claude")
+            peer = agent_data("openai.com", "Codex", "codex")
+            created: list[FakeAgent] = []
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                agent = FakeAgent(project_root, data["name"])
+                created.append(agent)
+                return agent
+
+            coordinator = SessionCoordinator(
+                Path("."), owner, peers=(peer,), agent_factory=factory
+            )
+            await coordinator.start(object())
+            self.assertIsInstance(coordinator.relay, RelayConversation)
+
+            coordinator.set_collaboration_mode("swarm")
+            self.assertIsInstance(coordinator.relay, PinnedConversation)
+            coordinator.select_pinned_agent(1)
+            await coordinator.send_prompt("send this to Codex")
+            await coordinator.send_prompt("keep this with Codex")
+
+            self.assertEqual(created[0].prompts, [])
+            self.assertEqual(len(created[1].prompts), 2)
+            self.assertEqual(coordinator.collaboration_mode, "swarm")
+
+        asyncio.run(scenario())
+
+    def test_invalid_pinned_selection_does_not_change_target(self) -> None:
+        coordinator = SessionCoordinator(
+            Path("."), agent_data("claude.ai", "Claude", "claude"),
+            peers=(agent_data("openai.com", "Codex", "codex"),),
+        )
+
+        with self.assertRaises(IndexError):
+            coordinator.select_pinned_agent(3)
+
     def test_start_introduces_each_agent_to_the_roster(self) -> None:
         async def scenario() -> None:
             owner = agent_data("claude.ai", "Claude", "claude")

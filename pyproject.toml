@@ -1,6 +1,6 @@
 [project]
 name = "codeswarm"
-version = "0.6.31"
+version = "0.6.32"
 description = "A focused terminal workspace for collaborating with ACP coding agents."
 readme = "README.md"
 requires-python = ">=3.14"

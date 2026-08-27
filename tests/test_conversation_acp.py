@@ -39,7 +39,12 @@ from codeswarm.widgets import agent_response as agent_response_widget
 from codeswarm.widgets.markdown_note import MarkdownNote
 from codeswarm.widgets.note import Note
 from codeswarm.widgets.path_search import PathSearch
-from codeswarm.widgets.prompt import AgentInfo, InvokeFileSearch, QueuedMessages
+from codeswarm.widgets.prompt import (
+    AgentInfo,
+    CollaborationInfo,
+    InvokeFileSearch,
+    QueuedMessages,
+)
 from codeswarm.widgets.flash import Flash
 from codeswarm.screens.config import ConfigScreen
 from codeswarm.screens.permissions import PermissionsQuestion
@@ -973,11 +978,11 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertEqual(
                             bubble.region.right, message.content_region.right
                         )
-                        self.assertEqual(bubble.styles.background.rgb, (45, 212, 191))
-                        self.assertEqual(bubble.styles.background.a, 0.20)
+                        self.assertEqual(bubble.styles.background.rgb, (23, 62, 67))
+                        self.assertEqual(bubble.styles.background.a, 1.0)
                         self.assertEqual(bubble.styles.border_top[0], "tall")
                         self.assertEqual(bubble.styles.border_bottom[0], "tall")
-                        self.assertEqual(bubble.styles.border_right[0], "")
+                        self.assertEqual(bubble.styles.border_right[0], "tall")
                         self.assertEqual(bubble.styles.padding.top, 0)
                         self.assertEqual(bubble.styles.padding.bottom, 0)
                         self.assertIsNone(bubble.query_one_optional("#prompt"))
@@ -2142,7 +2147,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_roster_palette_only_colors_each_agent_reply_border(self) -> None:
+    def test_roster_palette_colors_each_agent_reply_surface_and_border(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
@@ -2184,17 +2189,17 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                     for response in responses
                                 }
                             ),
-                            1,
+                            4,
                         )
                         headers = [
                             response.parent.query_one("#agent-message-header")
                             for response in responses
                         ]
                         expected_colors = (
-                            "#74E2D4",
-                            "#B8A65A",
-                            "#28728F",
+                            "#67E8F9",
+                            "#A78BFA",
                             "#22D3EE",
+                            "#FBBF24",
                         )
                         for index, (header, response, expected_color) in enumerate(
                             zip(headers, responses, expected_colors)
@@ -2331,7 +2336,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         )
                         self.assertEqual(
                             response.parent.styles.border_left[1].rgb,
-                            Color.parse("#74E2D4").rgb,
+                            Color.parse("#67E8F9").rgb,
                         )
                         header = response.parent.query_one("#agent-message-header")
                         self.assertEqual(
@@ -2760,6 +2765,96 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertTrue(
                             conversation.agent_info.plain.startswith("○ Claude · → ○ Gemini")
                         )
+
+        asyncio.run(scenario())
+
+    def test_swarm_mode_pins_until_the_user_clicks_another_agent(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        claude = _RosterAgent("Claude")
+                        gemini = _RosterAgent("Gemini")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.ai",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                claude,  # type: ignore[arg-type]
+                            ),
+                            RosterEntry(
+                                AgentData(
+                                    identity="gemini.google.com",
+                                    name="Gemini",
+                                    short_name="gemini",
+                                ),
+                                gemini,  # type: ignore[arg-type]
+                            ),
+                        ]
+                        conversation.session._build_relay(
+                            on_turn_start=None, on_turn=None
+                        )
+                        conversation.agent_ready = True
+                        conversation._ready_agents = {id(claude), id(gemini)}
+
+                        await conversation.slash_command("/collab swarm")
+                        await pilot.pause()
+                        self.assertEqual(conversation.session.collaboration_mode, "swarm")
+                        self.assertEqual(
+                            pilot.app.screen.query_one(CollaborationInfo).render().plain,
+                            "Swarm",
+                        )
+                        self.assertIn("⌖ Claude", conversation.agent_info.plain)
+
+                        await pilot.click(AgentInfo, offset=(14, 0))
+
+                        self.assertEqual(
+                            conversation.session.relay.pinned_agent_index,  # type: ignore[union-attr]
+                            1,
+                        )
+                        self.assertIn("⌖ Gemini", conversation.agent_info.plain)
+
+        asyncio.run(scenario())
+
+    def test_batch_summary_text_aligns_with_agent_headers(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(120, 40)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                agent = _RosterAgent("Claude")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.ai",
+                            name="Claude",
+                            short_name="claude",
+                        ),
+                        agent,  # type: ignore[arg-type]
+                    )
+                ]
+                conversation.begin_agent_output(agent)  # type: ignore[arg-type]
+                response = await conversation.post_agent_response("Reply")
+                await conversation._post_collaboration_summary()
+                await pilot.pause()
+
+                assert response is not None
+                summary = conversation.query(Note).last()
+                header = response.parent.query_one("#agent-message-header")
+                self.assertEqual(summary.region.x, response.parent.region.x)
+                self.assertEqual(
+                    summary.styles.content_align,
+                    header.styles.content_align,
+                )
+                self.assertEqual(summary.styles.padding.left, response.parent.styles.padding.left)
 
         asyncio.run(scenario())
 

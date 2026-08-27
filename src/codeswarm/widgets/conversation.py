@@ -295,6 +295,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
     turn: var[Literal["agent", "client"] | None] = var(None, bindings=True)
     relay_paused: var[bool] = var(False, toggle_class="-relay-paused")
     discussion_mode: var[bool] = var(False, toggle_class="-discussion-mode")
+    collaboration_mode = var("Roster")
     status: var[str | Content] = var("")
     queued_messages: var[tuple[str, ...]] = var(())
 
@@ -339,6 +340,11 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             first_agent=first_agent,
             max_rounds=max_rounds,
         )
+        self.set_reactive(
+            Conversation.collaboration_mode,
+            self.session.collaboration_mode.title(),
+        )
+        self._pending_collaboration_mode: str | None = None
         self._mouse_down_offset: Offset | None = None
 
         self.project_data_path = paths.get_project_data(project_path)
@@ -653,6 +659,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             agent_ready=Conversation.agent_ready,
             current_mode=Conversation.current_mode,
             modes=Conversation.modes,
+            collaboration_mode=Conversation.collaboration_mode,
             status=Conversation.status,
             queued_messages=Conversation.queued_messages,
         )
@@ -1381,7 +1388,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                     (f"{name} {elapsed}", "$text-secondary"),
                 ]
             )
-        await self.post(Note(Content.assemble(*parts)))
+        await self.post(Note(Content.assemble(*parts), classes="-batch-summary"))
 
     def _routing_agent(self) -> AgentBase | None:
         """Return the agent that would receive the next user message."""
@@ -1389,6 +1396,13 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         relay = self.session.relay
         if relay is None:
             return active_agents[0] if len(active_agents) == 1 else None
+        if self.session.collaboration_mode == "swarm":
+            index = getattr(relay, "pinned_agent_index", None)
+            if isinstance(index, int) and 0 <= index < len(self.session.roster):
+                entry = self.session.roster[index]
+                if entry.active and entry.agent in active_agents:
+                    return entry.agent
+            return None
         index = self.session.selected_agent_index
         if not isinstance(index, int):
             if self._working_agent in active_agents:
@@ -1420,7 +1434,17 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             if name_start - 4 <= offset < name_start + len(name):
                 index = self.session.index_of_agent(agent)
                 if index is not None:
-                    self.session.select_agent(index)
+                    try:
+                        if self.session.collaboration_mode == "swarm":
+                            self.session.select_pinned_agent(index)
+                        else:
+                            self.session.select_agent(index)
+                    except (IndexError, ValueError):
+                        self.flash(
+                            "Pinned agent is unavailable; select an active agent",
+                            style="warning",
+                        )
+                        return
                     self._refresh_roster_info()
                     self.prompt.prompt_text_area.focus()
                 return
@@ -1470,8 +1494,17 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             is_timed = agent is self._working_agent and self._agent_started_at is not None
             if is_timed and self._agent_started_at is not None:
                 elapsed += int(monotonic() - self._agent_started_at)
-            marker = "●" if is_current else "○" if is_ready else "…"
-            prefix = "→ " if agent is routing_agent else ""
+            if is_current:
+                marker = "●"
+            elif self.session.collaboration_mode == "swarm" and agent is routing_agent:
+                marker = "⌖"
+            else:
+                marker = "○" if is_ready else "…"
+            prefix = (
+                ""
+                if self.session.collaboration_mode == "swarm"
+                else "→ " if agent is routing_agent else ""
+            )
             timer = (
                 f" · {self._format_elapsed(elapsed)}"
                 if is_timed
@@ -1486,6 +1519,34 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         if self.discussion_mode:
             roster.append(discussion_indicator)
         self.agent_info = Content.assemble(*roster)
+
+    def _set_collaboration_mode(self, value: str) -> None:
+        """Select the routing strategy without changing ACP permission modes."""
+        mode = value.strip().lower()
+        if mode not in {"roster", "swarm"}:
+            self.flash("Use /collab roster or /collab swarm", style="error")
+            return
+        if mode == self.session.collaboration_mode:
+            return
+        if self.turn == "agent":
+            self._pending_collaboration_mode = mode
+            self.flash(
+                f"COLLAB // {mode.upper()} queued until the active turn lands",
+                style="warning",
+            )
+            return
+        self._apply_collaboration_mode(mode)
+
+    def _apply_collaboration_mode(self, mode: str) -> None:
+        try:
+            self.session.set_collaboration_mode(mode)  # type: ignore[arg-type]
+        except (IndexError, ValueError) as error:
+            self.flash(f"Unable to switch collaboration mode: {error}", style="error")
+            return
+        self.collaboration_mode = mode.title()
+        self._refresh_roster_info()
+        self.update_slash_commands()
+        self.flash(f"COLLAB // {mode.upper()} active", style="success")
 
     def _set_discussion_mode(self, value: str) -> None:
         """Switch the CodeSwarm-owned conversation policy for every agent."""
@@ -1646,6 +1707,11 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 
         self.prompt.project_directory_updated()
 
+        if self._pending_collaboration_mode is not None:
+            pending_mode = self._pending_collaboration_mode
+            self._pending_collaboration_mode = None
+            self._apply_collaboration_mode(pending_mode)
+
         await self._sync_desired_mode()
 
         if await self._dispatch_next_solo_prompt():
@@ -1701,6 +1767,11 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             SlashCommand("/config", "Configure CodeSwarm preferences"),
             SlashCommand("/export", "Export the conversation as Markdown"),
             SlashCommand("/mode", "Open the mode picker"),
+            SlashCommand(
+                "/collab",
+                "Choose Roster or manual Swarm routing",
+                "roster | swarm",
+            ),
             SlashCommand(
                 "/close",
                 "Close the current session",
@@ -2264,6 +2335,8 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 - `!<command>` — run a shell command directly in the current workspace
 - `/mode` — choose one mode for every active agent
 - `/mode chat` — chat without workspace inspection or tools
+- `/collab roster` — sequential review relay around the active roster
+- `/collab swarm` — manually route each turn to the selected agent
 - `/pause` — pause or resume a multi-agent relay
 - `/export` — export the conversation as Markdown
 - `/close` — close this workspace and return to agent selection
@@ -2298,6 +2371,12 @@ Drag over conversation text and press `Ctrl+C` to copy it. Otherwise,
                 self.flash("Use /mode to choose a mode", style="error")
             else:
                 await self.action_mode_switcher()
+            return True
+        if command == "collab":
+            if parameters.strip():
+                self._set_collaboration_mode(parameters)
+            else:
+                self.flash("Use /collab roster or /collab swarm", style="warning")
             return True
         if command == "pause":
             self.action_toggle_pause()

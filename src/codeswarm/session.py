@@ -5,16 +5,20 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable, Protocol, Sequence, cast
+from typing import Awaitable, Callable, Literal, Protocol, Sequence, cast
 
 from textual.message_pump import MessagePump
 
 from codeswarm.acp.relay import AgentLike, RelayConversation, RelayResult
+from codeswarm.acp.pinned import PinnedConversation
+from codeswarm.acp.collaboration import CollaborationContext
 from codeswarm.agent import AgentBase
 from codeswarm.agent_schema import Agent as AgentData
 from codeswarm.db import decode_session_meta
 
 CANCEL_TIMEOUT_SECONDS = 2.0
+CollaborationMode = Literal["roster", "swarm"]
+DEFAULT_COLLABORATION_MODE: CollaborationMode = "roster"
 
 
 class AgentFactory(Protocol):
@@ -89,6 +93,8 @@ class SessionCoordinator:
         if max_rounds < 1:
             raise ValueError("max_rounds must be positive")
         self.relay: RelayConversation | None = None
+        self.collaboration_mode: CollaborationMode = DEFAULT_COLLABORATION_MODE
+        self._collaboration_context: CollaborationContext | None = None
         self.selected_agent_index: int | None = None
         self._turn_instructions = ""
         self._gemini_restart_attempted: set[int] = set()
@@ -139,6 +145,11 @@ class SessionCoordinator:
     @property
     def relay_active(self) -> bool:
         return self.relay is not None and len(self.relay.active_agents) > 1
+
+    @property
+    def collaboration_active(self) -> bool:
+        """Whether multiple active agents can receive collaboration turns."""
+        return self.relay_active
 
     @property
     def active_agents(self) -> list[AgentBase]:
@@ -237,7 +248,38 @@ class SessionCoordinator:
         if len(agents) <= 1 or any(agent is None for agent in agents):
             self.relay = None
             return
-        self.relay = RelayConversation(
+        context = self._collaboration_context or CollaborationContext(len(agents))
+        self._collaboration_context = context
+        collaboration_type = (
+            PinnedConversation
+            if self.collaboration_mode == "swarm"
+            else RelayConversation
+        )
+        kwargs = dict(
+            on_turn_start=cast(
+                Callable[[int, AgentLike], Awaitable[None] | None], on_turn_start
+            ),
+            on_queued_turn_start=cast(
+                Callable[[int, AgentLike, str, bool], Awaitable[None] | None],
+                on_queued_turn_start,
+            ),
+            on_queued_turn_discarded=on_queued_turn_discarded,
+            on_turn=cast(
+                Callable[[int, AgentLike, str], Awaitable[None] | None], on_turn
+            ),
+            context=context,
+        )
+        if self.collaboration_mode == "swarm":
+            self.relay = PinnedConversation(
+                cast(
+                    list[AgentLike],
+                    [agent for agent in agents if agent is not None],
+                ),
+                first_agent=self.first_agent,
+                **kwargs,
+            )
+            return
+        self.relay = collaboration_type(
             cast(
                 list[AgentLike],
                 [agent for agent in agents if agent is not None],
@@ -254,8 +296,47 @@ class SessionCoordinator:
             on_turn=cast(
                 Callable[[int, AgentLike, str], Awaitable[None] | None], on_turn
             ),
+            context=context,
         )
         self.relay.set_turn_instructions(self._turn_instructions)
+
+    def set_collaboration_mode(self, mode: CollaborationMode) -> None:
+        """Switch collaboration orchestration while preserving shared state."""
+        if mode not in ("roster", "swarm"):
+            raise ValueError("unknown collaboration mode")
+        if mode == self.collaboration_mode:
+            return
+        if self.relay is None or len(self.active_agents) < 2:
+            self.collaboration_mode = mode
+            return
+        current_target = self.first_agent
+        if mode == "swarm":
+            if self.selected_agent_index is not None:
+                current_target = self.selected_agent_index
+            elif self.relay.next_agent_index is not None:
+                current_target = self.relay.next_agent_index
+        else:
+            current_target = getattr(
+                self.relay, "pinned_agent_index", self.first_agent
+            )
+        self.collaboration_mode = mode
+        self.first_agent = current_target
+        self.selected_agent_index = current_target if mode == "roster" else None
+        previous = self.relay
+        self._collaboration_context = previous.context
+        self._build_relay(
+            on_turn_start=previous.on_turn_start,
+            on_queued_turn_start=previous.on_queued_turn_start,
+            on_queued_turn_discarded=previous.on_queued_turn_discarded,
+            on_turn=previous.on_turn,
+        )
+        self.relay.set_turn_instructions(self._turn_instructions)
+
+    def select_pinned_agent(self, index: int) -> None:
+        """Persist a user-selected target while Swarm mode is active."""
+        if self.relay is None or not isinstance(self.relay, PinnedConversation):
+            raise IndexError("pinned collaboration is not active")
+        cast(PinnedConversation, self.relay).select_agent(index)
 
     def set_turn_instructions(self, instructions: str) -> None:
         """Apply CodeSwarm-owned turn guidance to the current or future relay."""
