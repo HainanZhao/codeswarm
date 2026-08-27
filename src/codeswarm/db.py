@@ -5,6 +5,9 @@ from codeswarm import paths
 
 import aiosqlite
 
+SQLITE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+"""Matches SQLite's CURRENT_TIMESTAMP, which is UTC."""
+
 
 def decode_session_meta(value: str | None) -> dict[str, object]:
     """Read a session metadata blob without letting a damaged record break UI flow."""
@@ -114,13 +117,15 @@ class DB:
         Returns:
             Boolenan that indicates success.
         """
-        now_utc = datetime.now(timezone.utc)
+        # Must match the CURRENT_TIMESTAMP default of the column: last_used is
+        # TEXT and compared as a string, so a mixed format sorts incorrectly.
+        now_utc = datetime.now(timezone.utc).strftime(SQLITE_TIMESTAMP_FORMAT)
         try:
             async with self.open() as db:
                 await db.execute(
                     "UPDATE sessions SET last_used = ? WHERE id = ?",
                     (
-                        now_utc.isoformat(),
+                        now_utc,
                         id,
                     ),
                 )
@@ -180,8 +185,11 @@ class DB:
             async with self.open() as db:
                 db.row_factory = aiosqlite.Row
                 cursor = await db.execute(
+                    # Rows written by earlier versions hold an ISO timestamp
+                    # whose "T" separator sorts after a space. Normalize so a
+                    # legacy row is still ordered by its actual time.
                     """SELECT * from sessions
-                    ORDER BY last_used DESC
+                    ORDER BY replace(last_used, 'T', ' ') DESC
                     LIMIT ?""",
                     (max_results,),
                 )

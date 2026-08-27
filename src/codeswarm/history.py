@@ -16,13 +16,35 @@ class HistoryEntry(TypedDict):
     timestamp: float
 
 
+def parse_entry(line: str) -> HistoryEntry | None:
+    """Decode one history line, or `None` if the line was damaged.
+
+    An interrupted append leaves a partial line behind; navigation must skip
+    it rather than fail for every entry written before it.
+    """
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(entry, dict):
+        return None
+    input = entry.get("input")
+    if not isinstance(input, str):
+        return None
+    timestamp = entry.get("timestamp")
+    return {
+        "input": input,
+        "timestamp": float(timestamp) if isinstance(timestamp, (int, float)) else 0.0,
+    }
+
+
 @rich.repr.auto
 class History:
     """Manages a history file."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lines: list[str] = []
+        self._entries: list[HistoryEntry] = []
         self._opened: bool = False
         self._current: str | None = None
         self.complete = Complete()
@@ -40,7 +62,7 @@ class History:
 
     @property
     def size(self) -> int:
-        return len(self._lines)
+        return len(self._entries)
 
     async def open(self) -> bool:
         """Open the history file, read initial lines.
@@ -61,19 +83,19 @@ class History:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 self.path.touch(exist_ok=True)
                 with self.path.open("r") as history_file:
-                    self._lines = history_file.readlines()
-
-                inputs: list[str] = []
-                for line in self._lines:
-                    try:
-                        input = json.loads(line).get("input")
-                    except (json.JSONDecodeError, AttributeError):
-                        continue
-                    if isinstance(input, str):
-                        inputs.append(input.split(" ", 1)[0])
-                self.complete.add_words(inputs)
+                    lines = history_file.readlines()
             except OSError:
                 return False
+
+            entries: list[HistoryEntry] = []
+            inputs: list[str] = []
+            for line in lines:
+                if (entry := parse_entry(line)) is None:
+                    continue
+                entries.append(entry)
+                inputs.append(entry["input"].split(" ", 1)[0])
+            self._entries = entries
+            self.complete.add_words(inputs)
             return True
 
         self._opened = await asyncio.to_thread(read_history)
@@ -108,7 +130,7 @@ class History:
                     history_file.write(f"{line}\n")
             except OSError:
                 return False
-            self._lines.append(line)
+            self._entries.append(history_entry)
             self.complete.add_words([input.split(" ")[0]])
             self._current = None
             return True
@@ -135,8 +157,6 @@ class History:
         if index == 0:
             return {"input": self.current or "", "timestamp": time()}
         try:
-            entry_line = self._lines[index]
+            return self._entries[index]
         except IndexError:
-            raise IndexError(f"No history entry at index {index}")
-        history_entry: HistoryEntry = json.loads(entry_line)
-        return history_entry
+            raise IndexError(f"No history entry at index {index}") from None

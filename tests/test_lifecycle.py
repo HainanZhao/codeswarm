@@ -19,6 +19,7 @@ from codeswarm.agent_schema import Agent as AgentData
 from codeswarm.app import CodeSwarmApp
 from codeswarm.agents import AgentReadError
 from codeswarm import messages
+from codeswarm.acp import messages as acp_messages
 from codeswarm.screens.store import StoreScreen
 from codeswarm import jsonrpc
 from codeswarm.widgets.conversation import Conversation
@@ -687,6 +688,59 @@ class AgentLifecycleTests(unittest.TestCase):
 
         self.assertFalse(agent.startup_full_access)
         self.assertEqual(agent.command, "npx -y agy-acp")
+
+    def test_load_session_accepts_a_null_result(self) -> None:
+        """`session/load` may resolve to null; resuming must not fail."""
+
+        class _NullResponse:
+            async def wait(self, timeout: float | None = None) -> None:
+                return None
+
+        class _ModesResponse:
+            async def wait(self, timeout: float | None = None) -> dict:
+                return {
+                    "modes": {
+                        "currentModeId": "default",
+                        "availableModes": [{"id": "default", "name": "Default"}],
+                    }
+                }
+
+        async def scenario() -> None:
+            data = cast(
+                AgentData,
+                {
+                    "name": "Test agent",
+                    "identity": "test.agent",
+                    "run_command": {"*": "test-agent"},
+                },
+            )
+            for response, expected_modes in (
+                (_NullResponse(), None),
+                (_ModesResponse(), "default"),
+            ):
+                with self.subTest(response=type(response).__name__):
+                    agent = Agent(Path.cwd(), data, "agent-session-1")
+                    posted: list[object] = []
+                    with patch.object(
+                        agent, "post_message", side_effect=posted.append
+                    ), patch(
+                        "codeswarm.acp.agent.api.session_load",
+                        return_value=response,
+                    ):
+                        await agent.acp_load_session()
+
+                    modes = [
+                        message
+                        for message in posted
+                        if isinstance(message, acp_messages.SetModes)
+                    ]
+                    if expected_modes is None:
+                        self.assertEqual(modes, [])
+                    else:
+                        self.assertEqual(len(modes), 1)
+                        self.assertEqual(modes[0].current_mode, expected_modes)
+
+        asyncio.run(scenario())
 
     def test_agent_exit_persists_code_runtime_and_failure_details(self) -> None:
         async def scenario() -> None:

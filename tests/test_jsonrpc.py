@@ -126,5 +126,80 @@ class JSONRPCTests(unittest.TestCase):
         asyncio.run(scenario())
 
 
+    def test_error_responses_echo_the_request_id(self) -> None:
+        """A dropped id leaves the caller's request unresolved forever."""
+
+        async def scenario() -> None:
+            server = Server()
+
+            @server.method()
+            def hello(name: str) -> str:
+                return f"hi {name}"
+
+            malformed_requests = (
+                {"method": "hello", "params": "not-a-collection"},
+                {"method": "hello", "params": {"unexpected": 1}},
+                {"method": "missing", "params": {}},
+                {"method": 42, "params": {}},
+                {"params": {}},
+            )
+            for request in malformed_requests:
+                with self.subTest(request=request):
+                    response = await server.call(
+                        {"jsonrpc": "2.0", "id": 7, **request}
+                    )
+                    self.assertIsInstance(response, dict)
+                    assert isinstance(response, dict)
+                    self.assertIn("error", response)
+                    self.assertEqual(response["id"], 7)
+
+        asyncio.run(scenario())
+
+    def test_a_failing_notification_produces_no_response(self) -> None:
+        """JSON-RPC notifications take no reply, errors included."""
+
+        async def scenario() -> None:
+            server = Server()
+
+            @server.method()
+            def boom() -> None:
+                raise RuntimeError("handler failed")
+
+            notifications = (
+                {"method": "missing", "params": {}},
+                {"method": "boom", "params": "not-a-collection"},
+                {"method": "boom", "params": {}},
+                {"jsonrpc": "1.0", "method": "boom"},
+            )
+            for notification in notifications:
+                with self.subTest(notification=notification):
+                    request = {"jsonrpc": "2.0", **notification}
+                    self.assertIsNone(await server.call(request))
+
+            self.assertEqual(
+                await server.call(
+                    [
+                        {"jsonrpc": "2.0", "method": "missing"},
+                        {"jsonrpc": "2.0", "method": "missing", "id": 3},
+                    ]
+                ),
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "error": {
+                            "code": int(ErrorCode.METHOD_NOT_FOUND),
+                            "message": (
+                                "Method not found; 'missing' is not an "
+                                "exposed method"
+                            ),
+                        },
+                    }
+                ],
+            )
+
+        asyncio.run(scenario())
+
+
 if __name__ == "__main__":
     unittest.main()

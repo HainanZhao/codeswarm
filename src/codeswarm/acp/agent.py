@@ -1318,6 +1318,10 @@ class Agent(AgentBase):
         with self.request():
             session_load_response = api.session_load(cwd, [], self.session_id)
         response = await session_load_response.wait()
+        if response is None:
+            # `session/load` may legitimately resolve to null: the session is
+            # loaded, there is simply no mode state to adopt.
+            return
 
         if (modes := response.get("modes", None)) is not None:
             current_mode = modes["currentModeId"]

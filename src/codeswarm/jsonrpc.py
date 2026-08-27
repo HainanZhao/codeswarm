@@ -150,9 +150,15 @@ class Server:
         try:
             return await self._dispatch_object_call(request_id, json)
         except JSONRPCError as error:
+            if request_id is None:
+                # A notification takes no response, errors included. An
+                # unsolicited response object confuses a strict peer.
+                return None
             return {
                 "jsonrpc": "2.0",
-                "id": error.id,
+                # Always the id this request arrived with: a handler that
+                # raises its own error must not break correlation.
+                "id": request_id,
                 "error": {
                     "code": int(error.code),
                     "message": error.message,
@@ -160,6 +166,8 @@ class Server:
             }
         except Exception as error:
             log.exception("Error dispatching JSONRPC request")
+            if request_id is None:
+                return None
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,
@@ -207,7 +215,8 @@ class Server:
 
         if not isinstance(params, (list, dict)):
             raise InvalidRequest(
-                "Invalid request; 'params' attribute should be a list or an object"
+                "Invalid request; 'params' attribute should be a list or an object",
+                id=request_id,
             )
 
         arguments: dict[str, JSONType | Server | NoDefault] = {
