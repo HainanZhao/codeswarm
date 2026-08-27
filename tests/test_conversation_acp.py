@@ -981,6 +981,58 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_pruned_terminal_is_still_deregistered_on_release(self) -> None:
+        """Release must drop the registry entry even with no widget left.
+
+        `get_terminal` resolves the widget through the transcript, and the
+        transcript is pruned — a command that produced no output never even
+        becomes visible. Guarding the registry cleanup behind that lookup
+        meant the long-session case, the one the cleanup exists for, still
+        leaked the terminal and its parsed scrollback.
+        """
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        await pilot.pause(0.1)
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        result: asyncio.Future[bool] = (
+                            asyncio.get_running_loop().create_future()
+                        )
+                        conversation.post_message(
+                            acp_messages.CreateTerminal(
+                                "pruned-terminal", "printf", result, args=["x"]
+                            )
+                        )
+                        await pilot.pause(0.2)
+                        self.assertTrue(await result)
+                        self.assertIn("pruned-terminal", conversation.terminals)
+
+                        # The transcript drops the widget before the agent
+                        # gets round to releasing it.
+                        await conversation.prune_window(0, 0)
+                        await pilot.pause(0.2)
+                        self.assertIsNone(
+                            conversation.get_terminal("pruned-terminal")
+                        )
+
+                        conversation.post_message(
+                            acp_messages.ReleaseTerminal("pruned-terminal")
+                        )
+                        await pilot.pause(0.2)
+
+                        self.assertNotIn(
+                            "pruned-terminal", conversation.terminals
+                        )
+
+        asyncio.run(scenario())
+
     def test_file_indexing_is_on_demand(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:

@@ -696,6 +696,14 @@ verbose build could hold tens of megabytes for as long as the terminal stayed
 in the transcript.
 """
 
+SCROLLBACK_TRIM_SLACK = 1_000
+"""How far below the cap a trim goes, so trims are rare.
+
+A trim rebuilds the whole fold index, so trimming back to exactly the cap
+would rebuild on every subsequent write — thousands of times for one verbose
+command. Cutting to a low watermark amortises that over this many lines.
+"""
+
 
 class LineFold(NamedTuple):
     """A line from the terminal, folded for presentation."""
@@ -1059,13 +1067,20 @@ class TerminalState:
     def trim_scrollback(self, max_lines: int = MAX_SCROLLBACK_LINES) -> bool:
         """Bound scrollback growth.
 
+        `max_lines` is the hard cap; a trim cuts to `SCROLLBACK_TRIM_SLACK`
+        below it so the O(lines) rebuild is paid once per that many lines
+        rather than on every write.
+
         Never trims while an alternate screen is active: that buffer is a
         full-screen application's viewport, already bounded by the height, and
         its lines are addressed directly.
         """
         if self.alternate_screen:
             return False
-        return self.scrollback_buffer.trim(max_lines)
+        buffer = self.scrollback_buffer
+        if len(buffer.lines) <= max_lines:
+            return False
+        return buffer.trim(max(1, max_lines - SCROLLBACK_TRIM_SLACK))
 
     async def write_stdin(self, text: str) -> bool:
         if self._write_stdin is not None:

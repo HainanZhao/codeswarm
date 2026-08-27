@@ -436,12 +436,14 @@ class Agent(AgentBase):
         Intended to be called from `_queue_log`.
         """
         self._log_flush_scheduled = False
+        if self._message_target is None:
+            # Keep the buffer: dropping it here would lose lines that a later
+            # flush can still write.
+            return
         pending = self._log_pending
         if not pending:
             return
         self._log_pending = []
-        if self._message_target is None:
-            return
 
         def write_log(log_file_path: Path, lines: list[str]) -> None:
             """Write log in a thread."""

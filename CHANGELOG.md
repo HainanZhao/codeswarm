@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.35] - 2026-08-27
+
+### Fixed
+
+- Fixed a regression in 0.6.34: enforcing the scrollback cap rebuilt the
+  whole fold index on every write. Trimming cut back to exactly the cap, so
+  each new line put the buffer over it again — a compiler or test runner that
+  flushes line by line paid a 5,000-line rebuild and a full repaint per line.
+  Measured at 2.293 ms per write against 0.018 ms once trimming cuts to a low
+  watermark instead, a 127x difference, with the hard cap unchanged. This
+  reproduced the slowdown the cap was added to prevent.
+- Releasing a terminal now always drops it from the terminal registry. The
+  cleanup added in 0.6.34 sat behind a lookup that resolves the widget through
+  the transcript, and the transcript is pruned — a command that produced no
+  visible output has no widget left to find — so the entry and its parsed
+  scrollback still leaked in exactly the long-session case the cleanup was
+  written for. An already-released terminal leaked the same way.
+- Buffered agent log lines are no longer discarded when a flush runs after the
+  agent's message target has gone; they are left for a later flush.
+
 ## [0.6.34] - 2026-08-27
 
 ### Fixed

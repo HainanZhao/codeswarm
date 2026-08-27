@@ -3,7 +3,13 @@ import contextlib
 import io
 import unittest
 
-from codeswarm.ansi._ansi import ANSIStream, Buffer, TerminalState
+from codeswarm.ansi._ansi import (
+    MAX_SCROLLBACK_LINES,
+    SCROLLBACK_TRIM_SLACK,
+    ANSIStream,
+    Buffer,
+    TerminalState,
+)
 
 
 class ANSIStreamTests(unittest.TestCase):
@@ -160,6 +166,64 @@ class ScrollbackBufferTests(unittest.TestCase):
             self.assertGreaterEqual(buffer.cursor_line, 0)
             self.assertLessEqual(buffer.cursor_line, len(buffer.folded_lines))
             self.assert_indices_consistent(buffer)
+
+        asyncio.run(scenario())
+
+
+class ScrollbackTrimCostTests(unittest.TestCase):
+    """Trimming rebuilds the whole fold index, so it has to stay rare.
+
+    Cutting back to exactly the cap means every subsequent write is over the
+    cap again, so a command that flushes line by line — any compiler or test
+    runner — pays an O(lines) rebuild and a full repaint per line. That is the
+    same slowdown the cap exists to prevent.
+    """
+
+    def test_trimming_is_amortised_not_per_write(self) -> None:
+        async def scenario() -> None:
+            state = TerminalState(_noop_stdin)
+            state.update_size(100, 24)
+            await state.write(
+                "".join(
+                    f"line {n:06d}\r\n"
+                    for n in range(MAX_SCROLLBACK_LINES + 50)
+                )
+            )
+
+            writes = SCROLLBACK_TRIM_SLACK // 2
+            trims = 0
+            for index in range(writes):
+                await state.write(f"streamed {index}\r\n")
+                if state.trim_scrollback():
+                    trims += 1
+
+            # One rebuild for this many lines, not one per line.
+            self.assertLessEqual(
+                trims,
+                2,
+                f"{trims} rebuilds over {writes} writes: trimming is not "
+                "amortised, so a line-at-a-time command pays it every line",
+            )
+
+        asyncio.run(scenario())
+
+    def test_the_hard_cap_still_holds(self) -> None:
+        async def scenario() -> None:
+            state = TerminalState(_noop_stdin)
+            state.update_size(100, 24)
+            await state.write(
+                "".join(
+                    f"line {n:06d}\r\n"
+                    for n in range(MAX_SCROLLBACK_LINES * 3)
+                )
+            )
+            for index in range(200):
+                await state.write(f"more {index}\r\n")
+                state.trim_scrollback()
+
+            buffer = state.scrollback_buffer
+            self.assertLessEqual(len(buffer.lines), MAX_SCROLLBACK_LINES)
+            self.assertIn("more 199", buffer.lines[-1].content.plain)
 
         asyncio.run(scenario())
 
