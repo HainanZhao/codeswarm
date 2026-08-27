@@ -52,6 +52,11 @@ class ChangeMode(Message):
 
 
 @dataclass
+class ChangeCollaborationMode(Message):
+    mode: Literal["roster", "manual", "pair"]
+
+
+@dataclass
 class Flash(Message):
     """Request a message flash.
 

@@ -696,7 +696,8 @@ Prompt {
 }
 
 
-ModeInfo:hover {
+ModeInfo:hover,
+CollaborationInfo:hover {
     text-style: underline;
     pointer: pointer;
 }
@@ -705,7 +706,8 @@ CollaborationInfo {
     color: $text-primary;
 }
 
-ModeSwitcher {
+ModeSwitcher,
+CollaborationSwitcher {
 
     max-height: 50vh;
         

@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   high-contrast rails while retaining the teal terminal foundation.
 - Redesigned Markdown reply content with vivid treatments for code, quotes,
   links, tables, headings, and source file references.
+- Made the collaboration label clickable, opening a Roster, Manual, and Pair
+  routing selector beside the prompt.
 - Aligned batch completion labels with agent message headers.
 
 ### Fixed

@@ -1043,6 +1043,12 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             self._set_discussion_mode("off")
         await self.set_mode(event.mode_id)
 
+    @on(messages.ChangeCollaborationMode)
+    def on_change_collaboration_mode(
+        self, event: messages.ChangeCollaborationMode
+    ) -> None:
+        self._set_collaboration_mode(event.mode)
+
     @on(acp_messages.ModeUpdate)
     async def on_mode_update(self, event: acp_messages.ModeUpdate) -> None:
         agent = event.agent or self._mode_agent

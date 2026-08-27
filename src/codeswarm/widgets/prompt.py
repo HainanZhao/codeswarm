@@ -50,6 +50,40 @@ class ModeSwitcher(OptionList):
         self.blur()
 
 
+class CollaborationSwitcher(OptionList):
+    """Compact picker for CodeSwarm's collaboration routing strategy."""
+
+    BINDING_GROUP_TITLE = "Collaboration switcher"
+    BINDINGS = [Binding("escape", "dismiss", "Dismiss collaboration switcher")]
+
+    def __init__(self) -> None:
+        super().__init__(
+            Option(
+                Content.assemble(("Roster", "bold"), (" · Sequential relay", "dim")),
+                id="roster",
+            ),
+            Option(
+                Content.assemble(("Manual", "bold"), (" · Pinned agent", "dim")),
+                id="manual",
+            ),
+            Option(
+                Content.assemble(("Pair", "bold"), (" · Doer → verifier", "dim")),
+                id="pair",
+            ),
+            id="collaboration-switcher",
+            compact=True,
+        )
+
+    @on(OptionList.OptionSelected)
+    def on_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_id in {"roster", "manual", "pair"}:
+            self.post_message(messages.ChangeCollaborationMode(event.option_id))
+        self.blur()
+
+    def action_dismiss(self) -> None:
+        self.blur()
+
+
 class InvokeFileSearch(Message):
     pass
 
@@ -366,6 +400,7 @@ class Prompt(containers.VerticalGroup):
     slash_complete = getters.query_one(SlashComplete)
     question = getters.query_one(Question)
     mode_switcher = getters.query_one(ModeSwitcher)
+    collaboration_switcher = getters.query_one(CollaborationSwitcher)
 
     slash_commands: var[list[SlashCommand]] = var(list)
     multi_line = var(False)
@@ -428,7 +463,10 @@ class Prompt(containers.VerticalGroup):
     def watch_collaboration_mode(self, mode: str) -> None:
         info = self.query_one_optional(CollaborationInfo)
         if info is not None:
-            info.update(mode)
+            info.with_tooltip("Click to choose collaboration routing").update(mode)
+        switcher = self.query_one_optional(CollaborationSwitcher)
+        if switcher is not None:
+            switcher.highlighted = switcher.get_option_index(mode.lower())
 
     async def watch_project_path(self, old_path: Path, new_path: Path) -> None:
         """Refresh an already-opened file index after a project switch."""
@@ -449,6 +487,11 @@ class Prompt(containers.VerticalGroup):
     @on(events.Click, "ModeInfo")
     def on_click(self):
         self.mode_switcher.focus()
+
+    @on(events.Click, "CollaborationInfo")
+    def on_click_collaboration_info(self, event: events.Click) -> None:
+        self.collaboration_switcher.focus()
+        event.stop()
 
     @on(events.Click, "AgentInfo")
     def on_click_agent_info(self, event: events.Click) -> None:
@@ -690,6 +733,7 @@ class Prompt(containers.VerticalGroup):
             yield CondensedPath().data_bind(path=Prompt.working_directory)
             yield StatusLine(markup=False).data_bind(status=Prompt.status)
             yield ModeSwitcher()
+            yield CollaborationSwitcher()
             yield CollaborationInfo("Roster")
             yield ModeInfo("mode")
 

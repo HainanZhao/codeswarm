@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from textual.color import Color
-from textual.widgets import Label
+from textual.widgets import Label, OptionList
 from textual.widgets._markdown import (
     MarkdownBlockQuote,
     MarkdownFence,
@@ -2857,6 +2857,61 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             1,
                         )
                         self.assertIn("⌖ Gemini", conversation.agent_info.plain)
+
+        asyncio.run(scenario())
+
+    def test_clicking_collaboration_label_opens_picker_and_selects_mode(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(120, 40)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                claude = _RosterAgent("Claude")
+                gemini = _RosterAgent("Gemini")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.ai",
+                            name="Claude",
+                            short_name="claude",
+                        ),
+                        claude,  # type: ignore[arg-type]
+                    ),
+                    RosterEntry(
+                        AgentData(
+                            identity="gemini.google.com",
+                            name="Gemini",
+                            short_name="gemini",
+                        ),
+                        gemini,  # type: ignore[arg-type]
+                    ),
+                ]
+                conversation.session._build_relay(
+                    on_turn_start=None, on_turn=None
+                )
+
+                await pilot.click(CollaborationInfo)
+                picker = pilot.app.screen.query_one_optional(
+                    "#collaboration-switcher", OptionList
+                )
+
+                self.assertIsNotNone(picker)
+                assert picker is not None
+                self.assertTrue(picker.has_focus)
+                self.assertEqual(
+                    picker.highlighted,
+                    picker.get_option_index("roster"),
+                )
+
+                await pilot.press("down", "enter")
+                await pilot.pause()
+
+                self.assertEqual(conversation.session.collaboration_mode, "manual")
+                self.assertEqual(
+                    pilot.app.screen.query_one(CollaborationInfo).render().plain,
+                    "Manual",
+                )
+                self.assertFalse(picker.has_focus)
 
         asyncio.run(scenario())
 

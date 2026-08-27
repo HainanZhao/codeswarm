@@ -162,6 +162,9 @@ Use `/collab pair` for the doer→verifier pattern. Each new user batch starts
 with the first roster agent as the doer, then follows the normal relay to the
 verifier; the next batch starts over with that first agent.
 
+Click the collaboration label beside the prompt—`Roster`, `Manual`, or
+`Pair`—to open the same routing selector without typing a command.
+
 ## Control the Relay
 
 | Action | Control |
