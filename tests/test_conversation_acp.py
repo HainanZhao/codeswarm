@@ -2233,7 +2233,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_agent_message_body_uses_neutral_typographic_hierarchy(self) -> None:
+    def test_agent_message_content_uses_a_vivid_format_palette(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
@@ -2258,7 +2258,8 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         conversation.begin_agent_output(agent)  # type: ignore[arg-type]
 
                         response = await conversation.post_agent_response(
-                            "# Heading\n\nBody with `codeswarm`.\n\n"
+                            "# Heading\n\nBody with `codeswarm`, "
+                            "src/codeswarm/app.py, and [the docs](https://example.com/docs).\n\n"
                             "> Quoted detail\n\n---\n\n"
                             "```python\nvalue = 'accent-free'\n```\n\n"
                             "| Name | Value |\n| --- | --- |\n| mode | normal |"
@@ -2293,8 +2294,40 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             inline_background.green,
                             inline_background.blue,
                         )
-                        self.assertEqual(inline_rgb, (156, 220, 254))
-                        self.assertEqual(inline_background_rgb, (37, 37, 38))
+                        self.assertEqual(inline_rgb, Color.parse("#7DD3FC").rgb)
+                        self.assertEqual(
+                            inline_background_rgb, Color.parse("#0B2233").rgb
+                        )
+                        file_reference = paragraph.get_component_rich_style(
+                            "file_reference"
+                        )
+                        self.assertEqual(
+                            (
+                                file_reference.color.get_truecolor().red,
+                                file_reference.color.get_truecolor().green,
+                                file_reference.color.get_truecolor().blue,
+                            ),
+                            Color.parse("#F0ABFC").rgb,
+                        )
+                        self.assertEqual(
+                            (
+                                file_reference.bgcolor.get_truecolor().red,
+                                file_reference.bgcolor.get_truecolor().green,
+                                file_reference.bgcolor.get_truecolor().blue,
+                            ),
+                            Color.parse("#2D1B3B").rgb,
+                        )
+                        self.assertTrue(
+                            any(
+                                span.style == ".file_reference"
+                                for span in paragraph._content.spans
+                            )
+                        )
+                        self.assertEqual(
+                            paragraph.styles.link_color.rgb,
+                            Color.parse("#67E8F9").rgb,
+                        )
+                        self.assertTrue(paragraph.styles.link_style.underline)
                         format_colors = {
                             "inline code": inline_rgb,
                             "heading": heading.styles.color.rgb,
@@ -2303,36 +2336,39 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             "table": table.styles.color.rgb,
                         }
 
-                        self.assertEqual(fence.styles.color.rgb, (184, 199, 217))
+                        self.assertEqual(
+                            fence.styles.color.rgb, Color.parse("#C4D7ED").rgb
+                        )
+                        self.assertEqual(
+                            fence.styles.background.rgb,
+                            Color.parse("#0D1B2A").rgb,
+                        )
                         self.assertEqual(
                             table_header.styles.color.rgb,
-                            Color.parse("#E8C98A").rgb,
+                            Color.parse("#FBBF24").rgb,
                         )
                         for format_name, color in format_colors.items():
                             with self.subTest(format=format_name):
                                 self.assertNotEqual(color, body_color.rgb)
-                        self.assertGreater(
-                            sum(heading.styles.color.rgb), sum(body_color.rgb)
+                        self.assertEqual(
+                            heading.styles.color.rgb,
+                            Color.parse("#FDE68A").rgb,
                         )
                         self.assertLess(sum(fence.styles.color.rgb), sum(body_color.rgb))
                         self.assertLess(
                             sum(inline_background_rgb), sum(inline_rgb)
                         )
-                        self.assertLessEqual(
-                            max(inline_background_rgb) - min(inline_background_rgb), 10
-                        )
+                        self.assertNotEqual(inline_background_rgb[0], inline_background_rgb[1])
                         self.assertEqual(heading.styles.background.a, 0)
                         self.assertFalse(fence._content.spans)
 
                         self.assertNotEqual(
                             quote.styles.border_left[1].rgb, body_color.rgb
                         )
-                        self.assertEqual(
-                            quote.styles.color.rgb, Color.parse("#B7D8D5").rgb
-                        )
+                        self.assertEqual(quote.styles.color.rgb, Color.parse("#A7F3D0").rgb)
                         self.assertEqual(
                             quote.styles.border_left[1].rgb,
-                            Color.parse("#5EEAD4").rgb,
+                            Color.parse("#2DD4BF").rgb,
                         )
                         self.assertEqual(
                             response.parent.styles.border_left[1].rgb,

@@ -148,6 +148,11 @@ Conversation {
         padding: 0;
         color: #E3E6EA;
         background: transparent;
+        link-color: $content-link;
+        link-style: underline;
+        link-color-hover: $content-link-hover;
+        link-background-hover: $content-link-hover-background;
+        link-style-hover: bold;
 
         &:light {
             color: #202326;
@@ -157,6 +162,15 @@ Conversation {
         layout: stream;
         & > MarkdownBlock:last-child {            
             margin-bottom: 0;
+        }
+
+        MarkdownBlock,
+        MarkdownTableCellContents {
+            link-color: $content-link;
+            link-style: underline;
+            link-color-hover: $content-link-hover;
+            link-background-hover: $content-link-hover-background;
+            link-style-hover: bold;
         }
 
         MarkdownParagraph,
@@ -172,19 +186,27 @@ Conversation {
             margin: 0;
 
             &:dark > .code_inline {
-                background: #252526;
-                color: #9CDCFE;
+                background: $content-code-background;
+                color: $content-code-foreground;
+                text-style: bold;
             }
 
             &:light > .code_inline {
                 background: #F3F3F3;
                 color: #0550AE;
             }
+
+            & > .file_reference {
+                background: $content-file-background;
+                color: $content-file-foreground;
+                text-style: bold;
+            }
         }
 
         MarkdownHeader {
-            color: #F5F7FA;
+            color: $content-heading;
             background: transparent;
+            text-style: bold;
 
             &:light {
                 color: #111827;
@@ -192,15 +214,24 @@ Conversation {
         }
 
         MarkdownFence {
-            color: #B8C7D9;
+            color: $content-code-fence-foreground;
+            background: $content-code-fence-background;
+            border-left: solid $accent 70%;
+            padding: 0 1;
+            margin: 0;
 
             &:light {
                 color: #465A6E;
+                background: #F3F6FA;
+                border-left: solid #0F766E 70%;
             }
         }
 
         MarkdownTable {
-            color: #D8DADC;
+            color: $content-table-foreground;
+            background: $content-table-background;
+            padding: 0 1;
+            margin: 0;
 
             &:light {
                 color: #2D3033;
@@ -208,7 +239,9 @@ Conversation {
         }
 
         MarkdownTableContent > .header {
-            color: #E8C98A;
+            color: $content-table-header;
+            background: #1D3040;
+            text-style: bold;
         }
 
         MarkdownTableContent:light > .header {
@@ -216,8 +249,11 @@ Conversation {
         }
 
         MarkdownBlockQuote {
-            color: #B7D8D5;
-            border-left: solid #5EEAD4;
+            color: $content-quote-foreground;
+            background: $content-quote-background;
+            border-left: solid $primary 80%;
+            padding: 0 1;
+            margin: 0;
 
             &:light {
                 color: #315E5A;
