@@ -210,10 +210,22 @@ class AgyAgent(AgentBase):
 
         if result is None or result.get("status") != "SUCCESS":
             details = str(result.get("error") if result else stderr.strip())
-            self.post_message(AgentFail("Antigravity did not complete the turn", details))
+            self.post_message(
+                AgentFail(
+                    "Antigravity did not complete the turn",
+                    details,
+                    help="crashed",
+                )
+            )
             return "cancelled"
         if exit_code != 0:
-            self.post_message(AgentFail("Antigravity exited with an error", stderr.strip()))
+            self.post_message(
+                AgentFail(
+                    "Antigravity exited with an error",
+                    stderr.strip(),
+                    help="crashed",
+                )
+            )
             return "cancelled"
 
         response = result.get("response")

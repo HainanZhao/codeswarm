@@ -23,6 +23,15 @@
   code path so the common single-agent case is untouched.
 - Roster index 0 is the session owner: it holds the session's DB row and
   title, and cannot be dropped (`/close` instead).
+- A failed adapter is tombstoned immediately so nothing can be dispatched to
+  a dead process, and the user is then offered a reload. Reloading puts a
+  fresh adapter in the same roster slot, reuses the session id only when the
+  dead adapter advertised session loading, and rewinds that slot's
+  shared-context watermark so its next turn replays the conversation it
+  missed. Declining leaves the agent dropped for the rest of the session.
+  Failures that happen after start-up carry `help="crashed"`; the default
+  `help="fail"` text is about installing the agent and must not be shown for
+  an adapter that started and then stopped.
 - Each agent receives the ordered public human and agent-message updates it has
   not seen since its previous turn. Only streamed message text enters this
   journal; tool calls, thoughts, terminal output, and UI history stay local.

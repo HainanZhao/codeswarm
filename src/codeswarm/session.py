@@ -411,6 +411,89 @@ class SessionCoordinator:
             return replacement
         return None
 
+    async def reload_agent(
+        self,
+        failed_agent: AgentBase | None,
+        message_target: MessagePump,
+    ) -> AgentBase | None:
+        """Replace a failed adapter in place, keeping its roster index.
+
+        A crash used to be terminal: the entry was tombstoned and whatever the
+        agent had been doing was gone. The replacement instead takes over the
+        same slot, so peers keep their indices and the conversation keeps its
+        colour and mode state.
+
+        Context is restored two ways. The session id is reused when the dead
+        adapter advertised session loading, which restores the agent's own
+        history; and the shared-context watermark is rewound either way, so
+        the next turn replays the public conversation the slot missed. Without
+        the second part a reloaded agent returns with no idea what it had been
+        working on.
+
+        Returns:
+            The replacement, or `None` if the slot could not be reloaded.
+        """
+        if failed_agent is None:
+            return None
+        for index, entry in enumerate(self.roster):
+            if entry.agent is not failed_agent:
+                continue
+            # Only resume when the dead adapter said it could: handing a
+            # session id to an adapter that cannot load one fails the
+            # replacement outright, turning a reload into a second crash.
+            session_id: str | None = None
+            if getattr(failed_agent, "supports_load_session", False):
+                session_id = cast(
+                    str | None, getattr(failed_agent, "session_id", None)
+                )
+                if index == 0 and session_id is None:
+                    session_id = self.session_id
+            full_access = bool(getattr(failed_agent, "startup_full_access", False))
+
+            try:
+                await cast(StoppableAgent, failed_agent).stop()
+            except Exception:
+                # A process that will not die must not gain a second instance.
+                return None
+
+            replacement = self._agent_factory(
+                self.project_root,
+                entry.data,
+                session_id,
+                self.session_pk if index == 0 else None,
+                persist=index == 0,
+            )
+            if full_access and replacement.supports_startup_full_access:
+                replacement.configure_startup_full_access(True)
+            try:
+                await replacement.start(message_target)
+            except Exception:
+                await asyncio.gather(replacement.stop(), return_exceptions=True)
+                return None
+
+            entry.agent = replacement
+            entry.active = True
+            if self.relay is not None:
+                self.relay.agents[index] = cast(AgentLike, replacement)
+                self.relay.active[index] = True
+            self.replay_shared_context(index)
+            self._introduce_roster()
+            return replacement
+        return None
+
+    def replay_shared_context(self, index: int) -> None:
+        """Make one roster slot's next turn replay what it missed.
+
+        Rewinding the watermark also stops the journal being pruned past the
+        replay: pruning keeps only what every active slot has already seen.
+        """
+        context = self._collaboration_context
+        if context is None:
+            return
+        if not 0 <= index < len(context.seen_event_count):
+            return
+        context.seen_event_count[index] = 0
+
     async def restart_for_startup_full_access(
         self,
         agent: AgentBase,
@@ -516,6 +599,17 @@ class SessionCoordinator:
         if self.relay is None:
             raise IndexError("no relay is active")
         return cast(AgentBase, self.relay.agents[index])
+
+    def index_of_agent_slot(self, agent: AgentBase) -> int | None:
+        """Return an agent's roster index whether or not it is still active.
+
+        A failed agent is tombstoned before the user is offered a reload, so
+        the active-only lookup cannot find the slot to put one back into.
+        """
+        for index, entry in enumerate(self.roster):
+            if entry.agent is agent:
+                return index
+        return None
 
     def index_of_agent(self, agent: AgentBase) -> int | None:
         """Return an agent's stable roster index, if it is active."""

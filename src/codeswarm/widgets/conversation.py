@@ -40,6 +40,7 @@ from codeswarm.acp.agent import Mode
 from codeswarm.acp.relay import DEFAULT_STOP_ACKNOWLEDGMENT, STOP_TOKEN, RelayResult
 from codeswarm.app import CodeSwarmApp
 from codeswarm.agent import AgentBase, AgentReady, AgentFail
+from codeswarm.answer import Answer
 from codeswarm.session import SessionCoordinator
 from codeswarm.widgets.conversation_acp import ConversationACPHandlers
 from codeswarm.format_path import format_path
@@ -76,6 +77,16 @@ Check that the agent is installed and up-to-date.
 
 Some agents require an ACP adapter. Install or update the agent according to
 its upstream documentation, then restart CodeSwarm.
+""",
+    "crashed": """\
+## Agent stopped mid-task
+
+The agent started normally and then stopped before finishing its turn. This
+is usually a crash or a dropped stream rather than a broken installation.
+
+Reloading puts a fresh adapter in the same roster slot and replays the
+conversation so far, so the work continues. Continuing without it drops the
+agent for the rest of the session.
 """,
     "no_resume": """\
 ## Agent does not support resume
@@ -1004,7 +1015,16 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         self.update_slash_commands()
         if failed_index is not None:
             await self._persist_roster()
-        self.notify(message.message, title="Agent failure", severity="error", timeout=5)
+        # A Flash ribbon, not a Toast: AGENTS.md reserves Toasts for screens
+        # before the conversation prompt exists. The Note below already
+        # carries the detail, so this stays a one-line marker.
+        #
+        # Assembled rather than interpolated: an adapter's error text is
+        # arbitrary and must never be parsed as markup.
+        self.flash(
+            Content.assemble("COMMS LOST // ", message.message),
+            style="error",
+        )
 
         if message.message:
             error = Content.assemble(
@@ -1024,6 +1044,65 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             help = AGENT_FAIL_HELP["fail"]
 
         await self.post(MarkdownNote(help, classes="-error"))
+
+        self._offer_agent_reload(message.agent, message.message)
+
+    def _offer_agent_reload(
+        self, failed_agent: AgentBase | None, reason: str
+    ) -> None:
+        """Let the user reload a crashed adapter instead of losing its work.
+
+        The slot is already tombstoned by the time this runs, so nothing can
+        be dispatched to the dead process while the question is open. Choosing
+        to reload puts a fresh adapter back in the same slot; declining leaves
+        the conversation exactly as a failure used to leave it.
+        """
+        if failed_agent is None or self._shutdown:
+            return
+        if self.session.index_of_agent_slot(failed_agent) is None:
+            return
+        name = self._agent_display_name(failed_agent)
+        options = [
+            Answer(f"Reload {name} and continue", "reload"),
+            Answer(f"Continue without {name}", "drop"),
+        ]
+
+        def answered(answer: Answer) -> None:
+            if answer.id == "reload":
+                self.reload_failed_agent(failed_agent)
+
+        # Short, and it does not repeat the reason: the note directly above
+        # already states it, and both options name the agent.
+        del reason
+        self.ask(options, f"Reload {name}?", None, answered)
+
+    @work(group="agent-reload")
+    async def reload_failed_agent(self, failed_agent: AgentBase) -> None:
+        """Put a fresh adapter back into a crashed agent's roster slot."""
+        name = self._agent_display_name(failed_agent)
+        self.flash(f"REACQUIRING LINK // {name}", style="warning")
+        try:
+            replacement = await self.session.reload_agent(failed_agent, self)
+        except Exception as error:
+            await self._post_agent_communication_error(error)
+            replacement = None
+        if replacement is None:
+            self.flash(f"RELOAD FAILED // {name}", style="error")
+            await self.post(
+                Note(
+                    Content.assemble(
+                        (f"{name} could not be reloaded", "$text-error"),
+                        " — ",
+                        ("the conversation continues without it", "dim"),
+                    ),
+                    classes="-error",
+                )
+            )
+            return
+        self._adopt_mode_replacement(failed_agent, replacement)
+        self._move_relay_queue_to_solo_agent()
+        self.update_slash_commands()
+        await self._persist_roster()
 
     @on(messages.WorkStarted)
     def on_work_started(self) -> None:

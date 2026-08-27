@@ -1065,6 +1065,7 @@ class Agent(AgentBase):
                 AgentFail(
                     "Agent sent an oversized protocol message",
                     details=str(error),
+                    help="crashed",
                 )
             )
             if process.returncode is None:
@@ -1123,6 +1124,9 @@ class Agent(AgentBase):
                 AgentFail(
                     summary,
                     details=exit_details,
+                    # The process ran and then exited: telling the user to
+                    # check the installation would be actively misleading.
+                    help="crashed",
                 )
             )
 

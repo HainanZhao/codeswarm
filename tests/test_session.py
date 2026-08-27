@@ -527,6 +527,155 @@ class SessionCoordinatorTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_reload_replaces_a_failed_agent_in_its_own_slot(self) -> None:
+        """A crash must not cost the slot, the peers' indices, or the context."""
+
+        async def scenario() -> None:
+            owner = agent_data("claude.ai", "Claude", "claude")
+            peers = (
+                agent_data("openai.com", "Codex", "codex"),
+                agent_data("geminicli.com", "Gemini", "gemini"),
+            )
+            built: list[FakeAgent] = []
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                agent = FakeAgent(project_root, data["name"])
+                agent.requested_session_id = session_id  # type: ignore[attr-defined]
+                built.append(agent)
+                return agent
+
+            coordinator = SessionCoordinator(
+                Path("."), owner, peers=peers, agent_factory=factory
+            )
+            await coordinator.start(object())
+            relay = coordinator.relay
+            assert relay is not None
+            failed = coordinator.roster[1].agent
+            assert failed is not None
+
+            # The slot is tombstoned first, exactly as a failure leaves it.
+            self.assertEqual(coordinator.mark_failed(failed), 1)
+            self.assertFalse(coordinator.roster[1].active)
+            self.assertIsNone(coordinator.index_of_agent(failed))
+            # ...but the slot is still findable, or there is nowhere to reload.
+            self.assertEqual(coordinator.index_of_agent_slot(failed), 1)
+
+            replacement = await coordinator.reload_agent(failed, object())
+
+            self.assertIsNotNone(replacement)
+            self.assertIsNot(replacement, failed)
+            self.assertTrue(failed.stopped)
+            # Same slot: peers keep their indices and their colours.
+            self.assertIs(coordinator.roster[1].agent, replacement)
+            self.assertTrue(coordinator.roster[1].active)
+            self.assertIs(relay.agents[1], replacement)
+            self.assertTrue(relay.active[1])
+            self.assertEqual(coordinator.roster[0].data["name"], "Claude")
+            self.assertEqual(coordinator.roster[2].data["name"], "Gemini")
+            # And it is told who it is working with again.
+            assert replacement is not None
+            self.assertTrue(replacement.roster_introductions)
+
+        asyncio.run(scenario())
+
+    def test_reload_replays_the_context_the_slot_missed(self) -> None:
+        """Otherwise the reloaded agent returns with no idea of the task."""
+
+        async def scenario() -> None:
+            owner = agent_data("claude.ai", "Claude", "claude")
+            peer = agent_data("openai.com", "Codex", "codex")
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                return FakeAgent(project_root, data["name"])
+
+            coordinator = SessionCoordinator(
+                Path("."), owner, peers=(peer,), agent_factory=factory
+            )
+            await coordinator.start(object())
+            relay = coordinator.relay
+            assert relay is not None
+            context = relay.context
+
+            # Both agents have caught up on a conversation so far.
+            context.shared_task = "port the parser"
+            context.record_event("Human", "start with the lexer", relay.active)
+            context.record_event("Claude", "lexer done", relay.active)
+            context.seen_event_count[0] = len(context.public_events)
+            context.seen_event_count[1] = len(context.public_events)
+
+            failed = coordinator.roster[1].agent
+            assert failed is not None
+            coordinator.mark_failed(failed)
+            replacement = await coordinator.reload_agent(failed, object())
+            self.assertIsNotNone(replacement)
+
+            # The reloaded slot is rewound, so its next turn replays the
+            # conversation; its healthy peer is left alone.
+            self.assertEqual(context.seen_event_count[1], 0)
+            self.assertEqual(
+                context.seen_event_count[0], len(context.public_events)
+            )
+            replay = context.unseen_updates(1, excluding=None)
+            self.assertIn("start with the lexer", replay)
+            self.assertIn("lexer done", replay)
+            # The shared task survives, so the turn prompt still states it.
+            self.assertEqual(context.shared_task, "port the parser")
+
+        asyncio.run(scenario())
+
+    def test_reload_only_resumes_a_session_the_adapter_can_load(self) -> None:
+        """Handing a session id to an adapter that cannot load one re-crashes it."""
+
+        async def scenario() -> None:
+            owner = agent_data("claude.ai", "Claude", "claude")
+            peer = agent_data("openai.com", "Codex", "codex")
+            requested: list[str | None] = []
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                requested.append(session_id)
+                return FakeAgent(project_root, data["name"])
+
+            for supports_load, expected in ((False, None), (True, "session-7")):
+                with self.subTest(supports_load_session=supports_load):
+                    requested.clear()
+                    coordinator = SessionCoordinator(
+                        Path("."), owner, peers=(peer,), agent_factory=factory
+                    )
+                    await coordinator.start(object())
+                    failed = coordinator.roster[1].agent
+                    assert failed is not None
+                    failed.session_id = "session-7"  # type: ignore[attr-defined]
+                    failed.supports_load_session = supports_load  # type: ignore[attr-defined]
+
+                    coordinator.mark_failed(failed)
+                    self.assertIsNotNone(
+                        await coordinator.reload_agent(failed, object())
+                    )
+                    self.assertEqual(requested[-1], expected)
+
+        asyncio.run(scenario())
+
     def test_queued_message_follows_an_explicit_selection(self) -> None:
         """A queued message goes to the selected agent, not the working one.
 

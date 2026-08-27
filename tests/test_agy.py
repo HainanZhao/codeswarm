@@ -156,6 +156,38 @@ class AgyAgentTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_interrupted_turn_is_not_reported_as_a_startup_failure(self) -> None:
+        """A crash mid-turn must not tell the user to reinstall the agent.
+
+        The default help text is about installing the agent and its ACP
+        adapter, which is actively misleading for an adapter that started
+        fine and then dropped its stream.
+        """
+
+        async def scenario() -> None:
+            agent = self.make_agent()
+            target = _MessageTarget()
+            # A process that exits without ever sending a result: the stream
+            # broke part way through the turn.
+            process = _Process([])
+
+            with patch(
+                "codeswarm.agy.asyncio.create_subprocess_exec",
+                return_value=process,
+            ):
+                await agent.start(target)  # type: ignore[arg-type]
+                await agent.send_prompt("Port the parser")
+
+            failures = [
+                message
+                for message in target.messages
+                if isinstance(message, AgentFail)
+            ]
+            self.assertTrue(failures, "the interrupted turn should be reported")
+            self.assertEqual(failures[-1].help, "crashed")
+
+        asyncio.run(scenario())
+
     def test_malformed_stream_event_does_not_prevent_final_result(self) -> None:
         async def scenario() -> None:
             agent = self.make_agent()

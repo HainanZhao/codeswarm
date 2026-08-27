@@ -27,7 +27,7 @@ from codeswarm.agent import AgentFail, AgentReady
 from codeswarm.agent_schema import Agent as AgentData
 from codeswarm.app import CodeSwarmApp
 from codeswarm import messages
-from codeswarm.session import RosterEntry
+from codeswarm.session import RosterEntry, SessionCoordinator
 from codeswarm.slash_command import SlashCommand
 from codeswarm.widgets.conversation import AGENT_FAIL_HELP, Conversation
 from codeswarm.widgets.agent_response import (
@@ -1030,6 +1030,110 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertNotIn(
                             "pruned-terminal", conversation.terminals
                         )
+
+        asyncio.run(scenario())
+
+    def test_agent_failure_offers_a_reload_before_losing_the_work(self) -> None:
+        """A crash used to be terminal; the user gets a choice instead."""
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        agents = [_RosterAgent("Claude"), _RosterAgent("Gemini")]
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity=f"agent-{index}.test",
+                                    name=agent.name,
+                                    short_name=f"agent-{index}",
+                                ),
+                                agent,  # type: ignore[arg-type]
+                            )
+                            for index, agent in enumerate(agents)
+                        ]
+                        asked: list[tuple[str, list[str]]] = []
+
+                        def record_ask(options, title="", get_content=None, callback=None):
+                            asked.append((title, [option.id for option in options]))
+
+                        with patch.object(
+                            Conversation, "ask", side_effect=record_ask
+                        ):
+                            conversation.post_message(
+                                AgentFail(
+                                    "Antigravity did not complete the turn",
+                                    details="The stream was interrupted.",
+                                    agent=agents[1],  # type: ignore[arg-type]
+                                )
+                            )
+                            await pilot.pause(0.3)
+
+                        self.assertEqual(len(asked), 1)
+                        title, option_ids = asked[0]
+                        self.assertIn("Gemini", title)
+                        self.assertEqual(option_ids, ["reload", "drop"])
+                        # The slot is tombstoned while the question is open, so
+                        # nothing can be dispatched to the dead process...
+                        self.assertFalse(conversation.session.roster[1].active)
+                        # ...but it is still reloadable.
+                        self.assertEqual(
+                            conversation.session.index_of_agent_slot(agents[1]),  # type: ignore[arg-type]
+                            1,
+                        )
+
+        asyncio.run(scenario())
+
+    def test_declining_a_reload_leaves_the_agent_dropped(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        agents = [_RosterAgent("Claude"), _RosterAgent("Gemini")]
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity=f"agent-{index}.test",
+                                    name=agent.name,
+                                    short_name=f"agent-{index}",
+                                ),
+                                agent,  # type: ignore[arg-type]
+                            )
+                            for index, agent in enumerate(agents)
+                        ]
+                        callbacks: list = []
+
+                        def record_ask(options, title="", get_content=None, callback=None):
+                            callbacks.append(callback)
+
+                        with patch.object(
+                            Conversation, "ask", side_effect=record_ask
+                        ), patch.object(
+                            SessionCoordinator, "reload_agent"
+                        ) as reload_agent:
+                            conversation.post_message(
+                                AgentFail("crashed", agent=agents[1])  # type: ignore[arg-type]
+                            )
+                            await pilot.pause(0.3)
+                            self.assertTrue(callbacks)
+                            callbacks[0](Answer("Continue without Gemini", "drop"))
+                            await pilot.pause(0.3)
+
+                            reload_agent.assert_not_called()
+
+                        self.assertFalse(conversation.session.roster[1].active)
 
         asyncio.run(scenario())
 

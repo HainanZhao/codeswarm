@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.36] - 2026-08-27
+
+### Added
+
+- A crashed agent can now be reloaded instead of being dropped. CodeSwarm
+  offers a choice — reload and continue, or continue without it — and the
+  replacement takes over the same roster slot, so peers keep their positions
+  and colours. The session is resumed when the adapter supports loading one,
+  and the agent's shared-context watermark is rewound either way, so its next
+  turn replays the conversation it missed rather than starting blank. A
+  failure previously ended that agent's participation and lost its work.
+
+### Fixed
+
+- A failure that happens after an agent has started no longer shows start-up
+  advice. "The agent failed to start. Check that the agent is installed and
+  up-to-date." was displayed for an adapter that had started normally and then
+  dropped its stream mid-turn, which pointed the user at a reinstall instead of
+  the actual problem. Those failures now explain that the agent stopped
+  mid-task and what reloading does.
+- An agent failure is stated once rather than four times. The error, the
+  start-up help, an operating-system-style toast and the reload prompt all
+  repeated it; the toast also broke the documented rule that in-conversation
+  notifications use the Flash ribbon.
+
 ## [0.6.35] - 2026-08-27
 
 ### Fixed
