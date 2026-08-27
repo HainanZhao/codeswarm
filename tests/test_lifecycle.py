@@ -952,6 +952,55 @@ class AgentLifecycleTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_ctrl_c_finishes_a_stuck_turn_and_dispatches_the_queued_prompt(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        agent = Mock()
+                        agent.get_info.return_value = "Claude"
+                        conversation.agent = agent
+                        conversation.agent_ready = True
+                        pilot.app.settings.set("notifications.turn_over", False)
+
+                        first_prompt_started = asyncio.Event()
+                        prompts: list[str] = []
+
+                        async def send_prompt(prompt: str) -> str:
+                            prompts.append(prompt)
+                            if len(prompts) == 1:
+                                first_prompt_started.set()
+                                await asyncio.Event().wait()
+                            return "end_turn"
+
+                        conversation.session.send_prompt = send_prompt  # type: ignore[method-assign]
+                        conversation.session.cancel_active = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+                        await conversation.on_user_input_submitted(
+                            messages.UserInputSubmitted("stuck task")
+                        )
+                        await asyncio.wait_for(first_prompt_started.wait(), timeout=1)
+                        await conversation.on_user_input_submitted(
+                            messages.UserInputSubmitted("queued follow-up")
+                        )
+
+                        await pilot.press("ctrl+c")
+                        await pilot.pause(0.2)
+
+                        self.assertEqual(prompts, ["stuck task", "queued follow-up"])
+                        self.assertEqual(conversation.turn, "client")
+                        self.assertIsNone(conversation._agent_status_timer)
+                        self.assertIsNone(conversation._agent_started_at)
+                        self.assertEqual(conversation.queued_messages, ())
+
+        asyncio.run(scenario())
+
     def test_ctrl_c_copies_selected_conversation_text(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:

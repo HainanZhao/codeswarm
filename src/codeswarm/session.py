@@ -525,7 +525,7 @@ class SessionCoordinator:
         return None
 
     async def send_prompt(
-        self, prompt: str
+        self, prompt: str, *, resume_queued: bool = False
     ) -> RelayResult | str | None:
         if self.relay_active:
             assert self.relay is not None
@@ -537,6 +537,12 @@ class SessionCoordinator:
             elif self.selected_agent_index is not None:
                 self.relay.next_agent_index = self.selected_agent_index
                 self.selected_agent_index = None
+            if resume_queued:
+                return await self.relay.run(
+                    prompt,
+                    first_agent=self.first_agent,
+                    resume_queued=True,
+                )
             return await self.relay.run(prompt, first_agent=self.first_agent)
         if (agent := self.primary_agent) is not None:
             return await agent.send_prompt(prompt)
@@ -552,6 +558,11 @@ class SessionCoordinator:
         if self.relay is not None:
             return self.relay.enqueue_human(prompt)
         return False
+
+    @property
+    def queued_prompt_count(self) -> int:
+        """Number of user prompts waiting behind the active relay turn."""
+        return self.relay.queued_prompt_count if self.relay is not None else 0
 
     def enqueue_direct(self, agent_index: int, prompt: str) -> bool:
         if self.relay is not None:

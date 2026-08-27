@@ -22,6 +22,24 @@ class FakeAgent:
 
 
 class RelayConversationTests(unittest.TestCase):
+    def test_cancelled_run_resumes_queued_human_prompt_without_synthetic_context(self) -> None:
+        async def scenario() -> None:
+            claude = FakeAgent("Claude", [("cancelled", "Handled correction")])
+            gemini = FakeAgent("Gemini", [])
+            relay = RelayConversation((claude, gemini))
+            relay.context.shared_task = "Original task"
+            relay.last_active_index = 0
+            self.assertTrue(relay.enqueue_human("queued correction"))
+
+            result = await relay.run("", resume_queued=True)
+
+            self.assertEqual(result.reason, "cancelled")
+            self.assertIn("queued correction", claude.prompts[0])
+            self.assertNotIn("Human follow-up:\n\n", claude.prompts[0])
+            self.assertEqual(relay.queued_prompt_count, 0)
+
+        asyncio.run(scenario())
+
     def test_failed_first_turn_does_not_commit_a_stale_shared_task(self) -> None:
         async def scenario() -> None:
             class CapacityLimitedAgent(FakeAgent):

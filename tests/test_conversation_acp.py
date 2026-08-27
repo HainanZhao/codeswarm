@@ -3347,6 +3347,100 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_ctrl_c_dispatches_a_queued_relay_prompt_after_a_stuck_turn(self) -> None:
+        class CancellableAgent(_RosterAgent):
+            def __init__(self, name: str, *, stuck: bool = False) -> None:
+                super().__init__(name)
+                self.stuck = stuck
+                self.prompts: list[str] = []
+                self.started = asyncio.Event()
+                self.last_response = ""
+
+            async def send_prompt(self, prompt: str) -> str:
+                self.prompts.append(prompt)
+                if self.stuck and len(self.prompts) == 1:
+                    self.started.set()
+                    await asyncio.Event().wait()
+                self.last_response = "cancelled turn replaced"
+                return "cancelled"
+
+            async def cancel(self) -> bool:
+                return True
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        claude = CancellableAgent("Claude", stuck=True)
+                        gemini = CancellableAgent("Gemini")
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity="claude.com",
+                                    name="Claude",
+                                    short_name="claude",
+                                ),
+                                claude,  # type: ignore[arg-type]
+                            ),
+                            RosterEntry(
+                                AgentData(
+                                    identity="geminicli.com",
+                                    name="Gemini",
+                                    short_name="gemini",
+                                ),
+                                gemini,  # type: ignore[arg-type]
+                            ),
+                        ]
+                        conversation.agent = claude  # type: ignore[assignment]
+                        conversation._ready_agents = {id(claude), id(gemini)}
+                        conversation.agent_ready = True
+                        conversation.session._build_relay(
+                            on_turn_start=conversation._label_relay_turn_start,
+                            on_queued_turn_start=conversation._label_queued_relay_turn_start,
+                            on_queued_turn_discarded=conversation._discard_queued_prompt,
+                            on_turn=conversation._label_relay_turn,
+                        )
+                        pilot.app.settings.set("notifications.turn_over", False)
+
+                        await conversation.on_user_input_submitted(
+                            messages.UserInputSubmitted("stuck relay task")
+                        )
+                        await asyncio.wait_for(claude.started.wait(), timeout=1)
+                        await conversation.on_user_input_submitted(
+                            messages.UserInputSubmitted("queued correction")
+                        )
+
+                        await pilot.press("ctrl+c")
+                        await pilot.pause(0.2)
+
+                        self.assertEqual(len(claude.prompts), 2)
+                        self.assertIn("queued correction", claude.prompts[1])
+                        self.assertEqual(conversation.queued_messages, ())
+                        self.assertEqual(conversation.turn, "client")
+                        self.assertIsNone(conversation._agent_status_timer)
+
+                        gemini.stuck = True
+                        await conversation.on_user_input_submitted(
+                            messages.UserInputSubmitted("another stuck relay turn")
+                        )
+                        await asyncio.wait_for(gemini.started.wait(), timeout=1)
+                        self.assertIsNotNone(conversation._agent_status_timer)
+
+                        await pilot.press("ctrl+c")
+                        await pilot.pause(0.1)
+
+                        self.assertEqual(conversation.turn, "client")
+                        self.assertIsNone(conversation._agent_status_timer)
+                        self.assertIsNone(conversation._agent_started_at)
+
+        asyncio.run(scenario())
+
     def test_cancel_button_removes_a_queued_solo_follow_up(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:

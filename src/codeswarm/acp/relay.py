@@ -267,7 +267,13 @@ class RelayConversation:
                 return candidate
         return index
 
-    async def run(self, prompt: str, first_agent: int = 0) -> RelayResult:
+    async def run(
+        self,
+        prompt: str,
+        first_agent: int = 0,
+        *,
+        resume_queued: bool = False,
+    ) -> RelayResult:
         """Run the initial prompt and relay each response around the roster."""
         if not 0 <= first_agent < len(self.agents):
             raise ValueError("first_agent out of range")
@@ -280,10 +286,16 @@ class RelayConversation:
         if not self.active[current]:
             current = self._advance(current)
         new_shared_task = self.context.shared_task is None
-        if new_shared_task:
+        context_event_index: int | None
+        if resume_queued:
+            if new_shared_task or not self.queued_prompt_count:
+                return RelayResult(0, True, "nothing_queued")
+            relay = ""
+            context_event_index = None
+        elif new_shared_task:
             self.context.shared_task = prompt
             relay = prompt
-            context_event_index: int | None = None
+            context_event_index = None
         else:
             relay = f"Human follow-up:\n{prompt}"
             context_event_index = self._record_event("Human", prompt)

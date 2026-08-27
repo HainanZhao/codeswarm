@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ctrl+C now retires a stuck local agent turn, stops its elapsed timer, and
+  immediately dispatches queued follow-ups instead of leaving them stranded.
 - Shared collaboration context now remains available when switching between
   sequential Roster and manual routing.
 - Clean package builds expose the current `codeswarm` import package and

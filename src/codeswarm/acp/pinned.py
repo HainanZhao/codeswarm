@@ -62,9 +62,15 @@ class PinnedConversation(RelayConversation):
         self._steering_queue.append((self.pinned_agent_index, prompt))
         return True
 
-    async def run(self, prompt: str, first_agent: int = 0) -> RelayResult:
+    async def run(
+        self,
+        prompt: str,
+        first_agent: int = 0,
+        *,
+        resume_queued: bool = False,
+    ) -> RelayResult:
         """Dispatch one prompt to the currently pinned active agent."""
-        del first_agent
+        del first_agent, resume_queued
         if self.paused:
             return RelayResult(0, True, "paused")
         if not self.active[self.pinned_agent_index]:

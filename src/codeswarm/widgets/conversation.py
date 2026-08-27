@@ -29,6 +29,7 @@ from textual.reactive import var
 from textual.layouts.grid import GridLayout
 from textual.layout import WidgetPlacement
 from textual.timer import Timer
+from textual.worker import WorkerCancelled, WorkerError
 
 
 from codeswarm import jsonrpc, messages
@@ -91,6 +92,7 @@ then start a new workspace.
 }
 
 MAX_AGENT_ERROR_DISPLAY_CHARS = 4_000
+AGENT_TURN_WORKER_GROUP = "agent-turn"
 
 STOP_REASON_MAX_TOKENS = """\
 ## Maximum tokens reached
@@ -1255,6 +1257,19 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 # A broken adapter must not prevent Ctrl+C from stopping an
                 # unrelated local command in the same conversation.
                 pass
+            workers = self.app.workers.cancel_group(self, AGENT_TURN_WORKER_GROUP)
+            for worker in workers:
+                with suppress(WorkerCancelled, WorkerError):
+                    await worker.wait()
+            if workers:
+                cancelled = True
+                if self._working_agent is not None:
+                    self._finish_agent_status(self._working_agent)
+                self._mark_collaboration_complete()
+                await self.agent_turn_over("end_turn")
+                if self._relay_active and self.session.queued_prompt_count:
+                    self.turn = "agent"
+                    self.send_prompt_to_agent("", resume_queued=True)
         for terminal in tuple(self._local_shells):
             cancelled = terminal.kill() or cancelled
         return cancelled
@@ -1586,7 +1601,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             return prompt
         return f"{DISCUSSION_INSTRUCTIONS}\n\nUser question:\n{prompt}"
 
-    @work
+    @work(group=AGENT_TURN_WORKER_GROUP)
     async def send_direct_prompt_to_agent(self, agent_index: int, prompt: str) -> None:
         if not self._relay_active:
             return
@@ -1610,14 +1625,21 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             self._refresh_roster_info()
         self.call_later(self.agent_turn_over, stop_reason)
 
-    @work
-    async def send_prompt_to_agent(self, prompt: str) -> None:
+    @work(group=AGENT_TURN_WORKER_GROUP)
+    async def send_prompt_to_agent(
+        self, prompt: str, *, resume_queued: bool = False
+    ) -> None:
         if self._relay_active:
             self._begin_collaboration()
             self.busy_count += 1
             try:
                 self.turn = "agent"
-                result = await self.session.send_prompt(prompt)
+                if resume_queued:
+                    result = await self.session.send_prompt(
+                        prompt, resume_queued=True
+                    )
+                else:
+                    result = await self.session.send_prompt(prompt)
                 assert isinstance(result, RelayResult)
                 if result.reason == "max_rounds":
                     from codeswarm.widgets.markdown_note import MarkdownNote
