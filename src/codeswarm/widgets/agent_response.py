@@ -111,6 +111,7 @@ class AgentToolActivity(containers.VerticalGroup, can_focus=True):
         self.selected_index = -1
         self._tools: list[Widget] = []
         self._finalized = False
+        self._duration: str | None = None
         # Agent-provided titles and previews are arbitrary text. Keep Rich
         # markup disabled so command syntax such as ``[red]`` is not parsed.
         self.summary = Static("", id="tool-activity-summary", markup=False)
@@ -123,6 +124,7 @@ class AgentToolActivity(containers.VerticalGroup, can_focus=True):
         for previous_tool in self._tools:
             previous_tool.display = False
         self._finalized = False
+        self._duration = None
         tool_call.display = False
         await self.mount(tool_call)
         self._tools.append(tool_call)
@@ -134,16 +136,35 @@ class AgentToolActivity(containers.VerticalGroup, can_focus=True):
             self._show_summary()
 
     def refresh_preview(self) -> None:
-        """Render a bounded one-line preview of the latest tool call."""
+        """Render a bounded one-line preview of the latest tool call.
+
+        Collapsed and expanded tool activity share one vocabulary: the
+        disclosure triangle says "this opens", and status is a single glyph in
+        a single position. The collapsed row used to be prefixed with a wrench
+        emoji and the expanded row with ``SYS //``, so clicking appeared to
+        replace the widget with a different one.
+        """
         selected = self.selected_tool
         tool_data = getattr(selected, "tool_call", None)
         raw_title = tool_data.get("title", "Tool call") if tool_data else "Tool call"
         title = " ".join(str(raw_title).split())[:160] or "Tool call"
         noun = "tool" if len(self._tools) == 1 else "tools"
-        prefix = "✓" if self._finalized else "🔧"
         preview = self._tool_preview(tool_data)
-        suffix = f" · {preview}" if preview else ""
-        self.summary.update(f"{prefix} {title}{suffix} · {len(self._tools)} {noun}")
+        # Assembled rather than interpolated: the Static has markup disabled
+        # so agent-supplied titles are never parsed, and Content keeps that
+        # guarantee while still allowing styled runs.
+        parts: list[Content | str | tuple[str, str]] = [
+            ("▶ ", "$message-meta"),
+            title,
+        ]
+        if preview:
+            parts.append((f" · {preview}", "$message-meta"))
+        parts.append((f" · {len(self._tools)} {noun}", "$message-meta"))
+        if self._duration is not None:
+            parts.append((f" · {self._duration}", "$message-meta"))
+        if self._finalized:
+            parts.append(("  ✔", "$text-success"))
+        self.summary.update(Content.assemble(*parts))
 
     @staticmethod
     def _tool_preview(tool_data: object) -> str:
@@ -203,10 +224,11 @@ class AgentToolActivity(containers.VerticalGroup, can_focus=True):
         if not self._tools:
             return
         minutes, seconds = divmod(max(0, elapsed_seconds), 60)
-        duration = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+        self._duration = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
         self._finalized = True
+        # Rebuilt from state rather than by appending to the rendered string,
+        # which lost the styled runs and could not be refreshed twice.
         self.refresh_preview()
-        self.summary.update(f"{self.summary.render().plain} · {duration}")
         self._show_summary()
 
     def _show_summary(self) -> None:
@@ -256,21 +278,38 @@ class AgentMessage(containers.Vertical):
         self._speaker = speaker
         self._timestamp = timestamp
         self.tool_activity = AgentToolActivity()
-        self.tone_class = f"-agent-tone-{tone_index % 4}"
+        self.tone_index = tone_index % 4
+        self.tone_class = f"-agent-tone-{self.tone_index}"
         self.add_class(self.tone_class)
-        self.header = self._build_header()
 
     def _build_header(self) -> Content:
-        suffix = " · Thinking" if self.has_class("-thinking") else ""
+        # The speaker name shares its colour with the card's left rail. Near-
+        # black card fills cannot carry identity on their own, so the name and
+        # the rail are the two signals that actually separate two speakers.
+        #
+        # Every turn carries its own time: a transcript is read back as well
+        # as watched, and the reader should never have to count cards up to
+        # the last stamp to place a reply.
+        thinking = (
+            # While an agent is reasoning this line is the only feedback the
+            # reader gets, because thoughts are hidden by default and the card
+            # would otherwise sit empty under a bare name.
+            ("  thinking…", "$message-meta italic")
+            if self.has_class("-thinking")
+            else ""
+        )
         return Content.assemble(
-            (self._speaker, "$text-primary bold"),
-            (f" · {self._timestamp}", "dim"),
-            ((suffix, "$primary dim") if suffix else ""),
+            (self._speaker, f"$agent-name-{self.tone_index} bold"),
+            (f" · {self._timestamp}", "$message-meta"),
+            thinking,
         )
 
     def compose(self) -> ComposeResult:
+        # Built here rather than cached in __init__: the thinking state can
+        # be set before this card composes, and a cached header would render
+        # the pre-state text and never correct itself.
         yield NonSelectableLabel(
-            self.header,
+            self._build_header(),
             id="agent-message-header",
         )
         if self.thought is not None:
@@ -287,8 +326,14 @@ class AgentMessage(containers.Vertical):
     def set_thinking(self, thinking: bool) -> None:
         """Show the thinking state while this turn has no other activity."""
         self.set_class(thinking, "-thinking")
-        header = self.query_one("#agent-message-header", NonSelectableLabel)
-        header.update(self._build_header())
+        # The card is posted before its children compose whenever the
+        # conversation is not attached yet, so the label can be absent. The
+        # class is already set; the header will render from it on compose.
+        header = self.query_one_optional(
+            "#agent-message-header", NonSelectableLabel
+        )
+        if header is not None:
+            header.update(self._build_header())
 
     async def add_response(self, response: AgentResponse) -> None:
         """Mount the response before the turn's trailing tool history."""

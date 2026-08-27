@@ -37,20 +37,39 @@ if TYPE_CHECKING:
     from codeswarm.acp.agent import Mode
 
 
-class ModeSwitcher(OptionList):
+class PromptPicker(OptionList):
+    """Shared dismissal behaviour for the prompt's overlay pickers.
+
+    Both pickers hide via a `:blur` rule, so dismissing one means removing
+    focus from it. Doing that alone leaves the screen with no focused widget
+    and the composer unable to accept typing, so focus is handed back to the
+    prompt.
+    """
+
+    def dismiss_picker(self) -> None:
+        """Hide this picker and return focus to the composer."""
+        self.blur()
+        # Resolved by selector rather than by class: PromptTextArea is defined
+        # further down this module.
+        text_area = self.screen.query_one_optional("PromptTextArea", Widget)
+        if text_area is not None:
+            text_area.focus()
+
+
+class ModeSwitcher(PromptPicker):
     BINDING_GROUP_TITLE = "Mode switcher"
     BINDINGS = [Binding("escape", "dismiss", "Dismiss mode switcher")]
 
     @on(OptionList.OptionSelected)
     def on_option_selected(self, event: OptionList.OptionSelected):
         self.post_message(messages.ChangeMode(event.option_id))
-        self.blur()
+        self.dismiss_picker()
 
     def action_dismiss(self):
-        self.blur()
+        self.dismiss_picker()
 
 
-class CollaborationSwitcher(OptionList):
+class CollaborationSwitcher(PromptPicker):
     """Compact picker for CodeSwarm's collaboration routing strategy."""
 
     BINDING_GROUP_TITLE = "Collaboration switcher"
@@ -78,10 +97,10 @@ class CollaborationSwitcher(OptionList):
     def on_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option_id in {"roster", "manual", "pair"}:
             self.post_message(messages.ChangeCollaborationMode(event.option_id))
-        self.blur()
+        self.dismiss_picker()
 
     def action_dismiss(self) -> None:
-        self.blur()
+        self.dismiss_picker()
 
 
 class InvokeFileSearch(Message):
@@ -484,13 +503,25 @@ class Prompt(containers.VerticalGroup):
         if self._ask is None:
             self._ask = self.ask_queue.pop(0)
 
+    @staticmethod
+    def _toggle_picker(picker: PromptPicker) -> None:
+        """Open a picker, or close it if the same control is clicked again."""
+        if picker.display:
+            picker.dismiss_picker()
+        else:
+            picker.focus()
+
+    # Both openers stop the event: it must not reach the screen-level handler
+    # that dismisses pickers on an outside click, or the click that opens a
+    # picker would immediately close it again.
     @on(events.Click, "ModeInfo")
-    def on_click(self):
-        self.mode_switcher.focus()
+    def on_click_mode_info(self, event: events.Click) -> None:
+        self._toggle_picker(self.mode_switcher)
+        event.stop()
 
     @on(events.Click, "CollaborationInfo")
     def on_click_collaboration_info(self, event: events.Click) -> None:
-        self.collaboration_switcher.focus()
+        self._toggle_picker(self.collaboration_switcher)
         event.stop()
 
     @on(events.Click, "AgentInfo")

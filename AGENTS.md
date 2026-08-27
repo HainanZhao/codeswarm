@@ -30,7 +30,10 @@
   itself and its active collaborators.
 - Untagged human messages submitted while an agent is working are queued back
   to that same agent, in FIFO order, before the relay advances. The next agent
-  receives the active agent's latest response as context.
+  receives the active agent's latest response as context. An explicit roster
+  selection overrides that target: the prompt footer names the selected agent
+  as the next recipient, so a queued message has to be delivered to it rather
+  than to whichever agent happened to be working when it was submitted.
 - Clicking an agent beside the prompt selects it as the first recipient for
   the next normal relay message. Duplicate names display their roster number.
 - `[CODESWARM:STOP]` is the safe word, but only an agent reviewing a different

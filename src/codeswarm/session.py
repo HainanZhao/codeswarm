@@ -555,9 +555,15 @@ class SessionCoordinator:
         return await self.relay.send_direct_prompt(agent_index, prompt)
 
     def enqueue_human(self, prompt: str) -> bool:
-        if self.relay is not None:
-            return self.relay.enqueue_human(prompt)
-        return False
+        if self.relay is None:
+            return False
+        # A selection is what the prompt footer shows as the next recipient.
+        # Queued work must follow it rather than fall back to whichever agent
+        # happens to be working when the message is submitted.
+        selected = self.selected_agent_index
+        if selected is not None:
+            return self.relay.enqueue_human(prompt, agent_index=selected)
+        return self.relay.enqueue_human(prompt)
 
     @property
     def queued_prompt_count(self) -> int:

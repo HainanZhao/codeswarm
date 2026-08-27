@@ -1338,6 +1338,17 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         return self.session.display_name(agent)
 
     @staticmethod
+    def _roster_tone_style(index: int, *, bold: bool) -> str:
+        """Style one roster name with its own identity hue.
+
+        The index basis matches ``AgentMessage``: both count positions in
+        ``session.active_agents`` and wrap at four, so a footer name and its
+        reply always agree.
+        """
+        tone = f"$agent-name-{index % 4}"
+        return f"{tone} bold" if bold else tone
+
+    @staticmethod
     def _format_elapsed(seconds: int) -> str:
         minutes, seconds = divmod(max(0, seconds), 60)
         return f"{minutes}:{seconds:02d}"
@@ -1399,14 +1410,21 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             )
             for agent in self.session.active_agents
         ]
+        # Each agent's time carries that agent's hue, matching its message
+        # header and its roster entry. The label itself is chrome, and the
+        # separators use an explicit tone rather than `dim`, which emits SGR 2
+        # and is applied inconsistently across terminals.
         parts: list[Content | tuple[str, str]] = [
-            ("Batch complete", "$text-primary bold")
+            ("Batch complete", "$chrome-text-strong bold")
         ]
-        for name, elapsed in elapsed_by_agent:
+        for index, (name, elapsed) in enumerate(elapsed_by_agent):
             parts.extend(
                 [
-                    (" · ", "dim"),
-                    (f"{name} {elapsed}", "$text-secondary"),
+                    (" · ", "$message-meta"),
+                    (
+                        f"{name} {elapsed}",
+                        self._roster_tone_style(index, bold=False),
+                    ),
                 ]
             )
         await self.post(Note(Content.assemble(*parts), classes="-batch-summary"))
@@ -1478,10 +1496,17 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             search_start = name_start + len(name)
 
     def _refresh_roster_info(self) -> None:
-        """Show the complete roster and current speaker in the prompt footer."""
+        """Show the complete roster and current speaker in the prompt footer.
+
+        A roster name carries the same hue as that agent's message header and
+        card rail, so the eye can match a name here to a reply above without
+        reading either. Every entry used to be teal, which meant the footer
+        could not tell two agents apart at all; work state is carried by the
+        marker and by weight instead.
+        """
         agents = self.session.active_agents
         routing_agent = self._routing_agent()
-        discussion_indicator: tuple[str, str] = (" · Chat", "$text-accent")
+        discussion_indicator: tuple[str, str] = (" · Chat", "$chrome-text")
         if len(agents) <= 1:
             if agents:
                 agent = agents[0]
@@ -1490,19 +1515,21 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 if is_working and self._agent_started_at is not None:
                     elapsed += int(monotonic() - self._agent_started_at)
                 prefix = "→ " if agent is routing_agent else ""
+                tone = self._roster_tone_style(0, bold=is_working)
                 if is_working:
                     agent_info = Content.styled(
                         f"{prefix}● {self._agent_display_name(agent)} · "
                         f"{self._format_elapsed(elapsed)}",
-                        "$primary bold",
+                        tone,
                     )
                 else:
                     agent_info = Content.styled(
                         f"{prefix}○ {self._agent_display_name(agent)}",
-                        "$text-secondary",
+                        tone,
                     )
             else:
-                agent_info = Content.styled("shell")
+                # Not an agent, so it gets no identity hue.
+                agent_info = Content.styled("shell", "$chrome-text")
             self.agent_info = Content.assemble(
                 agent_info,
                 discussion_indicator if self.discussion_mode else "",
@@ -1512,7 +1539,9 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         roster: list[Content | tuple[str, str]] = []
         for index, agent in enumerate(agents):
             if index:
-                roster.append((" · ", "dim"))
+                # Explicit tone rather than `dim`, which emits SGR 2 and is
+                # rendered inconsistently across terminals.
+                roster.append((" · ", "$message-meta"))
             is_current = (
                 agent is self._working_agent or agent is self._active_relay_agent
             )
@@ -1540,7 +1569,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             roster.append(
                 Content.styled(
                     f"{prefix}{marker} {self._agent_display_name(agent)}{timer}",
-                    "$primary bold" if is_current else "$text-secondary",
+                    self._roster_tone_style(index, bold=is_current),
                 )
             )
         if self.discussion_mode:

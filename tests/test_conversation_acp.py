@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from textual.color import Color
+from textual.content import Content
 from textual.widgets import Label, OptionList
 from textual.widgets._markdown import (
     MarkdownBlockQuote,
@@ -42,7 +43,11 @@ from codeswarm.widgets.path_search import PathSearch
 from codeswarm.widgets.prompt import (
     AgentInfo,
     CollaborationInfo,
+    CollaborationSwitcher,
     InvokeFileSearch,
+    ModeInfo,
+    ModeSwitcher,
+    PromptTextArea,
     QueuedMessages,
 )
 from codeswarm.widgets.flash import Flash
@@ -53,6 +58,31 @@ from codeswarm.widgets.terminal_tool import TerminalTool
 from codeswarm.widgets.tool_call import ToolCall
 from codeswarm.widgets.user_input import UserInput
 from codeswarm.widgets.conversation_acp import is_mode_update_notice
+
+
+def _relative_luminance(color: Color) -> float:
+    """WCAG relative luminance, used to assert palette intent numerically."""
+
+    def channel(value: int) -> float:
+        srgb = value / 255
+        return srgb / 12.92 if srgb <= 0.03928 else ((srgb + 0.055) / 1.055) ** 2.4
+
+    red, green, blue = color.rgb
+    return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+
+
+def _chroma(color: Color) -> int:
+    """Distance from grey. Neutral content stays low; an identity hue is high."""
+    red, green, blue = color.rgb
+    return max(red, green, blue) - min(red, green, blue)
+
+
+def _contrast_ratio(foreground: Color, background: Color) -> float:
+    """WCAG contrast ratio between two opaque colours."""
+    first = _relative_luminance(foreground)
+    second = _relative_luminance(background)
+    lighter, darker = max(first, second), min(first, second)
+    return (lighter + 0.05) / (darker + 0.05)
 
 
 class _RosterAgent:
@@ -954,7 +984,246 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_user_message_is_a_right_aligned_hud_uplink(self) -> None:
+    def test_prompt_pickers_dismiss_on_any_outside_click(self) -> None:
+        """Both overlay pickers must close on a click anywhere outside them.
+
+        They hide via a `:blur` rule, so they used to close only when the
+        click happened to land on a focusable widget. A click on a plain label
+        such as the working directory left the picker stranded open with no
+        way out but the keyboard.
+        """
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        agents = [_RosterAgent("Claude"), _RosterAgent("Gemini")]
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity=f"agent-{index}.test",
+                                    name=agent.name,
+                                    short_name=f"agent-{index}",
+                                ),
+                                agent,  # type: ignore[arg-type]
+                            )
+                            for index, agent in enumerate(agents)
+                        ]
+                        for agent in agents:
+                            conversation._ready_agents.add(id(agent))
+                        conversation.prompt.modes = {
+                            "default": Mode("default", "Default", None)
+                        }
+                        conversation.prompt.current_mode = Mode(
+                            "default", "Default", None
+                        )
+                        conversation._refresh_roster_info()
+                        await pilot.pause(0.2)
+                        text_area = conversation.prompt.query_one(PromptTextArea)
+
+                        for opener, picker_type in (
+                            (ModeInfo, ModeSwitcher),
+                            (CollaborationInfo, CollaborationSwitcher),
+                        ):
+                            picker = conversation.prompt.query_one(picker_type)
+                            # A plain label is the case that used to fail; the
+                            # transcript is the case that happened to work.
+                            for target in ("CondensedPath", Conversation):
+                                with self.subTest(
+                                    picker=picker_type.__name__, target=target
+                                ):
+                                    await pilot.click(opener)
+                                    await pilot.pause(0.1)
+                                    self.assertTrue(picker.display)
+                                    if target is Conversation:
+                                        await pilot.click(target, offset=(40, 4))
+                                    else:
+                                        await pilot.click(target)
+                                    await pilot.pause(0.1)
+                                    self.assertFalse(picker.display)
+
+                            with self.subTest(
+                                picker=picker_type.__name__, target="opener again"
+                            ):
+                                await pilot.click(opener)
+                                await pilot.pause(0.1)
+                                self.assertTrue(picker.display)
+                                await pilot.click(opener)
+                                await pilot.pause(0.1)
+                                self.assertFalse(picker.display)
+
+                            with self.subTest(
+                                picker=picker_type.__name__, target="escape"
+                            ):
+                                await pilot.click(opener)
+                                await pilot.pause(0.1)
+                                await pilot.press("escape")
+                                await pilot.pause(0.1)
+                                self.assertFalse(picker.display)
+                                # Dismissing must hand focus back, or the
+                                # composer silently stops accepting typing.
+                                self.assertTrue(text_area.has_focus)
+
+        asyncio.run(scenario())
+
+    def test_every_conversation_block_shares_one_left_edge(self) -> None:
+        """Text in every block must start in the same column.
+
+        A user turn, an agent reply, the batch footer and an error note each
+        carry their own padding and rail, so a one-cell drift in any of them
+        breaks the vertical line the eye follows down the transcript.
+        """
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(110, 34)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        agents = [_RosterAgent("Claude"), _RosterAgent("Gemini")]
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity=f"agent-{index}.test",
+                                    name=agent.name,
+                                    short_name=f"agent-{index}",
+                                ),
+                                agent,  # type: ignore[arg-type]
+                            )
+                            for index, agent in enumerate(agents)
+                        ]
+
+                        await conversation.post(UserInput("Run the tests."))
+                        conversation.begin_agent_output(agents[0])  # type: ignore[arg-type]
+                        await conversation.post_agent_response("All tests pass.")
+                        await pilot.pause(0.2)
+                        await conversation._post_collaboration_summary()
+                        await conversation.post(
+                            Note(Content("Agent request failed"), classes="-error")
+                        )
+                        await pilot.pause(0.4)
+
+                        def text_leaves(node) -> list:
+                            leaves = []
+                            for child in node.children:
+                                if not child.display:
+                                    continue
+                                if child.children:
+                                    leaves.extend(text_leaves(child))
+                                else:
+                                    leaves.append(child)
+                            return leaves
+
+                        leaves = text_leaves(conversation.contents)
+                        self.assertGreaterEqual(len(leaves), 4)
+                        columns = {
+                            type(leaf).__name__: leaf.content_region.x
+                            for leaf in leaves
+                        }
+                        self.assertEqual(
+                            len(set(columns.values())),
+                            1,
+                            f"blocks disagree on their left edge: {columns}",
+                        )
+
+        asyncio.run(scenario())
+
+    def test_roster_footer_names_match_their_message_header_hue(self) -> None:
+        """A footer name and its reply must agree on colour.
+
+        The point of the roster strip is that the eye can match a name beside
+        the prompt to a reply above it without reading either. Every entry
+        used to render in the same teal, so the footer could not tell four
+        agents apart at all.
+        """
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(120, 40)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        names = ["Claude", "Gemini", "Codex", "Antigravity"]
+                        agents = [_RosterAgent(name) for name in names]
+                        conversation.session.roster = [
+                            RosterEntry(
+                                AgentData(
+                                    identity=f"{name.lower()}.test",
+                                    name=name,
+                                    short_name=name.lower(),
+                                ),
+                                agent,  # type: ignore[arg-type]
+                            )
+                            for name, agent in zip(names, agents)
+                        ]
+                        for agent in agents:
+                            conversation._ready_agents.add(id(agent))
+
+                        headers = []
+                        for agent in agents:
+                            conversation.begin_agent_output(agent)  # type: ignore[arg-type]
+                            response = await conversation.post_agent_response("Reply")
+                            assert response is not None
+                            headers.append(
+                                response.parent.query_one("#agent-message-header")
+                            )
+                        conversation._refresh_roster_info()
+                        await pilot.pause(0.1)
+
+                        roster = conversation.agent_info
+                        for index, name in enumerate(names):
+                            tone = f"$agent-name-{index}"
+                            with self.subTest(agent=name):
+                                # The message header carries the tone...
+                                self.assertIn(
+                                    tone, headers[index].render().spans[0].style
+                                )
+                                # ...and so does the footer entry.
+                                start = roster.plain.index(name)
+                                covering = [
+                                    str(span.style)
+                                    for span in roster.spans
+                                    if span.start <= start < span.end
+                                ]
+                                self.assertTrue(
+                                    any(tone in style for style in covering),
+                                    f"{name} is not {tone} in the roster footer",
+                                )
+
+                        # Four agents, four distinct hues in both places.
+                        self.assertEqual(
+                            len(
+                                {
+                                    header.render().spans[0].style
+                                    for header in headers
+                                }
+                            ),
+                            4,
+                        )
+
+        asyncio.run(scenario())
+
+    def test_user_message_is_the_one_turn_without_a_hue(self) -> None:
+        """The human's turn is marked, not decorated.
+
+        It shares the agents' left-rail geometry and full width, and withholds
+        colour: a coloured rail is an agent, a grey rail is you.
+        """
+
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
@@ -971,18 +1240,30 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         bubbles = list(message.query("#user-bubble"))
                         self.assertEqual(len(bubbles), 1)
                         bubble = bubbles[0]
-                        self.assertLessEqual(
-                            bubble.region.width,
-                            int(message.content_region.width * 0.8) + 1,
+                        # Same left edge and full width as an agent card: no
+                        # right-aligned chat bubble.
+                        self.assertEqual(
+                            bubble.region.x, message.content_region.x
                         )
                         self.assertEqual(
-                            bubble.region.right, message.content_region.right
+                            bubble.region.width, message.content_region.width
                         )
-                        self.assertEqual(bubble.styles.background.rgb, (23, 62, 67))
-                        self.assertEqual(bubble.styles.background.a, 1.0)
-                        self.assertEqual(bubble.styles.border_top[0], "tall")
-                        self.assertEqual(bubble.styles.border_bottom[0], "tall")
-                        self.assertEqual(bubble.styles.border_right[0], "tall")
+                        # No fill at all.
+                        self.assertEqual(bubble.styles.background.a, 0)
+                        # Rail on the left, like every agent, and nowhere else.
+                        self.assertEqual(bubble.styles.border_left[0], "vkey")
+                        self.assertEqual(bubble.styles.border_top[0], "")
+                        self.assertEqual(bubble.styles.border_right[0], "")
+                        self.assertEqual(bubble.styles.border_bottom[0], "")
+                        # The rail is grey: it must not collide with any
+                        # identity hue.
+                        rail = bubble.styles.border_left[1]
+                        red, green, blue = rail.rgb
+                        self.assertLess(
+                            max(red, green, blue) - min(red, green, blue),
+                            40,
+                            "the human's rail must stay neutral",
+                        )
                         self.assertEqual(bubble.styles.padding.top, 0)
                         self.assertEqual(bubble.styles.padding.bottom, 0)
                         self.assertIsNone(bubble.query_one_optional("#prompt"))
@@ -1162,9 +1443,13 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertTrue(ribbon.has_class("-error"))
                         self.assertEqual(
                             ribbon.styles.background.rgb,
-                            Color.parse(pilot.app.current_theme.primary).rgb,
+                            # The resolved variable, not the declared theme
+                            # value: Textual's colour system adjusts it.
+                            Color.parse(
+                                pilot.app.get_css_variables()["error"]
+                            ).rgb,
                         )
-                        self.assertEqual(ribbon.styles.background.a, 0.18)
+                        self.assertEqual(ribbon.styles.background.a, 0.15)
                         self.assertEqual(
                             ribbon.outer_size.width, conversation.content_region.width
                         )
@@ -1200,7 +1485,14 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_flash_severities_share_the_teal_hud_palette(self) -> None:
+    def test_flash_severities_are_told_apart(self) -> None:
+        """Every severity used to render in identical teal.
+
+        That made the `style` argument decorative: a failure looked exactly
+        like a success, and both looked like the statusline. The ribbon is
+        chrome, so it stays neutral until it has something to report.
+        """
+
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
@@ -1212,13 +1504,43 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     ) as pilot:
                         conversation = pilot.app.screen.query_one(Conversation)
                         ribbon = conversation.query_one(Flash)
-                        primary = Color.parse(pilot.app.current_theme.primary).rgb
+                        # Resolved variables, not declared theme values:
+                        # Textual's colour system adjusts them.
+                        variables = pilot.app.get_css_variables()
 
-                        for style in ("success", "warning", "error"):
+                        seen: list[tuple[tuple[int, int, int], float]] = []
+                        for style, expected in (
+                            ("default", None),
+                            ("success", variables["success"]),
+                            ("warning", variables["warning"]),
+                            ("error", variables["error"]),
+                        ):
                             conversation.flash("HUD status", style=style)
                             await pilot.pause()
-                            self.assertEqual(ribbon.styles.background.rgb, primary)
-                            self.assertEqual(ribbon.styles.color.rgb, primary)
+                            with self.subTest(style=style):
+                                if expected is not None:
+                                    self.assertEqual(
+                                        ribbon.styles.background.rgb,
+                                        Color.parse(expected).rgb,
+                                    )
+                                else:
+                                    # Neutral: no hue at all when there is
+                                    # nothing to report.
+                                    red, green, blue = ribbon.styles.background.rgb
+                                    self.assertLess(
+                                        max(red, green, blue)
+                                        - min(red, green, blue),
+                                        40,
+                                    )
+                            seen.append(
+                                (
+                                    ribbon.styles.background.rgb,
+                                    ribbon.styles.background.a,
+                                )
+                            )
+                        self.assertEqual(
+                            len(set(seen)), 4, "each severity must be distinguishable"
+                        )
 
         asyncio.run(scenario())
 
@@ -1334,7 +1656,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         )
                         self.assertEqual(
                             [span.style for span in header_content.spans],
-                            ["$text-primary bold", "dim"],
+                            ["$agent-name-0 bold", "$message-meta"],
                         )
                         format_timestamp.assert_called_once()
 
@@ -1409,9 +1731,13 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
                         focused = conversation.query_one(AgentThought)
                         self.assertTrue(focused.has_focus)
+                        # A left rail only, like a quote: reasoning is not a
+                        # speaker and not a destination. What must not change
+                        # is the geometry, so focusing never reflows the
+                        # conversation.
                         self.assertEqual(focused.styles.border_top[0], "")
                         self.assertEqual(focused.styles.border_right[0], "")
-                        self.assertEqual(focused.styles.border_bottom[0], "solid")
+                        self.assertEqual(focused.styles.border_bottom[0], "")
                         self.assertEqual(focused.styles.border_left[0], "solid")
                         self.assertEqual(focused.outer_size, outer_size)
 
@@ -1635,14 +1961,14 @@ class ConversationACPDispatchTests(unittest.TestCase):
                 header = turn.query_one("#agent-message-header")
                 self.assertTrue(header.display)
                 self.assertIn("Claude", str(header.render()))
-                self.assertIn("Thinking", str(header.render()))
+                self.assertIn("thinking", str(header.render()))
                 self.assertIsNotNone(turn.query_one(AgentThought))
 
                 conversation.post_message(
                     acp_messages.Update("text", "Done", claude)  # type: ignore[arg-type]
                 )
                 await pilot.pause(0.1)
-                self.assertNotIn("Thinking", str(header.render()))
+                self.assertNotIn("thinking", str(header.render()))
 
         asyncio.run(scenario())
 
@@ -1917,7 +2243,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertTrue(activity.summary.display)
                         self.assertEqual(
                             activity.summary.render().plain,
-                            "🔧 Run focused tests · 2 tools",
+                            "▶ Run focused tests · 2 tools",
                         )
 
                         activity.focus()
@@ -2127,7 +2453,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         assert summary is not None
                         self.assertEqual(
                             summary.render().plain,
-                            "✓ Run Tests · 2 tools · 14s",
+                            "▶ Run Tests · 2 tools · 14s  ✔",
                         )
                         self.assertTrue(summary.display)
                         self.assertTrue(
@@ -2179,31 +2505,34 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             responses.append(response)
                         await pilot.pause(0.1)
 
-                        self.assertEqual(
-                            len(
-                                {
-                                    (
-                                        response.parent.styles.background.rgb,
-                                        response.parent.styles.background.a,
-                                    )
-                                    for response in responses
-                                }
-                            ),
-                            4,
+                        # Identity lives in the rail and the speaker name.
+                        # Four near-black card fills sit within ~1.05 contrast
+                        # of one another, so a fill alone cannot tell two
+                        # agents apart; the cards deliberately share a
+                        # luminance band and differ only in hue.
+                        cards = [
+                            response.parent.styles.background for response in responses
+                        ]
+                        card_luminance = [_relative_luminance(card) for card in cards]
+                        self.assertLess(
+                            max(card_luminance) - min(card_luminance),
+                            0.006,
+                            "agent cards must stay in one luminance band",
                         )
                         headers = [
                             response.parent.query_one("#agent-message-header")
                             for response in responses
                         ]
                         expected_colors = (
-                            "#67E8F9",
+                            "#38BDF8",
                             "#A78BFA",
-                            "#22D3EE",
                             "#FBBF24",
+                            "#F43F5E",
                         )
                         for index, (header, response, expected_color) in enumerate(
                             zip(headers, responses, expected_colors)
                         ):
+                            rail = response.parent.styles.border_left[1]
                             self.assertTrue(
                                 response.parent.has_class(f"-agent-tone-{index}")
                             )
@@ -2212,28 +2541,60 @@ class ConversationACPDispatchTests(unittest.TestCase):
                                 "vkey",
                             )
                             self.assertEqual(
-                                response.parent.styles.border_left[1].rgb,
-                                Color.parse(expected_color).rgb,
+                                rail.rgb, Color.parse(expected_color).rgb
                             )
-                            self.assertEqual(
-                                response.parent.styles.border_left[1].a,
-                                0.25,
+                            # Full strength: a 25% rail washes out to under 2:1
+                            # against its own card and stops reading as a marker.
+                            self.assertEqual(rail.a, 1.0)
+                            self.assertGreaterEqual(
+                                _contrast_ratio(rail, cards[index]),
+                                4.5,
+                                f"tone-{index} rail is too faint to identify",
                             )
                             self.assertEqual(
                                 response.parent.styles.border_bottom[0],
                                 "",
                             )
                         self.assertEqual(
+                            len({rail for rail in expected_colors}), 4
+                        )
+                        # Separable without colour too, so a colour-blind
+                        # reader or a washed-out terminal can still tell two
+                        # speakers apart.
+                        rails = [Color.parse(color) for color in expected_colors]
+                        for first in range(4):
+                            for second in range(first + 1, 4):
+                                with self.subTest(pair=(first, second)):
+                                    self.assertGreater(
+                                        _contrast_ratio(
+                                            rails[first], rails[second]
+                                        ),
+                                        1.15,
+                                    )
+                        for index, rail_color in enumerate(rails):
+                            with self.subTest(rail=index):
+                                self.assertGreater(_chroma(rail_color), 90)
+                        self.assertEqual(
+                            len(
+                                {
+                                    header.render().spans[0].style
+                                    for header in headers
+                                }
+                            ),
+                            4,
+                            "each speaker name must carry its own colour",
+                        )
+                        self.assertEqual(
                             [
                                 header.render().spans[0].style
                                 for header in headers
                             ],
-                            ["$text-primary bold"] * 4,
+                            [f"$agent-name-{index} bold" for index in range(4)],
                         )
 
         asyncio.run(scenario())
 
-    def test_agent_message_content_uses_a_vivid_format_palette(self) -> None:
+    def test_conversation_palette_keeps_hue_for_identity_only(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
@@ -2273,111 +2634,105 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         rule = response.query_one(MarkdownHorizontalRule)
                         fence = response.query_one(MarkdownFence)
                         table = response.query_one(MarkdownTable)
-                        table_header = response.query_one(MarkdownTableContent).query_one(
-                            ".header"
-                        )
+                        table_content = response.query_one(MarkdownTableContent)
+                        table_header = table_content.query_one(".header")
                         quote = response.query_one(MarkdownBlockQuote)
+
+                        # ── Rule 2: content is neutral ──────────────────────
+                        # Hierarchy comes from luminance, weight and space. A
+                        # new hue here is how the palette drifted to ten
+                        # colours; heading amber in particular collided with
+                        # the meaning this app spends on $warning.
+                        neutral_content = {
+                            "body": body_color,
+                            "heading": heading.styles.color,
+                            "divider": rule.styles.border_bottom[1],
+                            "code fence text": fence.styles.color,
+                            "code fence fill": fence.styles.background,
+                            "table text": table.styles.color,
+                            "table header": table_header.styles.color,
+                            "table rule": table_header.styles.border_bottom[1],
+                            "quote text": quote.styles.color,
+                            "quote rail": quote.styles.border_left[1],
+                        }
+                        for name, color in neutral_content.items():
+                            with self.subTest(neutral=name):
+                                self.assertLess(
+                                    _chroma(color),
+                                    40,
+                                    f"{name} must not spend a hue",
+                                )
+
+                        # Hierarchy is still present, just colourless.
+                        self.assertGreater(
+                            _relative_luminance(heading.styles.color),
+                            _relative_luminance(body_color),
+                            "a heading must outrank body text",
+                        )
+                        self.assertLess(
+                            _relative_luminance(quote.styles.color),
+                            _relative_luminance(body_color),
+                            "a quote is someone else's words; it recedes",
+                        )
+                        self.assertEqual(heading.styles.background.a, 0)
+
+                        # ── Rule 3: one accent, for destinations only ───────
                         inline_code = paragraph.get_component_rich_style(
                             "code_inline"
-                        )
-                        assert inline_code.color is not None
-                        assert inline_code.bgcolor is not None
-                        inline_color = inline_code.color.get_truecolor()
-                        inline_background = inline_code.bgcolor.get_truecolor()
-                        inline_rgb = (
-                            inline_color.red,
-                            inline_color.green,
-                            inline_color.blue,
-                        )
-                        inline_background_rgb = (
-                            inline_background.red,
-                            inline_background.green,
-                            inline_background.blue,
-                        )
-                        self.assertEqual(inline_rgb, Color.parse("#7DD3FC").rgb)
-                        self.assertEqual(
-                            inline_background_rgb, Color.parse("#0B2233").rgb
                         )
                         file_reference = paragraph.get_component_rich_style(
                             "file_reference"
                         )
+                        assert file_reference.color is not None
+                        file_color = Color.from_rich_color(file_reference.color)
                         self.assertEqual(
-                            (
-                                file_reference.color.get_truecolor().red,
-                                file_reference.color.get_truecolor().green,
-                                file_reference.color.get_truecolor().blue,
-                            ),
-                            Color.parse("#F0ABFC").rgb,
+                            file_color.rgb,
+                            paragraph.styles.link_color.rgb,
+                            "a file path and a link are the same idea",
                         )
-                        self.assertEqual(
-                            (
-                                file_reference.bgcolor.get_truecolor().red,
-                                file_reference.bgcolor.get_truecolor().green,
-                                file_reference.bgcolor.get_truecolor().blue,
-                            ),
-                            Color.parse("#2D1B3B").rgb,
-                        )
+                        self.assertGreater(_chroma(file_color), 90)
+                        self.assertTrue(paragraph.styles.link_style.underline)
                         self.assertTrue(
                             any(
                                 span.style == ".file_reference"
                                 for span in paragraph._content.spans
                             )
                         )
-                        self.assertEqual(
-                            paragraph.styles.link_color.rgb,
-                            Color.parse("#67E8F9").rgb,
-                        )
-                        self.assertTrue(paragraph.styles.link_style.underline)
-                        format_colors = {
-                            "inline code": inline_rgb,
-                            "heading": heading.styles.color.rgb,
-                            "divider": rule.styles.border_bottom[1].rgb,
-                            "code fence": fence.styles.color.rgb,
-                            "table": table.styles.color.rgb,
-                        }
 
+                        # ── Code reads as code at both scales ───────────────
+                        # One surface for an inline span and a fence, plus
+                        # weight inline: a six-character span needs more
+                        # contrast than a large block to register at all.
+                        assert inline_code.bgcolor is not None
                         self.assertEqual(
-                            fence.styles.color.rgb, Color.parse("#C4D7ED").rgb
-                        )
-                        self.assertEqual(
+                            Color.from_rich_color(inline_code.bgcolor).rgb,
                             fence.styles.background.rgb,
-                            Color.parse("#0D1B2A").rgb,
+                            "inline code and fences share one code surface",
                         )
-                        self.assertEqual(
-                            table_header.styles.color.rgb,
-                            Color.parse("#FBBF24").rgb,
-                        )
-                        for format_name, color in format_colors.items():
-                            with self.subTest(format=format_name):
-                                self.assertNotEqual(color, body_color.rgb)
-                        self.assertEqual(
-                            heading.styles.color.rgb,
-                            Color.parse("#FDE68A").rgb,
-                        )
-                        self.assertLess(sum(fence.styles.color.rgb), sum(body_color.rgb))
-                        self.assertLess(
-                            sum(inline_background_rgb), sum(inline_rgb)
-                        )
-                        self.assertNotEqual(inline_background_rgb[0], inline_background_rgb[1])
-                        self.assertEqual(heading.styles.background.a, 0)
+                        self.assertTrue(inline_code.bold)
                         self.assertFalse(fence._content.spans)
 
-                        self.assertNotEqual(
-                            quote.styles.border_left[1].rgb, body_color.rgb
-                        )
-                        self.assertEqual(quote.styles.color.rgb, Color.parse("#A7F3D0").rgb)
+                        # ── The loud things are quiet now ───────────────────
+                        # No fill on a table or a quote, and no cell grid: a
+                        # table was the least important thing in a reply and
+                        # the heaviest object on the screen.
+                        self.assertEqual(table.styles.background.a, 0)
+                        self.assertEqual(quote.styles.background.a, 0)
+                        self.assertEqual(table_header.styles.background.a, 0)
+                        self.assertEqual(table_content.styles.keyline[0], "none")
                         self.assertEqual(
-                            quote.styles.border_left[1].rgb,
-                            Color.parse("#2DD4BF").rgb,
+                            table_header.styles.border_bottom[0], "solid"
                         )
-                        self.assertEqual(
-                            response.parent.styles.border_left[1].rgb,
-                            Color.parse("#67E8F9").rgb,
+
+                        # ── Rule 1: hue is identity ─────────────────────────
+                        rail = response.parent.styles.border_left[1]
+                        self.assertGreater(
+                            _chroma(rail), 90, "a speaker rail carries the hue"
                         )
                         header = response.parent.query_one("#agent-message-header")
                         self.assertEqual(
                             [span.style for span in header.render().spans],
-                            ["$text-primary bold", "dim"],
+                            ["$agent-name-0 bold", "$message-meta"],
                         )
 
         asyncio.run(scenario())
@@ -2514,10 +2869,30 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
                         blocks = list(response.children)
                         self.assertGreater(len(blocks), 2)
+                        # One blank line between blocks, never two: Textual
+                        # collapses adjacent margins, so every block declares
+                        # at most 1 on each edge.
                         for block in blocks:
                             with self.subTest(block=type(block).__name__):
-                                self.assertEqual(block.styles.margin.top, 0)
-                                self.assertEqual(block.styles.margin.bottom, 0)
+                                self.assertLessEqual(block.styles.margin.top, 1)
+                                self.assertLessEqual(block.styles.margin.bottom, 1)
+                        # The reply must not open with a blank line...
+                        self.assertEqual(blocks[0].styles.margin.top, 0)
+                        # ...but every block must be separated from the next.
+                        for previous, following in zip(blocks, blocks[1:]):
+                            with self.subTest(
+                                pair=(
+                                    type(previous).__name__,
+                                    type(following).__name__,
+                                )
+                            ):
+                                self.assertEqual(
+                                    max(
+                                        previous.styles.margin.bottom,
+                                        following.styles.margin.top,
+                                    ),
+                                    1,
+                                )
                         self.assertGreater(response.parent.styles.margin.bottom, 0)
 
         asyncio.run(scenario())

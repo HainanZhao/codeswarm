@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Sequence
 
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual import getters
 from textual.binding import Binding
@@ -14,6 +14,7 @@ from codeswarm.app import CodeSwarmApp
 from codeswarm import messages
 from codeswarm.agent_schema import Agent
 from codeswarm.widgets.conversation import Conversation
+from codeswarm.widgets.prompt import PromptPicker
 
 
 class MainScreen(Screen, can_focus=False):
@@ -70,6 +71,28 @@ class MainScreen(Screen, can_focus=False):
             ).data_bind(
                 project_path=MainScreen.project_path,
             )
+
+    @on(events.Click)
+    def _dismiss_open_pickers(self, event: events.Click) -> None:
+        """Close an open prompt picker when the click lands outside it.
+
+        The pickers hide on blur, so previously they only closed when the
+        click happened to land on a focusable widget. Clicking a plain label —
+        the working directory, the status line — left the picker open with no
+        way to dismiss it but the keyboard. Handled on the screen because a
+        click anywhere, including the transcript, has to count.
+        """
+        clicked = event.widget
+        # Queried by type so a renamed picker is a type error rather than a
+        # selector that silently matches nothing.
+        for picker in self.query(PromptPicker):
+            if not picker.display:
+                continue
+            if clicked is picker or (
+                clicked is not None and picker in clicked.ancestors
+            ):
+                continue
+            picker.dismiss_picker()
 
     def update_node_styles(self, animate: bool = True) -> None:
         self.conversation.update_node_styles(animate=animate)

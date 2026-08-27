@@ -192,11 +192,23 @@ class RelayConversation:
         """Allow the relay to dispatch turns again."""
         self.paused = False
 
-    def enqueue_human(self, prompt: str) -> bool:
-        """Queue a follow-up for the agent that owns the active turn."""
+    def enqueue_human(self, prompt: str, *, agent_index: int | None = None) -> bool:
+        """Queue a follow-up for the agent that owns the active turn.
+
+        ``agent_index`` overrides that when the user has explicitly chosen a
+        recipient. The prompt footer already names the selected agent as the
+        next recipient, so the queue has to honour it: otherwise the UI
+        promises one agent and the message is delivered to another.
+        """
         if not prompt.strip() or self.queued_prompt_count >= MAX_QUEUED_PROMPTS:
             return False
-        self._steering_queue.append((self.last_active_index, prompt))
+        if agent_index is None:
+            target = self.last_active_index
+        elif 0 <= agent_index < len(self.agents) and self.active[agent_index]:
+            target = agent_index
+        else:
+            return False
+        self._steering_queue.append((target, prompt))
         return True
 
     @property

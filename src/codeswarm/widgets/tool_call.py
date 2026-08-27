@@ -166,16 +166,16 @@ class ToolCall(containers.VerticalGroup):
                 else "[$text-secondary 30%]▶ "
             )
 
-        header = Content.assemble(expand_icon, "SYS // ", title)
+        # No "SYS // " prefix: it appeared on every tool call, said nothing
+        # that the row's presence did not already say, and sat at the front of
+        # the line where the title should be.
+        header = Content.assemble(expand_icon, title)
 
-        if status == "pending":
-            header += Content.assemble(" ⌛")
-        elif status == "in_progress":
-            pass
-        elif status == "failed":
+        # One glyph, one position, matching the collapsed summary.
+        if status == "failed":
             header += Content.assemble(" ", pill("failed", "$error-muted", "$error"))
         elif status == "completed":
-            header += Content.from_markup(" [$success]✔")
+            header += Content.assemble(("  ✔", "$text-success"))
         return header
 
     def watch_expanded(self) -> None:

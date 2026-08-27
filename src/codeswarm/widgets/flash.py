@@ -12,38 +12,41 @@ from codeswarm.app import CodeSwarmApp
 
 class Flash(Static):
     DEFAULT_CSS = """
+    /* The ribbon is chrome, so it is neutral unless it has something to
+       report. Every severity used to render in identical teal, which made
+       the `style` argument decorative: a failure looked exactly like a
+       success, and both looked like the statusline. */
     Flash {
         height: 1;
         width: 100%;
         margin-bottom: 1;
         padding: 0 1;
-        background: $primary 18%;
-        color: $primary;
+        background: $chrome-fill;
+        color: $chrome-text-strong;
         text-align: left;
         visibility: hidden;
         text-wrap: nowrap;
-        text-overflow: ellipsis;     
+        text-overflow: ellipsis;
         # overlay: screen;
-        # offset-y: -1;           
+        # offset-y: -1;
         &.-default {
-            background: $primary 18%;
-            color: $primary;
+            background: $chrome-fill;
+            color: $chrome-text-strong;
         }
-        
+
         &.-success {
-            background: $primary 18%;
-            color: $primary;
+            background: $success 12%;
+            color: $text-success;
         }
-        
-        
+
         &.-warning {
-            background: $primary 18%;
-            color: $primary;
+            background: $warning 12%;
+            color: $text-warning;
         }
 
         &.-error {
-            background: $primary 18%;
-            color: $primary;
+            background: $error 15%;
+            color: $text-error;
         }
     }
     """

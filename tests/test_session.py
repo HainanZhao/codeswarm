@@ -527,6 +527,58 @@ class SessionCoordinatorTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_queued_message_follows_an_explicit_selection(self) -> None:
+        """A queued message goes to the selected agent, not the working one.
+
+        The prompt footer already names the selection as the next recipient,
+        so queueing to whichever agent happened to be working meant the UI
+        promised one agent and delivered to another.
+        """
+
+        async def scenario() -> None:
+            owner = agent_data("claude.ai", "Claude", "claude")
+            peers = (
+                agent_data("openai.com", "Codex", "codex"),
+                agent_data("geminicli.com", "Gemini", "gemini"),
+            )
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                return FakeAgent(project_root, data["name"])
+
+            coordinator = SessionCoordinator(
+                Path("."), owner, peers=peers, agent_factory=factory
+            )
+            await coordinator.start(object())
+            relay = coordinator.relay
+            assert relay is not None
+
+            # The agent at index 2 owns the active turn.
+            relay.last_active_index = 2
+
+            # With no selection the active agent keeps the follow-up.
+            self.assertTrue(coordinator.enqueue_human("no selection"))
+            self.assertEqual(relay._steering_queue[-1][0], 2)
+
+            # An explicit selection takes precedence.
+            coordinator.select_agent(0)
+            self.assertTrue(coordinator.enqueue_human("for agent zero"))
+            self.assertEqual(relay._steering_queue[-1][0], 0)
+
+            # A selection naming a dropped agent is refused rather than
+            # silently retargeted at whoever is working.
+            relay.active[1] = False
+            coordinator.selected_agent_index = 1
+            self.assertFalse(coordinator.enqueue_human("for a dropped agent"))
+
+        asyncio.run(scenario())
+
     def test_select_agent_sets_the_next_relay_recipient(self) -> None:
         async def scenario() -> None:
             owner = agent_data("claude.ai", "Claude", "claude")

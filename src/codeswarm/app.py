@@ -77,34 +77,92 @@ CODESWARM_BLACK_THEME = Theme(
     panel="#10151D",
     dark=True,
     variables={
-        "agent-tone-1": "#B8A65A",
-        "agent-tone-2": "#28728F",
-        "agent-tone-3": "#22D3EE",
-        "agent-surface-0": "#111A24",
-        "agent-surface-1": "#171A2B",
-        "agent-surface-2": "#10252B",
-        "agent-surface-3": "#241D2D",
-        "agent-edge-0": "#67E8F9",
+        # ── The conversation palette obeys three rules ──────────────────────
+        #
+        #   1. Hue is identity.   Only a speaker gets a colour. The four
+        #                         identity hues below appear on nothing else.
+        #   2. Neutral is content. Prose, code, tables and quotes are greys.
+        #                         Hierarchy comes from luminance, weight and
+        #                         space — never from a new colour.
+        #   3. Teal means "go here". One accent, shared by links and file
+        #                         paths, because they are the same idea.
+        #
+        # Adding a fourth kind of colour to this screen is how the palette
+        # drifted to ten hues before; if something needs emphasis, reach for
+        # weight or space first.
+
+        # ── 1. Identity ────────────────────────────────────────────────────
+        # Four near-black card fills sit within ~1.05 contrast of one another,
+        # so a fill cannot carry identity. The cards share one luminance band
+        # and only their hue tracks the speaker; the rail and the name do the
+        # work. Rails stay separable in greyscale (worst pair 1.27) so the
+        # speaker survives a colour-blind reader and a washed-out terminal.
+        "agent-surface-0": "#0F1E2C",
+        "agent-surface-1": "#1A1926",
+        "agent-surface-2": "#211E15",
+        "agent-surface-3": "#231A1E",
+        "agent-edge-0": "#38BDF8",
         "agent-edge-1": "#A78BFA",
-        "agent-edge-2": "#22D3EE",
-        "agent-edge-3": "#FBBF24",
-        "user-surface": "#173E43",
-        "user-edge": "#FF8A65",
-        "content-code-background": "#0B2233",
-        "content-code-foreground": "#7DD3FC",
-        "content-code-fence-background": "#0D1B2A",
-        "content-code-fence-foreground": "#C4D7ED",
-        "content-quote-background": "#0E2A2C",
-        "content-quote-foreground": "#A7F3D0",
-        "content-heading": "#FDE68A",
-        "content-table-background": "#0D1B25",
-        "content-table-foreground": "#CDE7F5",
-        "content-table-header": "#FBBF24",
-        "content-link": "#67E8F9",
+        "agent-edge-2": "#FBBF24",
+        "agent-edge-3": "#F43F5E",
+        "agent-name-0": "#7DD3FC",
+        "agent-name-1": "#C4B5FD",
+        "agent-name-2": "#FCD34D",
+        "agent-name-3": "#FDA4AF",
+
+        # ── 2. Content ─────────────────────────────────────────────────────
+        # Only code gets a fill, and it sinks below the card rather than
+        # floating above it. Quotes and tables are structure, not colour.
+        "content-body": "#E3E6EA",
+        "content-heading": "#F7F9FB",
+        # One code surface at both scales: an inline span and a fence sit in
+        # the same well, so code always reads as code. A lifted fill was
+        # tried first and separated from the card by only 1.06 — invisible.
+        #
+        # The well alone is not enough for a six-character span: a small area
+        # needs more contrast than a large one to register, so inline code
+        # also carries weight and the brightest neutral. That is the whole
+        # emphasis budget for code, and it spends no colour.
+        "content-code-background": "#05080D",
+        "content-code-foreground": "#F7F9FB",
+        "content-code-fence-background": "#05080D",
+        "content-code-fence-foreground": "#C8D0D9",
+        "content-quote-foreground": "#AEB8C4",
+        "content-table-foreground": "#DDE3EA",
+        "content-table-header": "#F7F9FB",
+        # One rule weight for every divider and every quiet rail.
+        "content-rule": "#3A4759",
+
+        # ── 3. Go here ─────────────────────────────────────────────────────
+        "content-link": "#2DD4BF",
         "content-link-hover": "#FFFFFF",
         "content-link-hover-background": "#0F766E",
-        "content-file-background": "#2D1B3B",
-        "content-file-foreground": "#F0ABFC",
+
+        # ── Chrome ─────────────────────────────────────────────────────────
+        # Furniture: the prompt, the info bar, chips, ribbons, tool frames.
+        # Neutral by default so the conversation stays the brightest thing on
+        # screen. Colour appears in the chrome only for state — focus,
+        # success, warning, error — never for decoration. Teal chrome used to
+        # smear the "go here" accent across every piece of furniture, which
+        # left the accent meaning nothing.
+        "chrome-fill": "#151B24",
+        "chrome-text": "#8B97A6",
+        "chrome-text-strong": "#D3DBE4",
+
+        # ── Meta ───────────────────────────────────────────────────────────
+        # Explicit muted tones. `text-style: dim` emits SGR 2, which terminals
+        # implement inconsistently and which drops this text under WCAG AA
+        # wherever it is honoured.
+        "message-meta": "#7C8899",
+        # The human's own turn is the calmest thing on screen: they already
+        # know what they said. It is marked, not decorated — a grey rail and
+        # slightly brighter text, so it reads as the start of an exchange
+        # without spending a hue.
+        "user-edge": "#3A4759",
+        "user-foreground": "#F7F9FB",
+        # An error is a condition, not content, so it never reuses a card fill.
+        "message-error-surface": "#1A0E10",
+        "message-error-foreground": "#FCA5A5",
         "block-cursor-background": "#2DD4BF",
         "block-cursor-foreground": "#000000",
         "input-selection-background": "#14B8A6 35%",

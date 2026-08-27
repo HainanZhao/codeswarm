@@ -53,8 +53,11 @@ class PinnedConversation(RelayConversation):
             raise ValueError("agent index must name an active agent")
         self.pinned_agent_index = index
 
-    def enqueue_human(self, prompt: str) -> bool:
+    def enqueue_human(self, prompt: str, *, agent_index: int | None = None) -> bool:
         """Queue a human message for the pin at submission time."""
+        # The pin is the only recipient in this mode, so a caller-supplied
+        # target is deliberately ignored.
+        del agent_index
         if not prompt.strip() or self.queued_prompt_count >= MAX_QUEUED_PROMPTS:
             return False
         if not self.active[self.pinned_agent_index]:

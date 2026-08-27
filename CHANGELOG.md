@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.33] - 2026-08-27
+
+### Changed
+
+- Rebuilt the conversation palette around three rules: hue identifies a
+  speaker, content is neutral, and one accent marks links and file paths.
+  This replaces the vivid per-agent surfaces and multi-colour Markdown
+  treatments introduced but never released in 0.6.32.
+- Agent identity now reads from the card's left rail and the speaker name
+  rather than the card fill. Four near-black fills sat within 1.05 contrast
+  of one another, so they could not tell two speakers apart; the rails stay
+  distinguishable in greyscale for colour-blind readers.
+- Roster names beside the prompt now match their agent's message header
+  colour, so a name in the footer can be matched to a reply above it.
+- Agent replies now have vertical rhythm. Headings, prose, lists, code
+  fences, quotes and tables were all flush against one another.
+- Chrome — the info bar, status line, chips, ribbons and tool frames — is
+  neutral. Colour in the chrome is reserved for focus, success, warning and
+  error, so the accent means something again.
+- Markdown tables lost their per-cell grid in favour of a single rule under
+  the header, and block quotes lost their fill.
+- A human turn is no longer a right-aligned bubble: it shares the agents'
+  left-rail geometry and is the one turn without an identity hue.
+- Tool activity uses one vocabulary in both states. The collapsed row was
+  prefixed with a wrench emoji and the expanded row with `SYS //`, so
+  opening a tool call appeared to replace it with a different widget.
+- The agent "thinking" state is now legible beside the speaker name, which
+  is the only feedback available while reasoning output is hidden.
+- The batch completion footer now uses the conversation palette, giving each
+  agent's elapsed time that agent's colour.
+- Flash ribbon severities are now distinguishable. Every severity rendered
+  in identical teal, which made the requested style decorative.
+- Muted text uses explicit colours instead of `text-style: dim`, which emits
+  SGR 2 and is applied inconsistently across terminals.
+
+### Fixed
+
+- Prompt-history navigation no longer raises on a damaged history file. A
+  partially written line — from an interrupted append — made every earlier
+  entry unreachable.
+- Settings writes are now durable: the temporary file is flushed and synced
+  before the rename, is removed if the rename fails, and no longer replaces
+  an existing file's permissions with `0600`.
+- Recent sessions are ordered by their actual time. `last_used` mixed two
+  timestamp formats in one text column, so a touched session could sort
+  behind an untouched one from the same day.
+- JSON-RPC error responses now carry the request id, so a malformed
+  `params` value no longer leaves the agent's request unresolved. Failed
+  notifications no longer receive a response, per the specification.
+- Resuming a session no longer fails against adapters whose `session/load`
+  resolves to null.
+- A message queued while another agent is working is now delivered to the
+  agent selected beside the prompt. The prompt footer named the selection as
+  the next recipient while the queue handed the message to whichever agent
+  happened to be working, so the interface promised one agent and delivered
+  to another.
+- Every conversation block now starts its text in the same column. Error
+  notes sat one cell left of agent replies.
+- The mode and collaboration pickers now close on a click anywhere outside
+  them and hand focus back to the composer. They previously closed only when
+  the click landed on a focusable widget, so clicking a plain label left the
+  picker open with no way out but the keyboard. Clicking the control that
+  opened a picker now closes it.
+
 ## [0.6.32] - 2026-08-27
 
 ### Added

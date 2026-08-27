@@ -1,28 +1,34 @@
 
-Note,MarkdownNote {    
-    padding: 0 1 0 0;
-    background: $primary 5%;
-    border-left: solid $primary 45%;
+/* Everything CodeSwarm says about itself, rather than relays from an agent.
+   It wears no hue: a note is neither a speaker nor a destination. */
+Note,MarkdownNote {
+    padding: 0 1 0 1;
+    background: transparent;
+    border-left: solid $content-rule;
+    color: $message-meta;
     &.-error {
-        background: $error 7%;
+        /* Red text on its own ground, so a failure never reads as prose an
+           agent wrote. */
+        background: $message-error-surface;
         border-left: solid $error;
-    }    
+        color: $message-error-foreground;
+    }
     &.-stop-reason {
-        border: wide $error 50%;
         padding: 0 1;
         MarkdownH2 {
-            margin: 1 0 1 0;
+            margin: 0 0 1 0;
         }
     }
     &.-batch-summary {
         margin: 0 1 1 0;
         padding: 0 1 0 1;
-        background: $agent-surface-0;
-        border-left: vkey $agent-edge-0 25%;
+        /* Was dressed as agent 0's card. A summary belongs to no speaker. */
+        background: transparent;
+        border-left: solid $content-rule;
         content-align: left middle;
     }
     &.-agent-identity {
-        color: $text-secondary;
+        color: $chrome-text;
         height: 1;
         margin: 1 0 0 0;
         padding: 0;
@@ -76,23 +82,23 @@ Conversation {
         height: auto;
         padding: 0 1 0 1;
         background: $agent-surface-0;
-        border-left: vkey $agent-edge-0 25%;
+        border-left: vkey $agent-edge-0;
 
         &.-agent-tone-0 {
             background: $agent-surface-0;
-            border-left: vkey $agent-edge-0 25%;
+            border-left: vkey $agent-edge-0;
         }
         &.-agent-tone-1 {
             background: $agent-surface-1;
-            border-left: vkey $agent-edge-1 25%;
+            border-left: vkey $agent-edge-1;
         }
         &.-agent-tone-2 {
             background: $agent-surface-2;
-            border-left: vkey $agent-edge-2 25%;
+            border-left: vkey $agent-edge-2;
         }
         &.-agent-tone-3 {
             background: $agent-surface-3;
-            border-left: vkey $agent-edge-3 25%;
+            border-left: vkey $agent-edge-3;
         }
 
         &.block {
@@ -114,7 +120,7 @@ Conversation {
         #agent-message-header {
             height: 1;
             width: 1fr;
-            margin: 0;
+            margin: 0 0 1 0;
             padding: 0 1 0 0;
             content-align: left middle;
         }
@@ -129,9 +135,11 @@ Conversation {
             #tool-activity-summary {
                 height: 1;
                 width: 1fr;
+                /* No vertical margin: the activity area must stay exactly one
+                   row so a new tool call cannot reflow the conversation. The
+                   gap above it comes from the response's trailing block. */
                 margin: 0 1 0 0;
-                color: $primary;
-                text-style: dim;
+                color: $message-meta;
                 text-overflow: ellipsis;
             }
 
@@ -146,7 +154,7 @@ Conversation {
         min-height: 1;        
         margin: 0;
         padding: 0;
-        color: #E3E6EA;
+        color: $content-body;
         background: transparent;
         link-color: $content-link;
         link-style: underline;
@@ -160,8 +168,19 @@ Conversation {
         overflow-x: auto;
         scrollbar-size-horizontal: 0;
         layout: stream;
-        & > MarkdownBlock:last-child {            
-            margin-bottom: 0;
+
+        /* Vertical rhythm. Every block previously used margin: 0, so a
+           heading, its prose, a list and a code fence ran together as one
+           undifferentiated wall of lines. Separation here is what makes a
+           reply skimmable.
+
+           Each block owns its trailing gap, so the last one also supplies the
+           card's bottom breathing room (AgentMessage adds no bottom padding).
+           Only the leading gap is suppressed, and it is written as the full
+           shorthand: in Textual a single-edge margin property rewrites the
+           whole box, which would silently drop the trailing gap too. */
+        & > MarkdownBlock:first-child {
+            margin: 0 0 1 0;
         }
 
         MarkdownBlock,
@@ -175,7 +194,7 @@ Conversation {
 
         MarkdownParagraph,
         MarkdownList {
-            color: #E3E6EA;
+            color: $content-body;
 
             &:light {
                 color: #202326;
@@ -196,17 +215,41 @@ Conversation {
                 color: #0550AE;
             }
 
+            /* A file path is a destination, so it wears the same accent as
+               a link. The old magenta chip was a tenth hue competing with
+               the speaker rails for attention. */
             & > .file_reference {
-                background: $content-file-background;
-                color: $content-file-foreground;
-                text-style: bold;
+                color: $content-link;
             }
         }
 
+        /* Must follow the MarkdownBlock reset above: both selectors carry the
+           same specificity, so source order decides which margin survives.
+           Direct children only — a descendant selector would also space out
+           the paragraph inside every list item and block quote, turning a
+           tight list into a double-spaced one. */
+        & > MarkdownParagraph,
+        & > MarkdownList {
+            margin: 0 0 1 0;
+        }
+
+        /* A list marker labels content, it is not content: quieter than the
+           text beside it, and neutral like the rest of the structure.
+           Textual defaults it to $text-primary, i.e. teal. */
+        MarkdownBullet {
+            color: $message-meta;
+        }
+
         MarkdownHeader {
+            /* Brighter than body text and bold — nothing more. Amber read as
+               a warning here, and warning is a meaning this app already
+               spends elsewhere. */
             color: $content-heading;
             background: transparent;
             text-style: bold;
+            /* A section break needs air above it and none below: the
+               heading should bind to the text it introduces. */
+            margin: 1 0 0 0;
 
             &:light {
                 color: #111827;
@@ -216,48 +259,66 @@ Conversation {
         MarkdownFence {
             color: $content-code-fence-foreground;
             background: $content-code-fence-background;
-            border-left: solid $accent 70%;
+            border-left: solid $content-rule;
             padding: 0 1;
-            margin: 0;
+            margin: 1 0;
 
             &:light {
                 color: #465A6E;
                 background: #F3F6FA;
-                border-left: solid #0F766E 70%;
+                border-left: solid #CBD5E1;
             }
         }
 
         MarkdownTable {
+            /* No fill. A table is the least important thing in a reply and it
+               was the loudest: a box around every cell. */
             color: $content-table-foreground;
-            background: $content-table-background;
-            padding: 0 1;
-            margin: 0;
+            background: transparent;
+            padding: 0 0;
+            margin: 1 0;
 
             &:light {
                 color: #2D3033;
             }
         }
 
+        MarkdownTableContent {
+            /* Textual draws the cell grid with a keyline. One rule under the
+               header replaces it — enough to read columns, quiet enough to
+               ignore. */
+            keyline: none;
+            grid-gutter: 0 2;
+        }
+
         MarkdownTableContent > .header {
             color: $content-table-header;
-            background: #1D3040;
+            background: transparent;
             text-style: bold;
+            border-bottom: solid $content-rule;
+            padding: 0 0;
+        }
+
+        MarkdownTableContent > .cell {
+            padding: 0 0;
         }
 
         MarkdownTableContent:light > .header {
-            color: #8A5A00;
+            color: #111827;
         }
 
         MarkdownBlockQuote {
+            /* Recedes rather than glows: a quote is someone else's words. The
+               teal fill made it the brightest band in the reply. */
             color: $content-quote-foreground;
-            background: $content-quote-background;
-            border-left: solid $primary 80%;
+            background: transparent;
+            border-left: solid $content-rule;
             padding: 0 1;
-            margin: 0;
+            margin: 1 0;
 
             &:light {
-                color: #315E5A;
-                border-left: solid #0F766E;
+                color: #52606D;
+                border-left: solid #CBD5E1;
             }
         }
 
@@ -278,13 +339,14 @@ Conversation {
     }
 
     AgentThought {
-        background: $primary 6%;
-        color: $text-primary;        
-        min-height: 1;        
+        /* Reasoning is not a destination and not a speaker. It recedes like a
+           quote: the teal fill made it the loudest block inside a quiet card. */
+        background: transparent;
+        color: $content-quote-foreground;
+        min-height: 1;
         margin: 1 1 1 0;
         padding:  0 1 0 1;
-        border-left: solid $primary 50%;
-        border-bottom: solid $primary 20%;
+        border-left: solid $content-rule;
         overflow-x: auto;
         scrollbar-size-horizontal: 0;
         layout: stream;
@@ -307,8 +369,8 @@ Conversation {
     ToolCall {    
         margin: 0 !important;
         padding-left: 1;
-        border-left: solid $primary 25%;
-        
+        border-left: solid $content-rule;
+
         width: 1fr;
         layout: stream;
         height: auto;        
@@ -348,8 +410,8 @@ Conversation {
             }
         }
         
-        ToolCallHeader {  
-            color: $primary;
+        ToolCallHeader {
+            color: $chrome-text;
             pointer: pointer;       
             width: auto;
             max-width: 1fr;   
@@ -362,15 +424,15 @@ Conversation {
 
    
 
-    ShellResult {        
-        border-left: blank $primary;
+    ShellResult {
+        border-left: blank $content-rule;
         background: $foreground 4%;        
         padding: 1 0;   
         margin: 1 1 1 0; 
         #prompt {
             margin: 0 1 0 0;
-            color: $text-primary;            
-        }  
+            color: $chrome-text;
+        }
     }
     
     Terminal {        
@@ -383,10 +445,12 @@ Conversation {
     }
 
     TerminalTool {
-        height: auto;   
-        border: panel $primary 50%;                  
-        border-title-color: $text-primary;
-        background: $primary 10%;        
+        height: auto;
+        /* Neutral while running; -success and -error below already carry the
+           only colour a terminal frame needs. */
+        border: panel $content-rule;
+        border-title-color: $chrome-text-strong;
+        background: $chrome-fill;
         padding: 1 1 0 1;              
         border-title-style: bold;
 
@@ -417,20 +481,26 @@ Conversation {
                   
     }
          
-    UserInput {        
+    /* The human's turn. It was a right-aligned teal bubble with an orange
+       edge — an iMessage bubble borrowed into a terminal, and the loudest
+       object on screen for the one message the reader already wrote.
+
+       Now it is the only participant with no hue: same left margin, same
+       rail geometry as an agent, colour withheld. That inversion is the
+       signal — a coloured rail is an agent, a grey rail is you. */
+    UserInput {
         height: auto;
         margin: 0 1 1 0;
         padding: 0;
-        align: right top;
+        align: left top;
 
         #user-bubble {
-            width: 80%;
+            width: 1fr;
             height: auto;
-            border-top: tall $primary 20%;
-            border-bottom: tall $user-edge 55%;
-            border-right: tall $user-edge 55%;
-            background: $user-surface;
-            padding: 0 1 0 2;
+            border-left: vkey $user-edge;
+            background: transparent;
+            color: $user-foreground;
+            padding: 0 1 0 1;
 
             Markdown {
                 padding: 0;
@@ -445,7 +515,7 @@ Conversation {
     }
 
     &.-narrow UserInput #user-bubble {
-        width: 90%;
+        width: 1fr;
     }
 
 }
@@ -564,12 +634,14 @@ Prompt {
         }
         height: auto;
         margin: 0;
-        border-bottom: solid $secondary 45%;
+        border-bottom: solid $content-rule;
         border-subtitle-align: left;
         border-subtitle-style: reverse;
-        
+
+        /* The one place teal belongs in the chrome: focus is interaction, the
+           same idea the accent already carries inside a message. */
         &:focus-within {
-            border-bottom: solid $secondary;
+            border-bottom: solid $primary;
             #prompt {
                 text-opacity: 100%;
             }
@@ -600,9 +672,9 @@ Prompt {
         overflow: hidden auto;
         margin: 0 1;
         padding: 0 1;
-        color: $text-secondary;
-        background: $secondary 8%;
-        border-left: tall $secondary 45%;
+        color: $chrome-text;
+        background: $chrome-fill;
+        border-left: tall $content-rule;
 
         .queued-message-row {
             width: 1fr;
@@ -620,7 +692,7 @@ Prompt {
             height: 1;
             min-width: 3;
             padding: 0;
-            color: $text-secondary;
+            color: $chrome-text;
             background: transparent;
             border: none;
 
@@ -644,8 +716,8 @@ Prompt {
         AgentInfo {
             padding: 0 1;
             margin: 0 1 0 0;
-            color: $text-primary;
-            background: $primary 10%;
+            color: $chrome-text-strong;
+            background: $chrome-fill;
             width: auto;
             text-wrap: nowrap;
         }
@@ -658,11 +730,11 @@ Prompt {
             width: 1fr;            
             height: 1;
             text-wrap: nowrap;
-            color: $text-secondary;            
+            color: $chrome-text;
         }
 
-        StatusLine {            
-            color: $secondary 70%;    
+        StatusLine {
+            color: $chrome-text;
             margin: 0 1;
             width: auto;
             height: 1;    
@@ -674,8 +746,8 @@ Prompt {
         ModeInfo {
             padding: 0 1;
             margin: 0 0;
-            color: $text-secondary;
-            background: $secondary 10%;
+            color: $chrome-text;
+            background: $chrome-fill;
             dock: right; 
             display: none;
         }        
@@ -683,8 +755,8 @@ Prompt {
         CollaborationInfo {
             padding: 0 1;
             margin: 0 1 0 0;
-            color: $text-primary;
-            background: $primary 18%;
+            color: $chrome-text-strong;
+            background: $chrome-fill;
             text-style: bold;
         }
     }
@@ -703,7 +775,7 @@ CollaborationInfo:hover {
 }
 
 CollaborationInfo {
-    color: $text-primary;
+    color: $chrome-text-strong;
 }
 
 ModeSwitcher,
