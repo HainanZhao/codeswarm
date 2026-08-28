@@ -24,6 +24,8 @@ from codeswarm.widgets.terminal import Terminal
 
 DEFAULT_OUTPUT_BYTE_LIMIT = 1 * 1024 * 1024
 MAX_OUTPUT_BYTE_LIMIT = 4 * 1024 * 1024
+TERMINAL_OUTPUT_BUFFER_PERIOD = 1 / 30
+TERMINAL_OUTPUT_MAX_BUFFER_DURATION = 1 / 20
 
 
 @dataclass
@@ -272,7 +274,12 @@ class TerminalTool(Terminal):
                 errors="replace"
             )
             while True:
-                data = await shell_read(reader, buffer_size)
+                data = await shell_read(
+                    reader,
+                    buffer_size,
+                    buffer_period=TERMINAL_OUTPUT_BUFFER_PERIOD,
+                    max_buffer_duration=TERMINAL_OUTPUT_MAX_BUFFER_DURATION,
+                )
                 if data:
                     self._record_output(data)
                 if process_data := unicode_decoder.decode(data, final=not data):

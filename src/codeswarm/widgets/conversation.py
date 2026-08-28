@@ -110,6 +110,7 @@ TRANSCRIPT_BUFFER_ROWS = 100
 TRANSCRIPT_OVERSCAN_ROWS = 25
 TRANSCRIPT_MAX_MOUNTED_ROWS = 260
 TRANSCRIPT_PINNED_TAIL_BLOCKS = 4
+STREAM_RENDER_INTERVAL = 0.05
 
 STOP_REASON_MAX_TOKENS = """\
 ## Maximum tokens reached
@@ -586,6 +587,9 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         self._agent_started_at: float | None = None
         self._agent_elapsed: dict[int, int] = {}
         self._agent_status_timer: Timer | None = None
+        self._stream_pending: tuple[str, str, AgentBase | None] | None = None
+        self._stream_flush_worker_running = False
+        self._stream_flush_task: asyncio.Task[None] | None = None
         self._collaboration_complete = False
         self._agent_response: AgentResponse | None = None
         self._agent_message: AgentMessage | None = None
@@ -1082,6 +1086,59 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             self._agent_thought = None
             self._agent_message = None
 
+    async def queue_agent_stream_fragment(
+        self,
+        kind: Literal["response", "thought"],
+        fragment: str,
+        agent: AgentBase | None,
+    ) -> None:
+        """Buffer streamed agent text so providers cannot drive the renderer."""
+        if not fragment:
+            return
+        pending = self._stream_pending
+        if pending is not None and (pending[0] != kind or pending[2] is not agent):
+            await self.flush_agent_stream()
+            pending = self._stream_pending
+        if pending is None:
+            self._stream_pending = (kind, fragment, agent)
+        else:
+            self._stream_pending = (kind, pending[1] + fragment, agent)
+        if not self._stream_flush_worker_running:
+            self._stream_flush_worker_running = True
+            self._stream_flush_task = asyncio.create_task(
+                self._flush_agent_stream_worker()
+            )
+
+    async def _flush_agent_stream_worker(self) -> None:
+        """Flush pending text at a bounded cadence rather than token cadence."""
+        try:
+            while self._stream_pending is not None:
+                await asyncio.sleep(STREAM_RENDER_INTERVAL)
+                await self.flush_agent_stream()
+        finally:
+            self._stream_flush_worker_running = False
+            self._stream_flush_task = None
+            if self._stream_pending is not None and not self._shutdown:
+                self._stream_flush_worker_running = True
+                self._stream_flush_task = asyncio.create_task(
+                    self._flush_agent_stream_worker()
+                )
+
+    async def flush_agent_stream(self) -> None:
+        """Render all queued stream text before a non-stream event is handled."""
+        pending = self._stream_pending
+        self._stream_pending = None
+        if pending is None:
+            return
+        kind, fragment, agent = pending
+        self.clear_agent_thinking()
+        self.begin_agent_output(agent)
+        if kind == "response":
+            self._agent_thought = None
+            await self.post_agent_response(fragment)
+        else:
+            await self.post_agent_thought(fragment, agent)
+
     async def post_agent_thought(
         self,
         thought_fragment: str,
@@ -1230,6 +1287,12 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         if self._shutdown:
             return
         self._shutdown = True
+        self._stream_pending = None
+        if self._stream_flush_task is not None:
+            self._stream_flush_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._stream_flush_task
+            self._stream_flush_task = None
         if self._agent_status_timer is not None:
             self._agent_status_timer.stop()
             self._agent_status_timer = None
@@ -1776,6 +1839,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         rendered = asyncio.Event()
         self.call_after_refresh(rendered.set)
         await rendered.wait()
+        await self.flush_agent_stream()
         elapsed_by_agent = [
             (
                 self._agent_display_name(agent),
@@ -2132,6 +2196,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         Args:
             stop_reason: The stop reason returned from the Agent, or `None`.
         """
+        await self.flush_agent_stream()
         self.turn = "client"
         self.app.clear_interrupt_request()
         if self._agent_thought is not None and self._agent_thought.loading:

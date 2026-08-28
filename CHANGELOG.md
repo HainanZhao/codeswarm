@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.39] - 2026-08-28
+
+### Fixed
+
+- Streamed ACP responses and thoughts are rendered at a bounded cadence, so
+  token-rate updates cannot flood the Textual compositor.
+- Large terminal PTY reads yield while parsing, keeping timers and input
+  responsive during verbose commands even when ACP is quiet.
+- Slow SSH and tmux clients no longer block the UI on Textual's output queue.
+  Stale diffs are discarded under pressure and replaced with a full repaint to
+  resynchronize the terminal without unbounded buffering.
+
 ## [0.6.38] - 2026-08-28
 
 ### Changed

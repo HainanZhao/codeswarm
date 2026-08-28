@@ -40,10 +40,7 @@ class ConversationACPHandlers(Widget):
     @on(acp_messages.Update)
     async def on_acp_agent_message(self, message: acp_messages.Update):
         message.stop()
-        self.clear_agent_thinking()
-        self.begin_agent_output(message.agent)
-        self._agent_thought = None
-        await self.post_agent_response(message.text)
+        await self.queue_agent_stream_fragment("response", message.text, message.agent)
 
     @on(acp_messages.UserMessage)
     async def on_acp_user_message(self, message: acp_messages.UserMessage):
@@ -53,6 +50,7 @@ class ConversationACPHandlers(Widget):
         if is_mode_update_notice(message.text):
             message.stop()
             return
+        await self.flush_agent_stream()
         self._agent_thought = None
         self._agent_response = None
         message.stop()
@@ -61,13 +59,12 @@ class ConversationACPHandlers(Widget):
     @on(acp_messages.Thinking)
     async def on_acp_agent_thinking(self, message: acp_messages.Thinking):
         message.stop()
-        self.clear_agent_thinking()
-        self.begin_agent_output(message.agent)
-        await self.post_agent_thought(message.text, message.agent)
+        await self.queue_agent_stream_fragment("thought", message.text, message.agent)
 
     @on(acp_messages.RequestPermission)
     async def on_acp_request_permission(self, message: acp_messages.RequestPermission):
         message.stop()
+        await self.flush_agent_stream()
         options = [
             Answer(option["name"], option["optionId"], option["kind"])
             for option in message.options
@@ -81,6 +78,7 @@ class ConversationACPHandlers(Widget):
     async def on_acp_tool_call_update(
         self, message: acp_messages.ToolCall | acp_messages.ToolCallUpdate
     ):
+        await self.flush_agent_stream()
         from codeswarm.widgets.agent_response import AgentToolActivity
         from codeswarm.widgets.tool_call import ToolCall
 

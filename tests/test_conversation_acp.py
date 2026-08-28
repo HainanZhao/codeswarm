@@ -2483,6 +2483,35 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_streamed_agent_fragments_are_coalesced_before_markdown_render(
+        self,
+    ) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(80, 12)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                fragments = ["first ", "second ", "third ", "fourth"]
+                for fragment in fragments:
+                    await conversation.on_acp_agent_message(
+                        acp_messages.Update("text", fragment)
+                    )
+
+                # Token cadence must not force a Markdown parse/layout pass for
+                # every provider fragment.
+                self.assertFalse(conversation.query(AgentResponse))
+
+                await pilot.pause(0.1)
+                response = conversation.query_one(AgentResponse)
+                await pilot.pause(0.1)
+                rendered = " ".join(
+                    paragraph.render().plain
+                    for paragraph in response.query(MarkdownParagraph)
+                )
+                self.assertIn("first second third fourth", rendered)
+
+        asyncio.run(scenario())
+
     def test_scrolling_back_to_bottom_resumes_stream_following(self) -> None:
         async def scenario() -> None:
             async with CodeSwarmApp(setup_prompt=False).run_test(

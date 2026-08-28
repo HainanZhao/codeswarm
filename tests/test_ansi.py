@@ -9,6 +9,7 @@ from codeswarm.ansi._ansi import (
     ANSIStream,
     Buffer,
     TerminalState,
+    WRITE_CHUNK_SIZE,
 )
 
 
@@ -72,6 +73,24 @@ class ScrollbackBufferTests(unittest.TestCase):
             state = _state()
             await state.write("".join(f"line {n:03d}\r\n" for n in range(20)))
             self.assert_indices_consistent(state.scrollback_buffer)
+
+        asyncio.run(scenario())
+
+    def test_large_write_yields_to_the_event_loop(self) -> None:
+        async def scenario() -> None:
+            state = _state()
+            marker_ran = False
+
+            async def marker() -> None:
+                nonlocal marker_ran
+                await asyncio.sleep(0)
+                marker_ran = True
+
+            marker_task = asyncio.create_task(marker())
+            await state.write("x" * (WRITE_CHUNK_SIZE * 3))
+
+            self.assertTrue(marker_ran)
+            self.assertTrue(marker_task.done())
 
         asyncio.run(scenario())
 

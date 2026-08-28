@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 from itertools import accumulate
 import re
@@ -697,6 +698,7 @@ in the transcript.
 """
 
 SCROLLBACK_TRIM_SLACK = 1_000
+WRITE_CHUNK_SIZE = 8 * 1024
 """How far below the cap a trim goes, so trims are rare.
 
 A trim rebuilds the whole fold index, so trimming back to exactly the cap
@@ -1238,14 +1240,21 @@ class TerminalState:
         # Reset updated lines delta
         alternate_buffer._updated_lines = set()
         scrollback_buffer._updated_lines = set()
-        # Write sequences and update
-        if hide_output:
-            for ansi_command in self._ansi_stream.feed(text):
-                if not isinstance(ansi_command, (ANSIContent, ANSICursor)):
+        # Write sequences and update. Feed bounded chunks so a large PTY read
+        # cannot monopolize the asyncio/UI loop while parsing terminal output.
+        # ANSIStream is incremental, so escape sequences split at a chunk
+        # boundary retain their state and are handled exactly as one write.
+        for offset in range(0, len(text), WRITE_CHUNK_SIZE):
+            chunk = text[offset : offset + WRITE_CHUNK_SIZE]
+            if hide_output:
+                for ansi_command in self._ansi_stream.feed(chunk):
+                    if not isinstance(ansi_command, (ANSIContent, ANSICursor)):
+                        await self._handle_ansi_command(ansi_command)
+            else:
+                for ansi_command in self._ansi_stream.feed(chunk):
                     await self._handle_ansi_command(ansi_command)
-        else:
-            for ansi_command in self._ansi_stream.feed(text):
-                await self._handle_ansi_command(ansi_command)
+            if offset + len(chunk) < len(text):
+                await asyncio.sleep(0)
 
         # Get deltas
         scrollback_updates = (

@@ -237,6 +237,17 @@ class CodeSwarmApp(App, inherit_bindings=False):
 
     PAUSE_GC_ON_SCROLL = True
 
+    def get_driver_class(self):
+        """Use a non-blocking output queue on native Linux/macOS terminals."""
+        driver_class = super().get_driver_class()
+        from textual.drivers.linux_driver import LinuxDriver
+
+        if driver_class is LinuxDriver:
+            from codeswarm.textual_driver import ResponsiveLinuxDriver
+
+            return ResponsiveLinuxDriver
+        return driver_class
+
     def __init__(
         self,
         agent_data: AgentData | None = None,
@@ -273,6 +284,7 @@ class CodeSwarmApp(App, inherit_bindings=False):
         self._supports_pyperclip: bool | None = None
         self._terminal_title_flash_timer: Timer | None = None
         self._interrupt_requested_at: float | None = None
+        self._terminal_refresh_pending = False
 
         self._session_tracker = SessionTracker()
 
@@ -359,6 +371,24 @@ class CodeSwarmApp(App, inherit_bindings=False):
 
         if driver := self._driver:
             driver.write(f"\033]0;{terminal_title}\007")
+
+    def _request_full_terminal_refresh(self) -> None:
+        """Resync a slow terminal after intermediate output frames are dropped."""
+        if self._terminal_refresh_pending or self._closed:
+            return
+        screen = self.screen
+        if not screen.size:
+            return
+        self._terminal_refresh_pending = True
+        # Textual's compositor normally emits diffs. Marking the whole screen
+        # dirty makes its next refresh a LayoutUpdate, restoring the terminal
+        # after the writer discarded stale diffs under backpressure.
+        screen._compositor._dirty_regions.add(screen.size.region)
+        screen.refresh()
+        screen.call_after_refresh(self._clear_terminal_refresh_pending)
+
+    def _clear_terminal_refresh_pending(self) -> None:
+        self._terminal_refresh_pending = False
 
     def watch_terminal_title_blink(self) -> None:
         self.update_terminal_title()
