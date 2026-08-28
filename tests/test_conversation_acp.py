@@ -887,6 +887,94 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_failed_process_mode_restart_retires_dead_conversation_agent(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(120, 40)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+
+                class StartupAgent(_RosterAgent):
+                    @property
+                    def supports_startup_full_access(self) -> bool:
+                        return True
+
+                    @property
+                    def startup_full_access(self) -> bool:
+                        return False
+
+                failed = StartupAgent("Antigravity")
+                healthy = _RosterAgent("Gemini")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="antigravity.google.com",
+                            name="Antigravity",
+                            short_name="antigravity",
+                        ),
+                        failed,  # type: ignore[arg-type]
+                    ),
+                    RosterEntry(
+                        AgentData(
+                            identity="geminicli.com",
+                            name="Gemini",
+                            short_name="gemini",
+                        ),
+                        healthy,  # type: ignore[arg-type]
+                    ),
+                ]
+                conversation.session._build_relay()
+                conversation.agent = failed  # type: ignore[assignment]
+                conversation._mode_agent = failed  # type: ignore[assignment]
+                conversation._ready_agents = {id(failed), id(healthy)}
+                conversation.set_agent_modes(
+                    {
+                        "default": Mode("default", "Default", "Prompt"),
+                        "plan": Mode("plan", "Plan", "Read-only"),
+                    },
+                    "default",
+                    failed,  # type: ignore[arg-type]
+                )
+                conversation.set_agent_modes(
+                    {
+                        "default": Mode("default", "Default", "Prompt"),
+                        "plan": Mode("plan", "Plan", "Read-only"),
+                        "yolo": Mode("yolo", "YOLO", "All"),
+                    },
+                    "default",
+                    healthy,  # type: ignore[arg-type]
+                )
+
+                async def fail_restart(
+                    previous: _RosterAgent,
+                    _target: object,
+                    *,
+                    enabled: bool,
+                ) -> None:
+                    del enabled
+                    conversation.session.mark_failed(previous)  # type: ignore[arg-type]
+                    return None
+
+                conversation.session.restart_for_startup_full_access = fail_restart  # type: ignore[method-assign]
+                persist = AsyncMock()
+                conversation._persist_roster = persist  # type: ignore[method-assign]
+                offer_reload = Mock()
+                conversation._offer_agent_reload = offer_reload  # type: ignore[method-assign]
+
+                self.assertFalse(await conversation._sync_desired_mode())
+
+                self.assertFalse(conversation.session.roster[0].active)
+                self.assertIs(conversation.agent, healthy)
+                self.assertIs(conversation._mode_agent, healthy)
+                self.assertTrue(conversation.agent_ready)
+                self.assertNotIn(id(failed), conversation._ready_agents)
+                persist.assert_awaited_once()
+                offer_reload.assert_called_once_with(
+                    failed, "permission mode restart failed"
+                )
+
+        asyncio.run(scenario())
+
     def test_resume_failure_help_uses_current_launcher_controls(self) -> None:
         help_text = AGENT_FAIL_HELP["no_resume"]
 
@@ -1134,6 +1222,29 @@ class ConversationACPDispatchTests(unittest.TestCase):
                             reload_agent.assert_not_called()
 
                         self.assertFalse(conversation.session.roster[1].active)
+
+        asyncio.run(scenario())
+
+    def test_failed_reload_reoffers_retry_or_explicit_drop(self) -> None:
+        async def scenario() -> None:
+            conversation = Conversation(Path.cwd())
+            failed = _RosterAgent("Claude")
+            session = Mock()
+            session.reload_agent = AsyncMock(return_value=None)
+            conversation.session = session
+            conversation.flash = Mock()  # type: ignore[method-assign]
+            conversation.post = AsyncMock()  # type: ignore[method-assign]
+            conversation._offer_agent_reload = Mock()  # type: ignore[method-assign]
+
+            await conversation.reload_failed_agent.__wrapped__(
+                conversation, failed
+            )
+
+            conversation._offer_agent_reload.assert_called_once_with(
+                failed, "reload failed"
+            )
+            note = conversation.post.await_args.args[0]
+            self.assertIn("queued work remains held", str(note.content))
 
         asyncio.run(scenario())
 
@@ -4263,6 +4374,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
             conversation = Conversation(Path.cwd())
             session = Mock()
             session.relay_active = True
+            session.queued_prompt_count = 0
             conversation.session = session
             conversation.relay_paused = True
             conversation.post = AsyncMock(return_value=Mock())  # type: ignore[method-assign]
@@ -4280,6 +4392,55 @@ class ConversationACPDispatchTests(unittest.TestCase):
             conversation.send_prompt_to_agent.assert_called_once_with(
                 "Resume the collaboration from the current shared workspace."
             )
+
+        asyncio.run(scenario())
+
+    def test_resuming_a_relay_drains_queued_work_without_a_synthetic_turn(self) -> None:
+        async def scenario() -> None:
+            conversation = Conversation(Path.cwd())
+            session = Mock()
+            session.relay_active = True
+            session.queued_prompt_count = 1
+            conversation.session = session
+            conversation.relay_paused = True
+            conversation.flash = Mock()  # type: ignore[method-assign]
+            conversation.send_prompt_to_agent = Mock()  # type: ignore[method-assign]
+
+            await conversation.action_toggle_pause.__wrapped__(conversation)
+
+            conversation.send_prompt_to_agent.assert_called_once_with(
+                "", resume_queued=True
+            )
+
+        asyncio.run(scenario())
+
+    def test_idle_manual_submission_joins_existing_queue_before_resume(self) -> None:
+        async def scenario() -> None:
+            conversation = Conversation(Path.cwd())
+            session = Mock()
+            session.relay_active = True
+            session.queued_prompt_count = 1
+            session.enqueue_human.return_value = True
+            conversation.session = session
+            conversation.prompt_history.append = AsyncMock()  # type: ignore[method-assign]
+            conversation._queue_relay_prompt = Mock()  # type: ignore[method-assign]
+            conversation.send_prompt_to_agent = Mock()  # type: ignore[method-assign]
+
+            with patch.object(Conversation, "agent_ready", True):
+                await conversation.on_user_input_submitted(
+                    messages.UserInputSubmitted("newer work")
+                )
+
+            session.enqueue_human.assert_called_once_with("newer work")
+            conversation._queue_relay_prompt.assert_called_once_with(
+                True,
+                "TX HOLD // EARLIER TURN PENDING",
+                "newer work",
+            )
+            conversation.send_prompt_to_agent.assert_called_once_with(
+                "", resume_queued=True
+            )
+            self.assertEqual(conversation.turn, "agent")
 
         asyncio.run(scenario())
 

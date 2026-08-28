@@ -9,10 +9,11 @@ import pty
 import shlex
 import signal
 from collections import deque
+from contextlib import suppress
 from dataclasses import dataclass
 import struct
 import termios
-from typing import Iterable, Mapping
+from typing import BinaryIO, Iterable, Mapping
 
 from textual.content import Content
 from textual.reactive import var
@@ -229,38 +230,49 @@ class TerminalTool(Terminal):
             self._shell_fd = None
             raise
 
-        self._ready_event.set()
-
-        self.resize_pty(
-            master,
-            self._width or 80,
-            self._height or 24,
-        )
-
-        os.close(slave)
-
-        self.set_write_to_stdin(self.write_stdin)
-
-        BUFFER_SIZE = 64 * 1024 * 2
-        reader = asyncio.StreamReader(BUFFER_SIZE)
-        protocol = asyncio.StreamReaderProtocol(reader)
-
-        loop = asyncio.get_event_loop()
-        transport, _ = await loop.connect_read_pipe(
-            lambda: protocol, os.fdopen(master, "rb", 0)
-        )
-        # Create write transport
-        writer_protocol = asyncio.BaseProtocol()
-        write_transport, _ = await loop.connect_write_pipe(
-            lambda: writer_protocol,
-            os.fdopen(os.dup(master), "wb", 0),
-        )
-        self.writer = write_transport
-
-        unicode_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        read_transport: asyncio.ReadTransport | None = None
+        write_transport: asyncio.WriteTransport | None = None
+        read_pipe: BinaryIO | None = None
+        write_pipe: BinaryIO | None = None
+        master_open = True
+        slave_open = True
         try:
+            self.resize_pty(
+                master,
+                self._width or 80,
+                self._height or 24,
+            )
+
+            os.close(slave)
+            slave_open = False
+
+            self.set_write_to_stdin(self.write_stdin)
+
+            buffer_size = 64 * 1024 * 2
+            reader = asyncio.StreamReader(buffer_size)
+            protocol = asyncio.StreamReaderProtocol(reader)
+
+            loop = asyncio.get_event_loop()
+            read_pipe = os.fdopen(master, "rb", 0)
+            master_open = False
+            read_transport, _ = await loop.connect_read_pipe(
+                lambda: protocol, read_pipe
+            )
+
+            writer_protocol = asyncio.BaseProtocol()
+            write_pipe = os.fdopen(os.dup(master), "wb", 0)
+            write_transport, _ = await loop.connect_write_pipe(
+                lambda: writer_protocol,
+                write_pipe,
+            )
+            self.writer = write_transport
+            self._ready_event.set()
+
+            unicode_decoder = codecs.getincrementaldecoder("utf-8")(
+                errors="replace"
+            )
             while True:
-                data = await shell_read(reader, BUFFER_SIZE)
+                data = await shell_read(reader, buffer_size)
                 if data:
                     self._record_output(data)
                 if process_data := unicode_decoder.decode(data, final=not data):
@@ -268,8 +280,29 @@ class TerminalTool(Terminal):
                         self.display = True
                 if not data:
                     break
+        except BaseException:
+            if getattr(process, "returncode", None) is None:
+                with suppress(OSError, ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                await process.wait()
+            self._process = None
+            raise
         finally:
-            transport.close()
+            self._shell_fd = None
+            if read_transport is not None:
+                read_transport.close()
+            if write_transport is not None:
+                write_transport.close()
+            if read_pipe is not None:
+                read_pipe.close()
+            if write_pipe is not None:
+                write_pipe.close()
+            if slave_open:
+                with suppress(OSError):
+                    os.close(slave)
+            if master_open:
+                with suppress(OSError):
+                    os.close(master)
 
         self.finalize()
         return_code = self._return_code = await process.wait()

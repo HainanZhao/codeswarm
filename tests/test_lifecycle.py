@@ -51,6 +51,14 @@ class _EmptyErrorStream:
         return b""
 
 
+class _WriteStream:
+    def __init__(self) -> None:
+        self.writes: list[bytes] = []
+
+    def write(self, data: bytes) -> None:
+        self.writes.append(data)
+
+
 class _RequestStream:
     def __init__(self, lines: list[bytes]) -> None:
         self.lines = lines
@@ -82,7 +90,7 @@ class _ExitedProcess:
     def __init__(self, returncode: int = 0) -> None:
         self.returncode = returncode
         self.stdout = _EOFStream()
-        self.stdin = object()
+        self.stdin = _WriteStream()
         self.stderr = _EmptyErrorStream()
 
     async def wait(self) -> int:
@@ -120,6 +128,72 @@ class _StoppingSession:
 
 
 class AgentLifecycleTests(unittest.TestCase):
+    def test_agent_eof_rejects_its_outstanding_protocol_calls(self) -> None:
+        """A dead transport must unwind the turn waiting for its response."""
+
+        async def scenario() -> None:
+            data = cast(
+                AgentData,
+                {
+                    "name": "Test agent",
+                    "identity": "test.agent",
+                    "run_command": {"*": "test-agent"},
+                },
+            )
+            agent = Agent(Path.cwd(), data, None)
+            agent._stopping = True
+            agent.session_id = "agent-session"
+            process = _ExitedProcess()
+            agent._process = process  # type: ignore[assignment]
+            agent._transport_closed = False
+            pending = asyncio.create_task(agent.acp_session_prompt([]))
+            await asyncio.sleep(0)
+            self.assertEqual(len(process.stdin.writes), 1)
+
+            with (
+                patch(
+                    "codeswarm.acp.agent.asyncio.create_subprocess_shell",
+                    new=AsyncMock(return_value=process),
+                ),
+                patch.object(agent, "run", new=AsyncMock()),
+            ):
+                await agent._run_agent()
+
+            with self.assertRaisesRegex(jsonrpc.TransportClosed, "stdout closed"):
+                await asyncio.wait_for(pending, timeout=0.1)
+
+        asyncio.run(scenario())
+
+    def test_agent_rejects_protocol_calls_submitted_after_eof(self) -> None:
+        """Requests registered after cleanup must fail instead of hanging."""
+
+        async def scenario() -> None:
+            data = cast(
+                AgentData,
+                {
+                    "name": "Test agent",
+                    "identity": "test.agent",
+                    "run_command": {"*": "test-agent"},
+                },
+            )
+            agent = Agent(Path.cwd(), data, None)
+            agent._stopping = True
+            agent.session_id = "agent-session"
+            process = _ExitedProcess()
+            with (
+                patch(
+                    "codeswarm.acp.agent.asyncio.create_subprocess_shell",
+                    new=AsyncMock(return_value=process),
+                ),
+                patch.object(agent, "run", new=AsyncMock()),
+            ):
+                await agent._run_agent()
+
+            with self.assertRaisesRegex(jsonrpc.TransportClosed, "not running"):
+                await asyncio.wait_for(agent.acp_session_prompt([]), timeout=0.1)
+
+        asyncio.run(scenario())
+
     def test_default_theme_uses_teal_as_its_primary_accent(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:

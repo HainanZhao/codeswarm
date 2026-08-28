@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.37] - 2026-08-28
+
+### Fixed
+
+- An agent that closes its protocol stream can no longer leave a turn waiting
+  forever. Outstanding and later requests fail promptly, while the shared task
+  remains available for a replacement agent to resume.
+- Accepted Manual-mode messages now remain in FIFO order across interruptions,
+  refusals, token limits and crashes. Work for a failed agent is held safely
+  while reload is offered, restored exactly once after a successful reload,
+  and discarded only when the user explicitly continues without that agent.
+- Switching collaboration modes now preserves the live roster, queued work,
+  pause state and next recipient instead of reviving failed agents or losing
+  in-flight context. Manual mode also advances away from an unavailable pin.
+- Reloading or retrying an agent now applies the roster's requested permission
+  policy before any held work is dispatched, including transitions back to a
+  more restrictive mode.
+- A selected first responder to a human follow-up can no longer use the
+  reviewer-only safe word to skip peer review.
+- Completed and partially started terminal commands now release their PTY
+  descriptors, transports and child processes instead of retaining resources
+  for the rest of a long session.
+
 ## [0.6.36] - 2026-08-27
 
 ### Added

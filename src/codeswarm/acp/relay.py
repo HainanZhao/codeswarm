@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from collections import deque
 from typing import Awaitable, Callable, Protocol, Sequence
 
+from codeswarm import jsonrpc
 from codeswarm.acp.collaboration import (
     CollaborationContext,
     DEFAULT_STOP_ACKNOWLEDGMENT,
@@ -38,6 +39,18 @@ class RelayResult:
     rounds: int
     stopped: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class RelayRuntimeState:
+    """Mode-independent mutable state that survives relay replacement."""
+
+    active: tuple[bool, ...]
+    steering_queue: tuple[tuple[int, str], ...]
+    direct_queue: tuple[tuple[int, str], ...]
+    paused: bool
+    last_active_index: int
+    next_agent_index: int | None
 
 
 class RelayConversation:
@@ -84,6 +97,28 @@ class RelayConversation:
     def set_turn_instructions(self, instructions: str) -> None:
         """Set CodeSwarm-owned guidance applied to every future relay turn."""
         self.context.set_turn_instructions(instructions)
+
+    def snapshot_runtime_state(self) -> RelayRuntimeState:
+        """Capture mutable orchestration state shared by every relay strategy."""
+        return RelayRuntimeState(
+            active=tuple(self.active),
+            steering_queue=tuple(self._steering_queue),
+            direct_queue=tuple(self._direct_queue),
+            paused=self.paused,
+            last_active_index=self.last_active_index,
+            next_agent_index=self.next_agent_index,
+        )
+
+    def restore_runtime_state(self, state: RelayRuntimeState) -> None:
+        """Restore state captured from a relay over the same stable roster."""
+        if len(state.active) != len(self.agents):
+            raise ValueError("relay runtime state does not match roster")
+        self.active = list(state.active)
+        self._steering_queue = deque(state.steering_queue)
+        self._direct_queue = deque(state.direct_queue)
+        self.paused = state.paused
+        self.last_active_index = state.last_active_index
+        self.next_agent_index = state.next_agent_index
 
     @property
     def _shared_task(self) -> str | None:
@@ -165,6 +200,18 @@ class RelayConversation:
         if not 0 <= index < len(self.agents):
             raise ValueError("index out of range")
         self.active[index] = False
+        self.discard_queued_for_agent(index)
+
+    def tombstone_agent(self, index: int) -> None:
+        """Suspend an agent without discarding accepted queued work."""
+        if not 0 <= index < len(self.agents):
+            raise ValueError("index out of range")
+        self.active[index] = False
+
+    def discard_queued_for_agent(self, index: int) -> None:
+        """Explicitly discard queued work owned by one stable roster slot."""
+        if not 0 <= index < len(self.agents):
+            raise ValueError("index out of range")
         # Queued work must not be dispatched to an agent the caller stopped.
         if self.on_queued_turn_discarded is not None:
             for target, prompt in self._direct_queue:
@@ -204,9 +251,13 @@ class RelayConversation:
             return False
         if agent_index is None:
             target = self.last_active_index
+            if not self.active[target]:
+                target = self._advance(target)
         elif 0 <= agent_index < len(self.agents) and self.active[agent_index]:
             target = agent_index
         else:
+            return False
+        if not self.active[target]:
             return False
         self._steering_queue.append((target, prompt))
         return True
@@ -215,6 +266,35 @@ class RelayConversation:
     def queued_prompt_count(self) -> int:
         """Number of user messages waiting to be delivered."""
         return len(self._steering_queue) + len(self._direct_queue)
+
+    def _pop_active_queued(
+        self, queue: deque[tuple[int, str]]
+    ) -> tuple[int, str] | None:
+        """Pop the first dispatchable item while retaining suspended slots."""
+        retained: deque[tuple[int, str]] = deque()
+        selected: tuple[int, str] | None = None
+        while queue:
+            item = queue.popleft()
+            if selected is None and self.active[item[0]]:
+                selected = item
+                break
+            retained.append(item)
+        retained.extend(queue)
+        queue.clear()
+        queue.extend(retained)
+        return selected
+
+    def _has_active_queued(self, queue: deque[tuple[int, str]]) -> bool:
+        """Whether a queue contains work for any currently active slot."""
+        return any(self.active[target] for target, _prompt in queue)
+
+    @property
+    def dispatchable_queued_prompt_count(self) -> int:
+        """Number of queued prompts whose target is currently active."""
+        return sum(
+            self.active[target]
+            for target, _prompt in (*self._direct_queue, *self._steering_queue)
+        )
 
     def enqueue_direct(self, agent_index: int, prompt: str) -> bool:
         """Queue a tagged prompt, returning whether it was accepted."""
@@ -258,16 +338,22 @@ class RelayConversation:
         if len(active_indices) != 1:
             return []
         sole_agent = active_indices[0]
-        direct_prompts = [
-            prompt for target, prompt in self._direct_queue if target == sole_agent
-        ]
-        steering_prompts = [
-            prompt
-            for target, prompt in self._steering_queue
-            if target == sole_agent
-        ]
-        self._direct_queue.clear()
-        self._steering_queue.clear()
+        direct_prompts = []
+        retained_direct: deque[tuple[int, str]] = deque()
+        for target, prompt in self._direct_queue:
+            if target == sole_agent:
+                direct_prompts.append(prompt)
+            else:
+                retained_direct.append((target, prompt))
+        steering_prompts = []
+        retained_steering: deque[tuple[int, str]] = deque()
+        for target, prompt in self._steering_queue:
+            if target == sole_agent:
+                steering_prompts.append(prompt)
+            else:
+                retained_steering.append((target, prompt))
+        self._direct_queue = retained_direct
+        self._steering_queue = retained_steering
         return direct_prompts + steering_prompts
 
     def _advance(self, index: int) -> int:
@@ -300,7 +386,7 @@ class RelayConversation:
         new_shared_task = self.context.shared_task is None
         context_event_index: int | None
         if resume_queued:
-            if new_shared_task or not self.queued_prompt_count:
+            if new_shared_task or not self.dispatchable_queued_prompt_count:
                 return RelayResult(0, True, "nothing_queued")
             relay = ""
             context_event_index = None
@@ -325,18 +411,22 @@ class RelayConversation:
             direct_turn = False
             queued_turn = False
             steering_turn = False
-            if self._direct_queue:
-                current, relay = self._direct_queue.popleft()
+            queued_direct = self._pop_active_queued(self._direct_queue)
+            if queued_direct is not None:
+                current, relay = queued_direct
                 direct_turn = True
                 queued_turn = True
                 context_event_index = None
-            elif self._steering_queue:
-                current, relay = self._steering_queue.popleft()
-                queued_turn = True
-                steering_turn = True
+            else:
+                queued_steering = self._pop_active_queued(self._steering_queue)
+                if queued_steering is not None:
+                    current, relay = queued_steering
+                    queued_turn = True
+                    steering_turn = True
             agent = self.agents[current]
             can_stop = (
                 not direct_turn
+                and not steering_turn
                 and context_agent is not None
                 and context_agent is not agent
             )
@@ -365,8 +455,12 @@ class RelayConversation:
             )
             try:
                 stop_reason = await agent.send_prompt(turn_prompt)
-            except Exception:
-                if new_shared_task and round_number == 1:
+            except Exception as error:
+                if (
+                    new_shared_task
+                    and round_number == 1
+                    and not isinstance(error, jsonrpc.TransportClosed)
+                ):
                     self.context.shared_task = None
                 raise
             raw_response = getattr(agent, "last_response", "") or ""
@@ -407,10 +501,10 @@ class RelayConversation:
                 # The marker suppresses another *automated* hand-off. A human
                 # message submitted while this agent was working is newer,
                 # explicit work and must never be stranded behind that marker.
-                if self._direct_queue:
+                if self._has_active_queued(self._direct_queue):
                     current = self.next_agent_index
                     continue
-                if self._steering_queue:
+                if self._has_active_queued(self._steering_queue):
                     context_agent = agent
                     continue
                 return RelayResult(round_number, True, "stop_token")
@@ -430,7 +524,7 @@ class RelayConversation:
                 context_event_index = None
                 continue
 
-            if self._steering_queue:
+            if self._has_active_queued(self._steering_queue):
                 # A human correction belongs to the agent that was active
                 # when it was submitted. The queue entry selects that stable
                 # roster index at the start of the next loop.

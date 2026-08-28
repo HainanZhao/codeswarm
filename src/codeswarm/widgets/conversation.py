@@ -488,6 +488,30 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         self._refresh_displayed_modes()
         self.update_slash_commands()
 
+    def _retire_failed_mode_restart(self, previous: AgentBase) -> None:
+        """Remove conversation state for an adapter lost during mode restart."""
+        self._ready_agents.discard(id(previous))
+        self._agent_modes.pop(id(previous), None)
+        self._agent_elapsed.pop(id(previous), None)
+        self._agent_slash_commands.pop(id(previous), None)
+        if self._working_agent is previous:
+            self._working_agent = None
+            self._agent_started_at = None
+        if self._active_relay_agent is previous:
+            self._active_relay_agent = None
+        if self._mode_agent is previous:
+            self._mode_agent = self.session.primary_agent
+        self.agent = self.session.primary_agent
+        active_agents = self.session.active_agents
+        self.agent_ready = bool(active_agents) and all(
+            id(agent) in self._ready_agents for agent in active_agents
+        )
+        self._move_relay_queue_to_solo_agent()
+        self._refresh_roster_info()
+        self._refresh_displayed_modes()
+        self.update_slash_commands()
+        self._offer_agent_reload(previous, "permission mode restart failed")
+
     def _refresh_displayed_modes(self) -> None:
         """Show one semantic mode surface for the complete active roster."""
         active_agents = self.session.active_agents
@@ -625,6 +649,9 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                     failures.append(
                         f"{previous.get_info()}: unable to restart permission mode"
                     )
+                    if self.session.index_of_agent(previous) is None:
+                        self._retire_failed_mode_restart(previous)
+                        await self._persist_roster()
                 else:
                     self._adopt_mode_replacement(previous, replacement)
 
@@ -1070,6 +1097,9 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         def answered(answer: Answer) -> None:
             if answer.id == "reload":
                 self.reload_failed_agent(failed_agent)
+            elif answer.id == "drop":
+                self.session.discard_failed_agent_queue(failed_agent)
+                self._move_relay_queue_to_solo_agent()
 
         # Short, and it does not repeat the reason: the note directly above
         # already states it, and both options name the agent.
@@ -1093,16 +1123,20 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                     Content.assemble(
                         (f"{name} could not be reloaded", "$text-error"),
                         " — ",
-                        ("the conversation continues without it", "dim"),
+                        ("queued work remains held for retry or drop", "dim"),
                     ),
                     classes="-error",
                 )
             )
+            self._offer_agent_reload(failed_agent, "reload failed")
             return
         self._adopt_mode_replacement(failed_agent, replacement)
         self._move_relay_queue_to_solo_agent()
         self.update_slash_commands()
         await self._persist_roster()
+        if self._relay_active and self.session.dispatchable_queued_prompt_count:
+            self.turn = "agent"
+            self.send_prompt_to_agent("", resume_queued=True)
 
     @on(messages.WorkStarted)
     def on_work_started(self) -> None:
@@ -1229,6 +1263,19 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                     "TX HOLD // FORMATION PAUSED",
                     text,
                 )
+                return
+            if self._relay_active and self.session.queued_prompt_count:
+                # An abnormal Manual turn can leave accepted work queued while
+                # the UI is idle. Put this newer submission behind it before
+                # resuming so both prompts have durable queue state and the
+                # queued-turn callback owns their transcript presentation.
+                self._queue_relay_prompt(
+                    self.session.enqueue_human(text),
+                    "TX HOLD // EARLIER TURN PENDING",
+                    text,
+                )
+                self.turn = "agent"
+                self.send_prompt_to_agent("", resume_queued=True)
                 return
             if self._queue_solo_prompt_if_busy(text):
                 return
@@ -2384,9 +2431,12 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             # racing a second relay run.
             self.turn = "agent"
             self.flash("FORMATION // FLIGHT RESUMED", style="success")
-            self.send_prompt_to_agent(
-                "Resume the collaboration from the current shared workspace."
-            )
+            if self.session.queued_prompt_count:
+                self.send_prompt_to_agent("", resume_queued=True)
+            else:
+                self.send_prompt_to_agent(
+                    "Resume the collaboration from the current shared workspace."
+                )
             return
 
         self.relay_paused = True

@@ -272,6 +272,7 @@ class Agent(AgentBase):
         self._task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task[str] | None = None
         self._process: asyncio.subprocess.Process | None = None
+        self._transport_closed = True
         self._stopping = False
         self._failure_reported = False
         self.done_event = asyncio.Event()
@@ -481,13 +482,30 @@ class Agent(AgentBase):
             request: JSONRPC request object.
 
         """
-        if self._process is None:
+        process = self._process
+        if self._transport_closed or process is None:
             self.log("[error] Agent process isn't running")
+            API.fail_pending(
+                self,
+                jsonrpc.TransportClosed("Agent transport is not running"),
+            )
             return
 
         self.log(f"[client] {request.body}")
-        if (stdin := self._process.stdin) is not None:
+        stdin = process.stdin
+        if stdin is None:
+            API.fail_pending(
+                self,
+                jsonrpc.TransportClosed("Agent transport has no stdin"),
+            )
+            return
+        try:
             stdin.write(b"%s\n" % request.body_json)
+        except (BrokenPipeError, ConnectionError, OSError) as error:
+            API.fail_pending(
+                self,
+                jsonrpc.TransportClosed(f"Agent transport write failed: {error}"),
+            )
 
     def request(self) -> jsonrpc.Request:
         """Create a request object."""
@@ -974,6 +992,7 @@ class Agent(AgentBase):
                 limit=10 * 1024 * 1024,
                 start_new_session=os.name == "posix",
             )
+            self._transport_closed = False
         except Exception as error:
             self.post_message(AgentFail("Failed to start agent", details=str(error)))
             return
@@ -1073,6 +1092,21 @@ class Agent(AgentBase):
                     process.terminate()
                 except OSError:
                     pass
+        except BaseException:
+            self._transport_closed = True
+            API.fail_pending(
+                self,
+                jsonrpc.TransportClosed("Agent transport closed because stdout closed"),
+            )
+            raise
+
+        # EOF (including an oversized-line termination) is definitive: this
+        # adapter can no longer answer any request already written to it.
+        self._transport_closed = True
+        API.fail_pending(
+            self,
+            jsonrpc.TransportClosed("Agent transport closed because stdout closed"),
+        )
 
         # Cancel all remaining tasks and wait for them to finish
         for task in tasks:
@@ -1135,6 +1169,11 @@ class Agent(AgentBase):
     async def stop(self) -> None:
         """Gracefully stop the process."""
         self._stopping = True
+        self._transport_closed = True
+        API.fail_pending(
+            self,
+            jsonrpc.TransportClosed("Agent transport closed during shutdown"),
+        )
         if self.session_pk is not None:
             db = DB()
             await db.session_update_last_used(self.session_pk)

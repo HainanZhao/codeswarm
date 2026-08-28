@@ -1,10 +1,35 @@
 import asyncio
 import unittest
 
-from codeswarm.jsonrpc import API, APIError, ErrorCode, Server
+from codeswarm.jsonrpc import API, APIError, ErrorCode, Server, TransportClosed
 
 
 class JSONRPCTests(unittest.TestCase):
+    def test_transport_failure_rejects_only_matching_owner_calls(self) -> None:
+        async def scenario() -> None:
+            api = API()
+            failed_owner = object()
+            healthy_owner = object()
+
+            @api.method()
+            def configure(name: str) -> dict: ...
+
+            with api.request(owner=failed_owner):
+                failed_call = configure("failed")
+            with api.request(owner=healthy_owner):
+                healthy_call = configure("healthy")
+
+            failed_count = api.fail_pending(
+                failed_owner, TransportClosed("adapter stdout closed")
+            )
+
+            self.assertEqual(failed_count, 1)
+            with self.assertRaisesRegex(TransportClosed, "stdout closed"):
+                await failed_call.wait(timeout=0.1)
+            self.assertFalse(healthy_call.future.done())
+
+        asyncio.run(scenario())
+
     def test_server_rejects_missing_and_unexpected_parameters(self) -> None:
         async def scenario() -> None:
             server = Server()

@@ -66,6 +66,24 @@ class RelayConversationTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_transport_loss_preserves_first_turn_for_nonresumable_reload(self) -> None:
+        async def scenario() -> None:
+            class DisconnectedAgent(FakeAgent):
+                async def send_prompt(self, prompt: str) -> str:
+                    self.prompts.append(prompt)
+                    raise jsonrpc.TransportClosed("stdout closed")
+
+            relay = RelayConversation(
+                (DisconnectedAgent("Claude", []), FakeAgent("Codex", []))
+            )
+
+            with self.assertRaises(jsonrpc.TransportClosed):
+                await relay.run("Original task")
+
+            self.assertEqual(relay.context.shared_task, "Original task")
+
+        asyncio.run(scenario())
+
     def test_idle_direct_prompt_includes_unseen_public_history(self) -> None:
         async def scenario() -> None:
             claude = FakeAgent(
@@ -582,6 +600,84 @@ class RelayConversationRosterTests(unittest.TestCase):
             ).run("build it")
 
             self.assertEqual(order, ["Claude", "Codex", "Gemini"])
+
+        asyncio.run(scenario())
+
+    def test_failed_agent_queue_is_suspended_until_reactivated(self) -> None:
+        async def scenario() -> None:
+            claude = FakeAgent("Claude", [("end_turn", "[CODESWARM:STOP]")])
+            gemini = FakeAgent("Gemini", [("end_turn", "handled")])
+            relay = RelayConversation((claude, gemini))
+            relay.context.shared_task = "Original task"
+            relay.last_active_index = 1
+            self.assertTrue(relay.enqueue_human("accepted correction"))
+
+            relay.tombstone_agent(1)
+            result = await relay.run("", resume_queued=True)
+
+            self.assertEqual(result.reason, "nothing_queued")
+            self.assertEqual(relay.queued_prompt_count, 1)
+            self.assertEqual(gemini.prompts, [])
+            relay.active[1] = True
+            await relay.run("", resume_queued=True)
+            self.assertEqual(relay.queued_prompt_count, 0)
+            self.assertIn("accepted correction", gemini.prompts[0])
+
+        asyncio.run(scenario())
+
+    def test_suspended_queue_does_not_break_live_roster_rotation(self) -> None:
+        async def scenario() -> None:
+            claude = FakeAgent("Claude", [("end_turn", "implemented")])
+            codex = FakeAgent("Codex", [])
+            gemini = FakeAgent("Gemini", [("end_turn", "[CODESWARM:STOP]")])
+            relay = RelayConversation((claude, codex, gemini), max_rounds=6)
+            relay.last_active_index = 1
+            self.assertTrue(relay.enqueue_human("held for Codex"))
+            relay.tombstone_agent(1)
+
+            result = await relay.run("finish the task", first_agent=0)
+
+            self.assertEqual(result.reason, "stop_token")
+            self.assertEqual(len(claude.prompts), 1)
+            self.assertEqual(codex.prompts, [])
+            self.assertEqual(len(gemini.prompts), 1)
+            self.assertEqual(relay.queued_prompt_count, 1)
+
+        asyncio.run(scenario())
+
+    def test_selected_first_responder_to_human_follow_up_cannot_stop_review(
+        self,
+    ) -> None:
+        async def scenario() -> None:
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            class WaitingAgent(FakeAgent):
+                async def send_prompt(self, prompt: str) -> str:
+                    self.prompts.append(prompt)
+                    started.set()
+                    await release.wait()
+                    self.last_response = "initial answer"
+                    return "end_turn"
+
+            claude = WaitingAgent("Claude", [])
+            codex = FakeAgent("Codex", [("end_turn", "[CODESWARM:STOP]")])
+            gemini = FakeAgent("Gemini", [("end_turn", "[CODESWARM:STOP]")])
+            relay = RelayConversation((claude, codex, gemini), max_rounds=4)
+            task = asyncio.create_task(relay.run("build it"))
+            await started.wait()
+            self.assertTrue(
+                relay.enqueue_human("correct the parser", agent_index=1)
+            )
+            release.set()
+
+            result = await task
+
+            self.assertIn("correct the parser", codex.prompts[0])
+            self.assertIn("Do not use [CODESWARM:STOP]", codex.prompts[0])
+            self.assertEqual(len(gemini.prompts), 1)
+            self.assertEqual(result.rounds, 3)
+            self.assertEqual(result.reason, "stop_token")
 
         asyncio.run(scenario())
 

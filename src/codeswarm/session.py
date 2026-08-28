@@ -98,6 +98,24 @@ class SessionCoordinator:
         self.selected_agent_index: int | None = None
         self._turn_instructions = ""
         self._gemini_restart_attempted: set[int] = set()
+        self._pending_startup_full_access: dict[int, bool] = {}
+
+    def _active_target_at_or_after(self, index: int) -> int:
+        """Return an active roster index, preferring ``index`` itself."""
+        total = len(self.roster)
+        for offset in range(total):
+            candidate = (index + offset) % total
+            if self.roster[candidate].active:
+                return candidate
+        raise RuntimeError("session has no active agents")
+
+    def _normalize_manual_pin(self, preferred: int) -> int:
+        """Keep Manual mode pinned to a live stable roster slot."""
+        target = self._active_target_at_or_after(preferred)
+        self.first_agent = target
+        if isinstance(self.relay, PinnedConversation):
+            self.relay.select_agent(target)
+        return target
 
     @staticmethod
     def _default_agent_factory(
@@ -278,6 +296,7 @@ class SessionCoordinator:
                 first_agent=self.first_agent,
                 **kwargs,
             )
+            self.relay.active = [entry.active for entry in self.roster]
             return
         self.relay = collaboration_type(
             cast(
@@ -298,6 +317,7 @@ class SessionCoordinator:
             ),
             context=context,
         )
+        self.relay.active = [entry.active for entry in self.roster]
         self.relay.set_turn_instructions(self._turn_instructions)
 
     def set_collaboration_mode(self, mode: CollaborationMode) -> None:
@@ -321,10 +341,12 @@ class SessionCoordinator:
             current_target = getattr(
                 self.relay, "pinned_agent_index", self.first_agent
             )
+        current_target = self._active_target_at_or_after(current_target)
         self.collaboration_mode = mode
         self.first_agent = current_target
         self.selected_agent_index = current_target if mode == "roster" else None
         previous = self.relay
+        runtime_state = previous.snapshot_runtime_state()
         self._collaboration_context = previous.context
         self._build_relay(
             on_turn_start=previous.on_turn_start,
@@ -332,6 +354,8 @@ class SessionCoordinator:
             on_queued_turn_discarded=previous.on_queued_turn_discarded,
             on_turn=previous.on_turn,
         )
+        assert self.relay is not None
+        self.relay.restore_runtime_state(runtime_state)
         self.relay.set_turn_instructions(self._turn_instructions)
 
     def select_pinned_agent(self, index: int) -> None:
@@ -448,7 +472,12 @@ class SessionCoordinator:
                 )
                 if index == 0 and session_id is None:
                     session_id = self.session_id
-            full_access = bool(getattr(failed_agent, "startup_full_access", False))
+            pending_access = self._pending_startup_full_access.get(index)
+            full_access = (
+                pending_access
+                if pending_access is not None
+                else bool(getattr(failed_agent, "startup_full_access", False))
+            )
 
             try:
                 await cast(StoppableAgent, failed_agent).stop()
@@ -463,8 +492,14 @@ class SessionCoordinator:
                 self.session_pk if index == 0 else None,
                 persist=index == 0,
             )
-            if full_access and replacement.supports_startup_full_access:
-                replacement.configure_startup_full_access(True)
+            if (
+                pending_access is not None
+                and not replacement.supports_startup_full_access
+            ):
+                await asyncio.gather(replacement.stop(), return_exceptions=True)
+                return None
+            if replacement.supports_startup_full_access:
+                replacement.configure_startup_full_access(full_access)
             try:
                 await replacement.start(message_target)
             except Exception:
@@ -473,6 +508,7 @@ class SessionCoordinator:
 
             entry.agent = replacement
             entry.active = True
+            self._pending_startup_full_access.pop(index, None)
             if self.relay is not None:
                 self.relay.agents[index] = cast(AgentLike, replacement)
                 self.relay.active[index] = True
@@ -532,9 +568,15 @@ class SessionCoordinator:
                 await replacement.start(message_target)
             except Exception:
                 await asyncio.gather(replacement.stop(), return_exceptions=True)
+                # The previous adapter was already stopped and cannot be
+                # restored. Tombstone its slot now so no subsequent turn is
+                # dispatched to a dead process after a failed mode restart.
+                self._pending_startup_full_access[index] = enabled
+                self.mark_failed(current)
                 return None
 
             entry.agent = replacement
+            self._pending_startup_full_access.pop(index, None)
             if self.relay is not None:
                 self.relay.agents[index] = cast(AgentLike, replacement)
             self._introduce_roster()
@@ -557,9 +599,24 @@ class SessionCoordinator:
                 return index
             entry.active = False
             if self.relay is not None:
-                self.relay.drop_agent(index)
+                self.relay.tombstone_agent(index)
+                if (
+                    isinstance(self.relay, PinnedConversation)
+                    and self.relay.pinned_agent_index == index
+                    and any(candidate.active for candidate in self.roster)
+                ):
+                    self._normalize_manual_pin(index)
             return index
         return None
+
+    def discard_failed_agent_queue(self, agent: AgentBase) -> None:
+        """Discard accepted work only after the user declines a reload."""
+        index = self.index_of_agent_slot(agent)
+        if index is None:
+            return
+        if self.relay is not None:
+            self.relay.discard_queued_for_agent(index)
+        self._pending_startup_full_access.pop(index, None)
 
     def display_name(self, agent: AgentBase) -> str:
         name = str(agent.get_info())
@@ -664,6 +721,13 @@ class SessionCoordinator:
         """Number of user prompts waiting behind the active relay turn."""
         return self.relay.queued_prompt_count if self.relay is not None else 0
 
+    @property
+    def dispatchable_queued_prompt_count(self) -> int:
+        """Queued prompts whose target currently has a live adapter."""
+        if self.relay is None:
+            return 0
+        return self.relay.dispatchable_queued_prompt_count
+
     def enqueue_direct(self, agent_index: int, prompt: str) -> bool:
         if self.relay is not None:
             return self.relay.enqueue_direct(agent_index, prompt)
@@ -755,10 +819,17 @@ class SessionCoordinator:
         if not entry.active:
             raise ValueError("agent is already dropped")
         entry.active = False
+        self._pending_startup_full_access.pop(index, None)
         if self.selected_agent_index == index:
             self.selected_agent_index = None
         if self.relay is not None:
             self.relay.drop_agent(index)
+            if (
+                isinstance(self.relay, PinnedConversation)
+                and self.relay.pinned_agent_index == index
+                and any(candidate.active for candidate in self.roster)
+            ):
+                self._normalize_manual_pin(index)
         if entry.agent is not None:
             await entry.agent.stop()
         return entry

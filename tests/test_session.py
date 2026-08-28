@@ -130,6 +130,240 @@ class SessionCoordinatorTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_collaboration_mode_switch_preserves_runtime_relay_state(self) -> None:
+        """Switching strategy must not revive dead slots or lose user work."""
+
+        async def scenario() -> None:
+            created: list[FakeAgent] = []
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                agent = FakeAgent(project_root, data["name"])
+                created.append(agent)
+                return agent
+
+            coordinator = SessionCoordinator(
+                Path("."),
+                agent_data("claude.ai", "Claude", "claude"),
+                peers=(
+                    agent_data("openai.com", "Codex", "codex"),
+                    agent_data("geminicli.com", "Gemini", "gemini"),
+                ),
+                agent_factory=factory,
+            )
+            await coordinator.start(object())
+            assert coordinator.relay is not None
+            coordinator.mark_failed(created[1])
+            coordinator.relay.last_active_index = 2
+            coordinator.relay.next_agent_index = 2
+            self.assertTrue(coordinator.enqueue_human("preserve this correction"))
+            coordinator.pause()
+
+            coordinator.set_collaboration_mode("manual")
+
+            relay = coordinator.relay
+            assert isinstance(relay, PinnedConversation)
+            self.assertEqual(relay.active, [True, False, True])
+            self.assertTrue(relay.paused)
+            self.assertEqual(relay.queued_prompt_count, 1)
+            self.assertEqual(relay.last_active_index, 2)
+            self.assertEqual(relay.next_agent_index, 2)
+            self.assertEqual(relay.pinned_agent_index, 2)
+
+            coordinator.resume()
+            result = await coordinator.send_prompt("", resume_queued=True)
+
+            self.assertEqual(result, RelayResult(1, True, "turn_complete"))
+            self.assertEqual(created[1].prompts, [])
+            self.assertIn("preserve this correction", created[2].prompts[0])
+
+        asyncio.run(scenario())
+
+    def test_manual_mode_never_pins_a_tombstoned_next_agent(self) -> None:
+        async def scenario() -> None:
+            created: list[FakeAgent] = []
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                agent = FakeAgent(project_root, data["name"])
+                created.append(agent)
+                return agent
+
+            coordinator = SessionCoordinator(
+                Path("."),
+                agent_data("claude.ai", "Claude", "claude"),
+                peers=(
+                    agent_data("openai.com", "Codex", "codex"),
+                    agent_data("geminicli.com", "Gemini", "gemini"),
+                ),
+                agent_factory=factory,
+            )
+            await coordinator.start(object())
+            assert coordinator.relay is not None
+            coordinator.relay.next_agent_index = 1
+            coordinator.mark_failed(created[1])
+
+            coordinator.set_collaboration_mode("manual")
+
+            relay = coordinator.relay
+            assert isinstance(relay, PinnedConversation)
+            self.assertEqual(relay.pinned_agent_index, 2)
+            await coordinator.send_prompt("continue")
+            self.assertEqual(len(created[2].prompts), 1)
+
+        asyncio.run(scenario())
+
+    def test_manual_pin_advances_when_its_agent_is_dropped(self) -> None:
+        async def scenario() -> None:
+            created: list[FakeAgent] = []
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                agent = FakeAgent(project_root, data["name"])
+                created.append(agent)
+                return agent
+
+            coordinator = SessionCoordinator(
+                Path("."),
+                agent_data("claude.ai", "Claude", "claude"),
+                peers=(
+                    agent_data("openai.com", "Codex", "codex"),
+                    agent_data("geminicli.com", "Gemini", "gemini"),
+                ),
+                agent_factory=factory,
+            )
+            await coordinator.start(object())
+            coordinator.set_collaboration_mode("manual")
+            coordinator.select_pinned_agent(1)
+
+            await coordinator.drop(1)
+
+            relay = coordinator.relay
+            assert isinstance(relay, PinnedConversation)
+            self.assertEqual(relay.pinned_agent_index, 2)
+
+        asyncio.run(scenario())
+
+    def test_manual_failure_keeps_an_unrelated_live_pin(self) -> None:
+        async def scenario() -> None:
+            created: list[FakeAgent] = []
+
+            def factory(*args: Any, **kwargs: Any) -> FakeAgent:
+                del kwargs
+                agent = FakeAgent(args[0], args[1]["name"])
+                created.append(agent)
+                return agent
+
+            coordinator = SessionCoordinator(
+                Path("."),
+                agent_data("owner", "Owner", "owner"),
+                peers=(
+                    agent_data("pin", "Pin", "pin"),
+                    agent_data("other", "Other", "other"),
+                ),
+                agent_factory=factory,
+            )
+            await coordinator.start(object())
+            coordinator.set_collaboration_mode("manual")
+            coordinator.select_pinned_agent(1)
+
+            coordinator.mark_failed(created[2])
+
+            relay = coordinator.relay
+            assert isinstance(relay, PinnedConversation)
+            self.assertEqual(relay.pinned_agent_index, 1)
+
+        asyncio.run(scenario())
+
+    def test_final_manual_failure_tombstones_without_requiring_a_live_pin(self) -> None:
+        async def scenario() -> None:
+            created: list[FakeAgent] = []
+
+            def factory(*args: Any, **kwargs: Any) -> FakeAgent:
+                del kwargs
+                agent = FakeAgent(args[0], args[1]["name"])
+                created.append(agent)
+                return agent
+
+            coordinator = SessionCoordinator(
+                Path("."),
+                agent_data("owner", "Owner", "owner"),
+                peers=(agent_data("peer", "Peer", "peer"),),
+                agent_factory=factory,
+            )
+            await coordinator.start(object())
+            coordinator.set_collaboration_mode("manual")
+            coordinator.mark_failed(created[1])
+
+            self.assertEqual(coordinator.mark_failed(created[0]), 0)
+            self.assertEqual(coordinator.active_agents, [])
+
+        asyncio.run(scenario())
+
+    def test_failed_manual_slot_keeps_queue_until_reload_or_decline(self) -> None:
+        async def scenario() -> None:
+            created: list[FakeAgent] = []
+            discarded: list[tuple[str, bool]] = []
+
+            def factory(*args: Any, **kwargs: Any) -> FakeAgent:
+                del kwargs
+                agent = FakeAgent(args[0], args[1]["name"])
+                created.append(agent)
+                return agent
+
+            coordinator = SessionCoordinator(
+                Path("."),
+                agent_data("owner", "Owner", "owner"),
+                peers=(agent_data("peer", "Peer", "peer"),),
+                agent_factory=factory,
+            )
+            await coordinator.start(object())
+            coordinator.set_collaboration_mode("manual")
+            coordinator.select_pinned_agent(1)
+            assert coordinator.relay is not None
+            coordinator.relay.on_queued_turn_discarded = (
+                lambda prompt, direct: discarded.append((prompt, direct))
+            )
+            self.assertTrue(coordinator.enqueue_human("accepted work"))
+
+            coordinator.mark_failed(created[1])
+
+            self.assertEqual(coordinator.queued_prompt_count, 1)
+            self.assertEqual(discarded, [])
+            replacement = await coordinator.reload_agent(created[1], object())
+            assert replacement is not None
+            self.assertEqual(coordinator.queued_prompt_count, 1)
+            await coordinator.send_prompt("", resume_queued=True)
+            self.assertEqual(coordinator.queued_prompt_count, 0)
+            self.assertEqual(len(cast(FakeAgent, replacement).prompts), 1)
+
+            coordinator.select_pinned_agent(1)
+            self.assertTrue(coordinator.enqueue_human("declined work"))
+            coordinator.mark_failed(replacement)
+            coordinator.discard_failed_agent_queue(replacement)
+            self.assertEqual(coordinator.queued_prompt_count, 0)
+            self.assertEqual(discarded, [("declined work", False)])
+
+        asyncio.run(scenario())
+
     def test_invalid_pinned_selection_does_not_change_target(self) -> None:
         coordinator = SessionCoordinator(
             Path("."), agent_data("claude.ai", "Claude", "claude"),
@@ -301,6 +535,214 @@ class SessionCoordinatorTests(unittest.TestCase):
             self.assertEqual(replacement.started_with, [target])
 
         asyncio.run(scenario())
+
+    def test_failed_startup_full_access_restart_tombstones_stopped_agent(self) -> None:
+        """A failed replacement must not leave the stopped adapter dispatchable."""
+
+        async def scenario() -> None:
+            owner = agent_data("claude.ai", "Claude", "claude")
+            peer = agent_data(
+                "antigravity.google.com", "Antigravity CLI", "antigravity"
+            )
+            created: list[FakeAgent] = []
+
+            class StartupAgent(FakeAgent):
+                @property
+                def supports_startup_full_access(self) -> bool:
+                    return True
+
+                @property
+                def startup_full_access(self) -> bool:
+                    return True
+
+                def configure_startup_full_access(self, enabled: bool) -> None:
+                    pass
+
+            class FailingReplacement(StartupAgent):
+                async def start(self, message_target: Any) -> None:
+                    raise RuntimeError("replacement failed")
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                if len(created) < 2:
+                    agent: FakeAgent = StartupAgent(project_root, data["name"])
+                else:
+                    agent = FailingReplacement(project_root, data["name"])
+                created.append(agent)
+                return agent
+
+            coordinator = SessionCoordinator(
+                Path("."), owner, peers=(peer,), agent_factory=factory
+            )
+            await coordinator.start(object())
+            failed = created[1]
+
+            replacement = await coordinator.restart_for_startup_full_access(
+                failed, object(), enabled=False
+            )
+
+            self.assertIsNone(replacement)
+            self.assertTrue(failed.stopped)
+            self.assertFalse(coordinator.roster[1].active)
+            assert coordinator.relay is not None
+            self.assertFalse(coordinator.relay.active[1])
+            self.assertEqual(coordinator.active_agents, [created[0]])
+            self.assertTrue(created[2].stopped)
+
+        asyncio.run(scenario())
+
+    def test_mode_restart_reload_uses_the_requested_startup_access(self) -> None:
+        async def scenario(initial: bool, requested: bool) -> None:
+            owner = agent_data("claude.ai", "Claude", "claude")
+            peer = agent_data(
+                "antigravity.google.com", "Antigravity CLI", "antigravity"
+            )
+            startup_agents: list[Any] = []
+
+            class StartupAgent(FakeAgent):
+                def __init__(self, project_root: Path, name: str, fail: bool) -> None:
+                    super().__init__(project_root, name)
+                    self.enabled = initial
+                    self.fail = fail
+                    self.configured: list[bool] = []
+                    self.started_access: list[bool] = []
+
+                @property
+                def supports_startup_full_access(self) -> bool:
+                    return True
+
+                @property
+                def startup_full_access(self) -> bool:
+                    return self.enabled
+
+                def configure_startup_full_access(self, enabled: bool) -> None:
+                    self.configured.append(enabled)
+                    self.enabled = enabled
+
+                async def start(self, message_target: Any) -> None:
+                    self.started_access.append(self.enabled)
+                    if self.fail:
+                        raise RuntimeError("replacement failed")
+                    await super().start(message_target)
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                del session_id, session_pk, persist
+                if data["identity"] != "antigravity.google.com":
+                    return FakeAgent(project_root, data["name"])
+                agent = StartupAgent(
+                    project_root,
+                    data["name"],
+                    fail=len(startup_agents) == 1,
+                )
+                startup_agents.append(agent)
+                return agent
+
+            coordinator = SessionCoordinator(
+                Path("."), owner, peers=(peer,), agent_factory=factory
+            )
+            await coordinator.start(object())
+            original = startup_agents[0]
+
+            self.assertIsNone(
+                await coordinator.restart_for_startup_full_access(
+                    original, object(), enabled=requested
+                )
+            )
+            retry = await coordinator.reload_agent(original, object())
+
+            assert isinstance(retry, StartupAgent)
+            self.assertEqual(retry.configured, [requested])
+            self.assertEqual(retry.started_access, [requested])
+            self.assertEqual(retry.startup_full_access, requested)
+
+        for initial, requested in ((True, False), (False, True)):
+            with self.subTest(initial=initial, requested=requested):
+                asyncio.run(scenario(initial, requested))
+
+    def test_crash_reload_preserves_restricted_startup_access(self) -> None:
+        async def scenario() -> None:
+            created: list[Any] = []
+
+            class RestrictedAgent(FakeAgent):
+                def __init__(self, project_root: Path, name: str) -> None:
+                    super().__init__(project_root, name)
+                    # Match adapters whose constructor defaults to full access.
+                    self.enabled = True
+                    self.configured: list[bool] = []
+                    self.started_access: list[bool] = []
+
+                @property
+                def supports_startup_full_access(self) -> bool:
+                    return True
+
+                @property
+                def startup_full_access(self) -> bool:
+                    return self.enabled
+
+                def configure_startup_full_access(self, enabled: bool) -> None:
+                    self.configured.append(enabled)
+                    self.enabled = enabled
+
+                async def start(self, message_target: Any) -> None:
+                    self.started_access.append(self.enabled)
+                    await super().start(message_target)
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> RestrictedAgent:
+                del session_id, session_pk, persist
+                agent = RestrictedAgent(project_root, data["name"])
+                created.append(agent)
+                return agent
+
+            coordinator = SessionCoordinator(
+                Path("."),
+                agent_data("antigravity.google.com", "Antigravity", "agy"),
+                agent_factory=factory,
+            )
+            await coordinator.start(object())
+            failed = created[0]
+            failed.enabled = False
+            coordinator.mark_failed(failed)
+
+            replacement = await coordinator.reload_agent(failed, object())
+
+            assert isinstance(replacement, RestrictedAgent)
+            self.assertEqual(replacement.configured, [False])
+            self.assertEqual(replacement.started_access, [False])
+
+        asyncio.run(scenario())
+
+    def test_declining_solo_mode_restart_clears_pending_access(self) -> None:
+        coordinator = SessionCoordinator(
+            Path("."),
+            agent_data("antigravity.google.com", "Antigravity", "agy"),
+        )
+        failed = FakeAgent(Path("."), "Antigravity")
+        coordinator.roster[0].agent = failed
+        coordinator._pending_startup_full_access[0] = False
+
+        coordinator.discard_failed_agent_queue(failed)
+
+        self.assertEqual(coordinator._pending_startup_full_access, {})
 
     def test_cancel_is_concurrent_and_a_hung_adapter_is_bounded(self) -> None:
         async def scenario() -> None:

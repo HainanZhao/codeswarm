@@ -21,6 +21,74 @@ from codeswarm.widgets.terminal import Terminal
 
 
 class TerminalToolTests(unittest.TestCase):
+    def test_post_spawn_pty_setup_failure_kills_and_reaps_child(self) -> None:
+        async def scenario(stage: str) -> None:
+            class Process:
+                pid = 12345
+                returncode: int | None = None
+
+                async def wait(self) -> int:
+                    self.returncode = -9
+                    return -9
+
+            class Transport:
+                closed = False
+
+                def close(self) -> None:
+                    self.closed = True
+
+            class Loop:
+                read_transport = Transport()
+
+                async def connect_read_pipe(self, factory: object, pipe: object):
+                    del factory, pipe
+                    if stage == "read":
+                        raise OSError("read setup failed")
+                    return self.read_transport, object()
+
+                async def connect_write_pipe(self, factory: object, pipe: object):
+                    del factory, pipe
+                    raise OSError("write setup failed")
+
+            terminal = TerminalTool(Command("sleep", ["60"], {}, str(Path.cwd())))
+            process = Process()
+            patches = [
+                patch(
+                    "codeswarm.widgets.terminal_tool.asyncio.create_subprocess_shell",
+                    new=AsyncMock(return_value=process),
+                ),
+                patch("codeswarm.widgets.terminal_tool.os.killpg"),
+            ]
+            if stage == "resize":
+                patches.append(
+                    patch.object(
+                        TerminalTool,
+                        "resize_pty",
+                        side_effect=OSError("resize failed"),
+                    )
+                )
+            else:
+                patches.append(
+                    patch(
+                        "codeswarm.widgets.terminal_tool.asyncio.get_event_loop",
+                        return_value=Loop(),
+                    )
+                )
+
+            with patches[0] as spawn, patches[1] as killpg, patches[2]:
+                with self.assertRaisesRegex(RuntimeError, "Unable to start"):
+                    await terminal.start()
+
+            spawn.assert_awaited_once()
+            killpg.assert_called_once_with(12345, signal.SIGKILL)
+            self.assertEqual(process.returncode, -9)
+            self.assertIsNone(terminal._process)
+            self.assertIsNone(terminal._shell_fd)
+
+        for stage in ("resize", "read", "write"):
+            with self.subTest(stage=stage):
+                asyncio.run(scenario(stage))
+
     def test_terminal_resize_does_not_query_a_conversation_owner(self) -> None:
         terminal = Terminal()
         terminal.query_ancestor = Mock()  # type: ignore[method-assign]
@@ -82,6 +150,35 @@ class TerminalToolTests(unittest.TestCase):
                 await asyncio.wait_for(terminal.start(), timeout=0.5)
 
             self.assertTrue(terminal._exit_event.is_set())
+
+        asyncio.run(scenario())
+
+    def test_terminal_closes_pty_transports_after_command_exit(self) -> None:
+        """A completed command must not retain either PTY pipe transport."""
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(
+                    os.environ,
+                    {"XDG_CONFIG_HOME": state_dir, "XDG_DATA_HOME": state_dir},
+                ):
+                    async with CodeSwarmApp(setup_prompt=False).run_test(
+                        size=(100, 30)
+                    ) as pilot:
+                        conversation = pilot.app.screen.query_one(Conversation)
+                        terminal = TerminalTool(
+                            Command("printf", ["closed"], {}, str(Path.cwd())),
+                            minimum_terminal_width=60,
+                        )
+                        await conversation.post(terminal)
+                        await terminal.start(60, 10)
+                        await asyncio.wait_for(terminal.wait_for_exit(), timeout=1)
+
+                        self.assertTrue(terminal.writer.is_closing())
+                        self.assertIsNone(terminal._shell_fd)
+                        with patch("codeswarm.widgets.terminal_tool.os.write") as write:
+                            self.assertEqual(await terminal.write_stdin("late"), 0)
+                        write.assert_not_called()
 
         asyncio.run(scenario())
 

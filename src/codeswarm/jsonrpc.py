@@ -117,6 +117,10 @@ class APIError(Exception):
             super().__init__(f"{message} ({code}); data={data!r}")
 
 
+class TransportClosed(ConnectionError):
+    """A remote JSON-RPC transport closed before returning a response."""
+
+
 class Server:
     def __init__(self) -> None:
         self._methods: dict[str, Method] = {}
@@ -486,6 +490,17 @@ class API:
         """Create a Request context manager."""
         request = Request(self, callback, owner)
         return request
+
+    def fail_pending(self, owner: object, error: BaseException) -> int:
+        """Reject unresolved calls belonging to one disconnected transport."""
+        failed = 0
+        for call_id, method_call in list(self._calls.items()):
+            if method_call.owner is not owner or method_call.future.done():
+                continue
+            method_call.future.set_exception(error)
+            self._calls.pop(call_id, None)
+            failed += 1
+        return failed
 
     def _process_method_response(
         self, response: JSONObject, owner: object | None = None
