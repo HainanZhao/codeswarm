@@ -39,6 +39,7 @@ from codeswarm._path_match import match_path
 
 MAX_SEARCH_RESULTS = 30
 PATH_SEARCH_CACHE_SIZE = 64
+MIN_SEARCH_CHARACTERS = 3
 
 
 class PathContent(Content):
@@ -170,12 +171,13 @@ class PathSearch(containers.VerticalGroup):
         self.fuzzy_index = FuzzyIndex()
         self._pool: concurrent.futures.InterpreterPoolExecutor | None = None
         self._mounted = False
+        self._refresh_requested = False
         self.search_cache: LRUCache[str, list[tuple[float, Sequence[int], str]]] = (
             LRUCache(PATH_SEARCH_CACHE_SIZE)
         )
 
     def compose(self) -> ComposeResult:
-        yield FuzzyInput(compact=True, placeholder="fuzzy search")
+        yield FuzzyInput(compact=True, placeholder="type 3+ characters to search")
         yield FuzzyPathOptionList()
 
     def on_mount(self) -> None:
@@ -219,13 +221,10 @@ class PathSearch(containers.VerticalGroup):
 
     @work(exclusive=True, description="search_paths")
     async def search(self, search: str) -> None:
-        if not search:
-            self.option_list.set_options(
-                [
-                    Option(self.highlight_path(path), path)
-                    for path in self.display_paths[:100]
-                ],
-            )
+        if len(search) < MIN_SEARCH_CHARACTERS:
+            self.option_list.set_options([])
+            self.option_list.highlighted = None
+            self.post_message(PromptSuggestion(""))
             return
 
         display_paths = await self.fuzzy_index.search(search)
@@ -295,7 +294,13 @@ class PathSearch(containers.VerticalGroup):
 
     @on(Input.Changed)
     def on_input_changed(self, event: Input.Changed) -> None:
-        self.search(event.value)
+        if len(event.value) < MIN_SEARCH_CHARACTERS:
+            self.search(event.value)
+        elif self.loaded:
+            self.search(event.value)
+        elif not self._refresh_requested:
+            self._refresh_requested = True
+            self.refresh_paths()
 
     @on(OptionList.OptionHighlighted)
     async def on_option_list_changed(self, event: OptionList.OptionHighlighted):
@@ -335,6 +340,7 @@ class PathSearch(containers.VerticalGroup):
     async def refresh_paths(self):
         if not self._mounted:
             return
+        self._refresh_requested = True
         self.option_list.set_loading(True)
         root = self.root
         try:
@@ -360,6 +366,7 @@ class PathSearch(containers.VerticalGroup):
             self.paths = paths
             self.loaded = True
         except Exception:
+            self._refresh_requested = False
             self.option_list.set_loading(False)
             raise
 
@@ -400,17 +407,6 @@ class PathSearch(containers.VerticalGroup):
         self.option_list.highlighted = None
         self._update_paths(self.display_paths)
 
-        self.option_list.set_options(
-            [
-                Option(self.highlight_path(path), id=path)
-                for path in self.display_paths[:100]
-            ]
-        )
-        with self.option_list.prevent(OptionList.OptionHighlighted):
-            self.option_list.highlighted = 0
-
-        self.post_message(PromptSuggestion(""))
-
     @work(exclusive=True, description="update_paths")
     async def _update_paths(self, paths: list[str]) -> None:
         """Update the paths index.
@@ -420,3 +416,4 @@ class PathSearch(containers.VerticalGroup):
         """
         await self.fuzzy_index.update_paths(paths)
         self.call_after_refresh(self.option_list.set_loading, False)
+        self.search(self.input.value)

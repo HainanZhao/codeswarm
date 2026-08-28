@@ -1248,7 +1248,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_file_indexing_is_on_demand(self) -> None:
+    def test_file_indexing_waits_for_three_search_characters(self) -> None:
         async def scenario() -> None:
             with tempfile.TemporaryDirectory() as state_dir:
                 with patch.dict(
@@ -1265,6 +1265,18 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
                         conversation = pilot.app.screen.query_one(Conversation)
                         conversation.prompt.post_message(InvokeFileSearch())
+                        await pilot.pause(0.1)
+                        refresh_paths.assert_not_called()
+
+                        await pilot.press("a", "b")
+                        await pilot.pause(0.1)
+                        refresh_paths.assert_not_called()
+
+                        await pilot.press("c")
+                        await pilot.pause(0.1)
+                        refresh_paths.assert_called_once_with()
+
+                        await pilot.press("d", "e")
                         await pilot.pause(0.1)
                         refresh_paths.assert_called_once_with()
 
@@ -2430,6 +2442,44 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
                 await pilot.pause(0.1)
                 self.assertTrue(conversation.window.is_vertical_scroll_end)
+
+        asyncio.run(scenario())
+
+    def test_long_transcript_mounts_only_the_visible_window_and_live_tail(
+        self,
+    ) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(80, 12)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                blocks = [UserInput(f"History {index}") for index in range(130)]
+                for block in blocks:
+                    await conversation.post(block)
+                await pilot.pause(0.3)
+
+                self.assertLess(
+                    len(conversation.contents.children), len(blocks) // 2
+                )
+                self.assertNotIn(blocks[0], conversation.contents.children)
+                self.assertIn(blocks[-1], conversation.contents.children)
+                max_scroll_y = conversation.window.max_scroll_y
+
+                conversation.window.scroll_home(animate=False, immediate=True)
+                await pilot.pause(0.3)
+
+                self.assertEqual(conversation.window.max_scroll_y, max_scroll_y)
+                self.assertIn(blocks[0], conversation.contents.children)
+                # The live tail remains mounted so streamed updates can keep
+                # arriving while the user reads older history.
+                self.assertIn(blocks[-1], conversation.contents.children)
+
+                conversation.window.scroll_end(animate=False, immediate=True)
+                await pilot.pause(0.3)
+
+                self.assertEqual(conversation.window.max_scroll_y, max_scroll_y)
+                self.assertNotIn(blocks[0], conversation.contents.children)
+                self.assertIn(blocks[-1], conversation.contents.children)
 
         asyncio.run(scenario())
 

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.38] - 2026-08-28
+
+### Changed
+
+- File attachment search now waits for three typed characters before indexing
+  the project, avoiding an expensive repository scan when the picker opens.
+
+### Fixed
+
+- Long conversations now keep only the visible transcript window and live tail
+  mounted. Older blocks remain available for scrolling and export without
+  making terminal scrolling progressively slower.
+
 ## [0.6.37] - 2026-08-28
 
 ### Fixed

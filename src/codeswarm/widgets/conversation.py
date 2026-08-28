@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from bisect import bisect_left, bisect_right
 from datetime import datetime
 
 from collections import deque
@@ -20,7 +21,7 @@ from textual import events
 from textual.actions import SkipAction
 from textual.binding import Binding
 from textual.content import Content
-from textual.geometry import clamp
+from textual.geometry import Size, clamp
 from textual.css.query import NoMatches
 from textual.widget import Widget
 from textual.widgets.markdown import MarkdownBlock, MarkdownFence
@@ -104,6 +105,11 @@ then start a new workspace.
 
 MAX_AGENT_ERROR_DISPLAY_CHARS = 4_000
 AGENT_TURN_WORKER_GROUP = "agent-turn"
+TRANSCRIPT_WINDOW_ROWS = 240
+TRANSCRIPT_BUFFER_ROWS = 100
+TRANSCRIPT_OVERSCAN_ROWS = 25
+TRANSCRIPT_MAX_MOUNTED_ROWS = 260
+TRANSCRIPT_PINNED_TAIL_BLOCKS = 4
 
 STOP_REASON_MAX_TOKENS = """\
 ## Maximum tokens reached
@@ -145,8 +151,247 @@ NATIVE_MODE = Mode(
 )
 
 
+class TranscriptSpacer(Widget, can_focus=False):
+    """A line-count placeholder for detached transcript blocks."""
+
+    BLANK = True
+
+    def __init__(self, rows: int) -> None:
+        super().__init__()
+        self.rows = max(0, rows)
+
+    def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
+        return self.rows
+
+
 class Contents(containers.VerticalGroup, can_focus=False):
     BLANK = True
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self._transcript_blocks: list[Widget] = []
+        self._block_metrics: dict[Widget, tuple[int, int, int]] = {}
+        self._positions_cache: tuple[list[int], int] | None = None
+        self._mounted_indices: frozenset[int] = frozenset()
+        self._virtualized = False
+        self._virtualize_lock = asyncio.Lock()
+        self._requested_scroll_y: float | None = None
+        self._window_worker_running = False
+
+    @property
+    def transcript_blocks(self) -> tuple[Widget, ...]:
+        """Every retained transcript block, including detached blocks."""
+        return tuple(self._transcript_blocks)
+
+    @property
+    def mounted_blocks(self) -> list[Widget]:
+        """Transcript blocks currently participating in layout."""
+        return [
+            child
+            for child in self.children
+            if not isinstance(child, TranscriptSpacer)
+        ]
+
+    async def append_block(self, widget: Widget) -> None:
+        """Retain and mount a new transcript block at the live tail."""
+        self._transcript_blocks.append(widget)
+        self._positions_cache = None
+        await self.mount(widget)
+        if self._virtualized:
+            self._mounted_indices = frozenset(
+                (*self._mounted_indices, len(self._transcript_blocks) - 1)
+            )
+
+    def _measure_mounted_blocks(self) -> None:
+        for block in self.mounted_blocks:
+            top, _right, bottom, _left = block.styles.margin
+            metrics = (
+                max(1, block.outer_size.height),
+                top,
+                bottom,
+            )
+            if self._block_metrics.get(block) != metrics:
+                self._block_metrics[block] = metrics
+                self._positions_cache = None
+
+    def _block_positions(self) -> tuple[list[int], int]:
+        """Return each block's virtual row and the complete transcript height."""
+        if self._positions_cache is not None:
+            return self._positions_cache
+        starts: list[int] = []
+        y = 0
+        previous_bottom = 0
+        for index, block in enumerate(self._transcript_blocks):
+            height, top, bottom = self._block_metrics.get(block, (1, 0, 0))
+            y += top if index == 0 else max(previous_bottom, top)
+            starts.append(y)
+            y += height
+            previous_bottom = bottom
+        self._positions_cache = (starts, y)
+        return self._positions_cache
+
+    @property
+    def total_rows(self) -> int:
+        self._measure_mounted_blocks()
+        return self._block_positions()[1]
+
+    def block_rows(self, block: Widget) -> int:
+        height, _top, bottom = self._block_metrics.get(block, (1, 0, 0))
+        return height + bottom
+
+    @staticmethod
+    def _contiguous_runs(indices: list[int]) -> list[tuple[int, int]]:
+        if not indices:
+            return []
+        runs: list[tuple[int, int]] = []
+        start = previous = indices[0]
+        for index in indices[1:]:
+            if index != previous + 1:
+                runs.append((start, previous + 1))
+                start = index
+            previous = index
+        runs.append((start, previous + 1))
+        return runs
+
+    async def virtualize(
+        self,
+        scroll_y: float,
+        viewport_height: int,
+        *,
+        follow_tail: bool = False,
+    ) -> None:
+        """Mount only blocks near the viewport while retaining the full order."""
+        async with self._virtualize_lock:
+            await self._virtualize(scroll_y, viewport_height, follow_tail=follow_tail)
+
+    async def _virtualize(
+        self,
+        scroll_y: float,
+        viewport_height: int,
+        *,
+        follow_tail: bool,
+    ) -> None:
+        self._measure_mounted_blocks()
+        starts, total_rows = self._block_positions()
+        block_count = len(self._transcript_blocks)
+        if not block_count:
+            return
+        if not self._virtualized and total_rows <= TRANSCRIPT_WINDOW_ROWS:
+            return
+
+        self._virtualized = True
+        if follow_tail:
+            scroll_y = max(0, total_rows - viewport_height)
+        guard_top = max(0, int(scroll_y) - TRANSCRIPT_OVERSCAN_ROWS)
+        guard_bottom = min(
+            total_rows,
+            int(scroll_y) + viewport_height + TRANSCRIPT_OVERSCAN_ROWS,
+        )
+        guard_first = max(0, bisect_right(starts, guard_top) - 1)
+        guard_last = min(block_count, bisect_left(starts, guard_bottom) + 1)
+        tail_start = max(0, block_count - TRANSCRIPT_PINNED_TAIL_BLOCKS)
+        guard_indices = frozenset(
+            {*range(guard_first, guard_last), *range(tail_start, block_count)}
+        )
+        mounted_rows = sum(
+            self.block_rows(self._transcript_blocks[index])
+            for index in self._mounted_indices
+            if index < block_count
+        )
+        if guard_indices.issubset(
+            self._mounted_indices
+        ) and mounted_rows <= TRANSCRIPT_MAX_MOUNTED_ROWS:
+            return
+
+        window_top = max(0, int(scroll_y) - TRANSCRIPT_BUFFER_ROWS)
+        window_bottom = min(
+            total_rows,
+            int(scroll_y) + viewport_height + TRANSCRIPT_BUFFER_ROWS,
+        )
+        first = max(0, bisect_right(starts, window_top) - 1)
+        last = min(block_count, bisect_left(starts, window_bottom) + 1)
+        selected = sorted({*range(first, last), *range(tail_start, block_count)})
+        selected_set = frozenset(selected)
+
+        runs = self._contiguous_runs(selected)
+        sequence: list[Widget] = []
+        previous_run_end: int | None = None
+        for run_start, run_end in runs:
+            _height, top, _bottom = self._block_metrics.get(
+                self._transcript_blocks[run_start], (1, 0, 0)
+            )
+            if previous_run_end is None:
+                gap_rows = starts[run_start] - top
+            else:
+                previous_index = previous_run_end - 1
+                previous_block = self._transcript_blocks[previous_index]
+                previous_height, _previous_top, previous_bottom = (
+                    self._block_metrics.get(previous_block, (1, 0, 0))
+                )
+                previous_end = (
+                    starts[previous_index] + previous_height + previous_bottom
+                )
+                gap_rows = starts[run_start] - previous_end - top
+            if gap_rows > 0:
+                sequence.append(TranscriptSpacer(gap_rows))
+            sequence.extend(self._transcript_blocks[run_start:run_end])
+            previous_run_end = run_end
+
+        conversation = self.query_ancestor(Conversation)
+        with self.app.batch_update():
+            await self.remove_children(list(self.children))
+            await self.mount(*sequence)
+        self._mounted_indices = selected_set
+        self.refresh(layout=True)
+        if follow_tail:
+            self.call_after_refresh(conversation.window.scroll_end_for_output)
+
+    def request_window(self, scroll_y: float) -> None:
+        """Coalesce scroll events into sequential virtualization updates."""
+        if not self._virtualized:
+            return
+        self._requested_scroll_y = scroll_y
+        if self._window_worker_running:
+            return
+        self._window_worker_running = True
+        self.run_worker(
+            self._drain_window_requests(),
+            name="virtual-transcript",
+            group="virtual-transcript",
+        )
+
+    async def _drain_window_requests(self) -> None:
+        try:
+            while self._requested_scroll_y is not None:
+                scroll_y = self._requested_scroll_y
+                self._requested_scroll_y = None
+                conversation = self.query_ancestor(Conversation)
+                await self.virtualize(
+                    scroll_y,
+                    max(1, conversation.window.size.height),
+                    follow_tail=conversation.window.follow_output,
+                )
+        finally:
+            self._window_worker_running = False
+            if self._requested_scroll_y is not None:
+                self.request_window(self._requested_scroll_y)
+
+    async def forget_blocks(self, blocks: Sequence[Widget]) -> None:
+        """Permanently discard retained blocks, including detached ones."""
+        forgotten = set(blocks)
+        mounted = [block for block in blocks if block in self.children]
+        if mounted:
+            await self.remove_children(mounted)
+        self._transcript_blocks = [
+            block for block in self._transcript_blocks if block not in forgotten
+        ]
+        self._positions_cache = None
+        for block in forgotten:
+            self._block_metrics.pop(block, None)
+        self._mounted_indices = frozenset()
+        if not self._transcript_blocks:
+            await self.remove_children(list(self.children))
+            self._virtualized = False
 
     def process_layout(
         self, placements: list[WidgetPlacement]
@@ -190,6 +435,8 @@ This is a view of your conversation with the agent.
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
+        conversation = self.query_ancestor(Conversation)
+        conversation.contents.request_window(new_value)
         if self._programmatic_scroll or round(old_value) == round(new_value):
             return
         # A user scroll changes this state. Content growth may leave scroll_y
@@ -362,7 +609,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 
         self.project_data_path = paths.get_project_data(project_path)
         self.prompt_history = History(self.project_data_path / "prompt_history.jsonl")
-        self._require_check_prune = False
+        self._require_virtual_window_update = False
 
         self._shutdown = False
 
@@ -808,8 +1055,8 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 agent_index = 0
             replied_at = datetime.now().astimezone()
             previous_message = (
-                self.contents.displayed_children[-1]
-                if self.contents.displayed_children
+                self.contents.mounted_blocks[-1]
+                if self.contents.mounted_blocks
                 else None
             )
             self._agent_message = AgentMessage(
@@ -868,10 +1115,10 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
     @property
     def cursor_block(self) -> Widget | None:
         """The block next to the cursor, or `None` if no block cursor."""
-        if self.cursor_offset == -1 or not self.contents.displayed_children:
+        if self.cursor_offset == -1 or not self.contents.mounted_blocks:
             return None
         try:
-            block_widget = self.contents.displayed_children[self.cursor_offset]
+            block_widget = self.contents.mounted_blocks[self.cursor_offset]
         except IndexError:
             return None
         return block_widget
@@ -2223,8 +2470,9 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             return
 
         nested_block_target: Widget | None = None
-        if widget in contents.displayed_children:
-            self.cursor_offset = contents.displayed_children.index(widget)
+        mounted_blocks = contents.mounted_blocks
+        if widget in mounted_blocks:
+            self.cursor_offset = mounted_blocks.index(widget)
             self.refresh_block_cursor()
             return
         for parent in widget.ancestors:
@@ -2232,15 +2480,15 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                 break
             if (
                 parent is self or parent is contents
-            ) and widget in contents.displayed_children:
-                self.cursor_offset = contents.displayed_children.index(widget)
+            ) and widget in mounted_blocks:
+                self.cursor_offset = mounted_blocks.index(widget)
                 self.refresh_block_cursor()
                 break
             if (
                 isinstance(parent, BlockProtocol)
-                and parent in contents.displayed_children
+                and parent in mounted_blocks
             ):
-                self.cursor_offset = contents.displayed_children.index(parent)
+                self.cursor_offset = mounted_blocks.index(parent)
                 parent.block_select(nested_block_target or widget)
                 self.refresh_block_cursor()
                 break
@@ -2279,20 +2527,22 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             self.new_block()
         if not self.contents.is_attached:
             return widget
-        await self.contents.mount(widget)
+        await self.contents.append_block(widget)
 
         widget.loading = loading
-        self._require_check_prune = True
-        self.call_after_refresh(self.check_prune)
+        self._require_virtual_window_update = True
+        self.call_after_refresh(self.check_virtual_window)
         return widget
 
-    async def check_prune(self) -> None:
-        """Check if a prune is required."""
-        if self._require_check_prune:
-            self._require_check_prune = False
-            low_mark = self.app.settings.get("ui.prune_low_mark", int)
-            high_mark = low_mark + self.app.settings.get("ui.prune_excess", int)
-            await self.prune_window(low_mark, high_mark)
+    async def check_virtual_window(self) -> None:
+        """Update the mounted transcript window after content changes."""
+        if self._require_virtual_window_update:
+            self._require_virtual_window_update = False
+            await self.contents.virtualize(
+                self.window.scroll_y,
+                max(1, self.window.size.height),
+                follow_tail=self.window.follow_output,
+            )
 
     async def prune_window(self, low_mark: int, high_mark: int) -> None:
         """Remove older children to keep within a certain range.
@@ -2306,7 +2556,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
 
         contents = self.contents
 
-        height = contents.virtual_size.height
+        height = contents.total_rows
         if height <= high_mark:
             return
         prune_children: list[Widget] = []
@@ -2314,16 +2564,16 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         prune_height = 0
 
         if low_mark == 0:
-            prune_children = list(contents.children)
+            prune_children = list(contents.transcript_blocks)
         else:
-            for child in contents.children:
-                if not child.display:
-                    prune_children.append(child)
-                    continue
-                top, _, bottom, _ = child.styles.margin
-                child_height = child.outer_size.height
+            for child in contents.transcript_blocks:
+                child_height, top, bottom = contents._block_metrics.get(
+                    child, (1, 0, 0)
+                )
                 prune_height = (
-                    (prune_height - bottom_margin + max(bottom_margin, top))
+                    prune_height
+                    - bottom_margin
+                    + max(bottom_margin, top)
                     + bottom
                     + child_height
                 )
@@ -2336,17 +2586,18 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         contents.refresh(layout=True)
 
         if prune_children:
-            await contents.remove_children(prune_children)
+            await contents.forget_blocks(prune_children)
 
         self.call_later(self.window.anchor)
 
     def action_cursor_up(self) -> None:
-        if not self.contents.displayed_children or self.cursor_offset == 0:
+        mounted_blocks = self.contents.mounted_blocks
+        if not mounted_blocks or self.cursor_offset == 0:
             # No children
             return
         if self.cursor_offset == -1:
             # Start cursor at end
-            self.cursor_offset = len(self.contents.displayed_children) - 1
+            self.cursor_offset = len(mounted_blocks) - 1
             cursor_block = self.cursor_block
             if isinstance(cursor_block, BlockProtocol):
                 cursor_block.block_cursor_clear()
@@ -2370,7 +2621,8 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         self.refresh_block_cursor()
 
     def action_cursor_down(self) -> None:
-        if not self.contents.displayed_children or self.cursor_offset == -1:
+        mounted_blocks = self.contents.mounted_blocks
+        if not mounted_blocks or self.cursor_offset == -1:
             # No children, or no cursor
             return
 
@@ -2378,7 +2630,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         if isinstance(cursor_block, BlockProtocol):
             if cursor_block.block_cursor_down() is None:
                 self.cursor_offset += 1
-                if self.cursor_offset >= len(self.contents.displayed_children):
+                if self.cursor_offset >= len(mounted_blocks):
                     self.cursor_offset = -1
                     self.refresh_block_cursor()
                     return
@@ -2388,7 +2640,7 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                     cursor_block.block_cursor_down()
         else:
             self.cursor_offset += 1
-            if self.cursor_offset >= len(self.contents.displayed_children):
+            if self.cursor_offset >= len(mounted_blocks):
                 self.cursor_offset = -1
                 self.refresh_block_cursor()
                 return
@@ -2595,7 +2847,7 @@ Drag over conversation text and press `Ctrl+C` to copy it. Otherwise,
         from codeswarm.widgets.agent_response import AgentMessage, AgentResponse
 
         lines = ["# CodeSwarm Conversation", ""]
-        for block in self.contents.displayed_children:
+        for block in self.contents.transcript_blocks:
             if isinstance(block, UserInput):
                 content = block.content.strip()
                 if content:

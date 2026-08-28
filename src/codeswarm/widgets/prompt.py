@@ -661,10 +661,6 @@ class Prompt(containers.VerticalGroup):
     @on(InvokeFileSearch)
     def on_invoke_file_search(self, event: InvokeFileSearch) -> None:
         event.stop()
-        # Scanning a large repository is not startup work. It starts only
-        # when the user asks to attach a file, and later refreshes stay warm
-        # while that feature has been used in this conversation.
-        self.path_search.refresh_paths()
         self.show_path_search = True
         self.path_search.reset()
 
