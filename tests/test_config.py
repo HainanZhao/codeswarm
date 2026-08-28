@@ -218,7 +218,7 @@ class ConfigScreenTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_live_config_locks_owner_and_applies_checked_membership(self) -> None:
+    def test_live_config_transfers_owner_on_save(self) -> None:
         async def scenario() -> None:
             async with CodeSwarmApp(setup_prompt=False).run_test(size=(120, 40)) as pilot:
                 conversation = pilot.app.screen.query_one(Conversation)
@@ -250,8 +250,9 @@ class ConfigScreenTests(unittest.TestCase):
                     if config._roster_controls[option.id] == "claude.com"
                 )
                 self.assertTrue(owner.value)
-                self.assertTrue(owner.disabled)
+                self.assertFalse(owner.disabled)
                 self.assertFalse(claude.value)
+                owner.value = False
                 claude.value = True
                 expected_roster = config._read_roster()
 
@@ -259,7 +260,7 @@ class ConfigScreenTests(unittest.TestCase):
                 reconcile.assert_awaited_once_with(
                     expected_roster, config._agents
                 )
-                self.assertEqual(set(expected_roster), {"geminicli.com", "claude.com"})
+                self.assertEqual(set(expected_roster), {"claude.com"})
 
         asyncio.run(scenario())
 

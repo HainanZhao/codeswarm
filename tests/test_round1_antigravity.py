@@ -64,13 +64,14 @@ class Round1AntigravityTests(unittest.TestCase):
                     ["geminicli.com", "claude.com"],
                 )
 
-                # The owner must be the first row and disabled
+                # The owner must be the first row and can be unchecked so a
+                # replacement can take ownership when Save is pressed.
                 first_checkbox = config.query("#config-roster-options Checkbox").first()
                 assert first_checkbox is not None
                 self.assertEqual(
                     config._roster_controls[first_checkbox.id], "geminicli.com"
                 )
-                self.assertTrue(first_checkbox.disabled)
+                self.assertFalse(first_checkbox.disabled)
 
         asyncio.run(scenario())
 

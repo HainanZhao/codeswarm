@@ -1,5 +1,6 @@
 import asyncio
 import glob
+import json
 import os
 import stat
 import tempfile
@@ -61,6 +62,47 @@ class AtomicWriteTests(unittest.TestCase):
 
 
 class SessionOrderingTests(unittest.TestCase):
+    def test_owner_update_replaces_adapter_identity_and_preserves_metadata(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as state_dir:
+                with patch.dict(os.environ, {"XDG_STATE_HOME": state_dir}):
+                    db = DB()
+                    self.assertTrue(await db.create())
+                    session_pk = await db.session_new(
+                        "workspace",
+                        "Claude",
+                        "claude.com",
+                        "claude-session",
+                        meta={"roster": ["claude.com", "openai.com"]},
+                    )
+                    assert session_pk is not None
+
+                    self.assertTrue(
+                        await db.session_update_owner(
+                            session_pk,
+                            agent="Codex",
+                            agent_identity="openai.com",
+                            agent_session_id="codex-session",
+                            protocol="acp",
+                            meta={
+                                "roster": ["openai.com", "claude.com"],
+                                "agent_data": {"identity": "openai.com"},
+                            },
+                        )
+                    )
+                    session = await db.session_get(session_pk)
+                    assert session is not None
+                    self.assertEqual(session["agent"], "Codex")
+                    self.assertEqual(session["agent_identity"], "openai.com")
+                    self.assertEqual(session["agent_session_id"], "codex-session")
+                    self.assertEqual(session["protocol"], "acp")
+                    self.assertEqual(
+                        json.loads(session["meta_json"])["roster"],
+                        ["openai.com", "claude.com"],
+                    )
+
+        asyncio.run(scenario())
+
     def test_recent_sessions_order_by_actual_time_across_timestamp_formats(
         self,
     ) -> None:

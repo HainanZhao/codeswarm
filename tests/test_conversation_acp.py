@@ -93,6 +93,9 @@ class _RosterAgent:
     def get_info(self) -> str:
         return self.name
 
+    def set_roster_introduction(self, _introduction: str) -> None:
+        pass
+
     async def stop(self) -> None:
         pass
 
@@ -146,10 +149,17 @@ class ConversationACPDispatchTests(unittest.TestCase):
                 )
 
                 self.assertEqual(failures, [])
-                self.assertEqual(events, [("add", "openai.com"), ("drop", 1)])
+                self.assertEqual(
+                    events,
+                    [
+                        ("add", "openai.com"),
+                        ("add", "claude.com"),
+                        ("drop", 1),
+                    ],
+                )
                 self.assertEqual(
                     [entry.data["identity"] for entry in conversation.session.roster if entry.active],
-                    ["claude.com", "openai.com"],
+                    ["openai.com", "claude.com"],
                 )
                 self.assertNotIn(id(peer), conversation._ready_agents)
                 persist.assert_awaited_once_with(["openai.com", "claude.com"])
@@ -193,6 +203,32 @@ class ConversationACPDispatchTests(unittest.TestCase):
                 conversation.session.drop.assert_not_awaited()  # type: ignore[attr-defined]
                 self.assertTrue(conversation.session.roster[1].active)
                 persist.assert_awaited_once_with(["claude.com", "geminicli.com"])
+
+        asyncio.run(scenario())
+
+    def test_owner_transfer_failure_does_not_retry_the_replacement(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(size=(120, 40)) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                owner = _RosterAgent("Claude")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(identity="claude.com", name="Claude", short_name="claude"),
+                        owner,  # type: ignore[arg-type]
+                    )
+                ]
+                add = AsyncMock(side_effect=RuntimeError("adapter unavailable"))
+                conversation.session.add = add  # type: ignore[method-assign]
+                catalog = {
+                    "openai.com": AgentData(
+                        identity="openai.com", name="Codex", short_name="codex"
+                    )
+                }
+
+                failures = await conversation.reconcile_roster(["openai.com"], catalog)
+
+                self.assertEqual(failures, ["Codex"])
+                add.assert_awaited_once()
 
         asyncio.run(scenario())
 
@@ -2480,6 +2516,38 @@ class ConversationACPDispatchTests(unittest.TestCase):
                 self.assertEqual(conversation.window.max_scroll_y, max_scroll_y)
                 self.assertNotIn(blocks[0], conversation.contents.children)
                 self.assertIn(blocks[-1], conversation.contents.children)
+
+        asyncio.run(scenario())
+
+    def test_rapid_scroll_requests_rebuild_the_virtual_window_at_a_bounded_rate(
+        self,
+    ) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(80, 12)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                for index in range(160):
+                    await conversation.post(Note(f"History {index}"))
+                await pilot.pause(0.2)
+                conversation.window.scroll_home(animate=False, immediate=True)
+                await pilot.pause(0.1)
+
+                calls = 0
+                original = conversation.contents._virtualize
+
+                async def record(*args, **kwargs):
+                    nonlocal calls
+                    calls += 1
+                    return await original(*args, **kwargs)
+
+                conversation.contents._virtualize = record  # type: ignore[method-assign]
+                for scroll_y in range(0, 100, 5):
+                    conversation.contents.request_window(scroll_y)
+                    await pilot.pause(0.005)
+                await pilot.pause(0.2)
+
+                self.assertLessEqual(calls, 10)
 
         asyncio.run(scenario())
 

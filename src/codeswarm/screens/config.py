@@ -201,13 +201,6 @@ class ConfigScreen(Screen[bool]):
             if self._conversation is not None
             else saved
         )
-        owner_identity = (
-            self._conversation.session.roster[0].data["identity"]
-            if self._conversation is not None and self._conversation.session.roster
-            else None
-        )
-        if owner_identity is not None and owner_identity not in active:
-            active.append(owner_identity)
         coding_agents = {
             identity: agent
             for identity, agent in self._agents.items()
@@ -261,20 +254,10 @@ class ConfigScreen(Screen[bool]):
             *rows
         )
         self._refresh_roster_labels()
-        if owner_identity is not None:
-            owner_control_id = next(
-                (
-                    control_id
-                    for control_id, identity in self._roster_controls.items()
-                    if identity == owner_identity
-                ),
-                None,
-            )
-            if owner_control_id is not None:
-                self.query_one(f"#{owner_control_id}", Checkbox).disabled = True
         self.query_one("#config-roster-help", Static).update(
-            "Check agents to update this idle session. Use ↑/↓ (or Alt+↑/↓) "
-            "to set the next workspace's relay order."
+            "Check agents to update this idle session. Unchecking the current "
+            "owner transfers ownership on Save. Use ↑/↓ (or Alt+↑/↓) to set "
+            "the relay order."
         )
 
     def _refresh_roster_labels(self) -> None:

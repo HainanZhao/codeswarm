@@ -173,6 +173,56 @@ class RelayConversation:
         self.context.add_agent()
         return len(self.agents) - 1
 
+    def remap_agent_index(self, old_index: int, new_index: int) -> None:
+        """Move queued/runtime references when a roster slot is promoted."""
+        if not 0 <= old_index < len(self.agents):
+            raise ValueError("old index out of range")
+        if not 0 <= new_index < len(self.agents):
+            raise ValueError("new index out of range")
+
+        def remap_queue(queue: deque[tuple[int, str]]) -> deque[tuple[int, str]]:
+            return deque(
+                (new_index if target == old_index else target, prompt)
+                for target, prompt in queue
+            )
+
+        self._steering_queue = remap_queue(self._steering_queue)
+        self._direct_queue = remap_queue(self._direct_queue)
+        if self.last_active_index == old_index:
+            self.last_active_index = new_index
+        if self.next_agent_index == old_index:
+            self.next_agent_index = new_index
+
+    def swap_agent_indices(self, first: int, second: int) -> None:
+        """Follow both agents when two live roster slots exchange places."""
+        if not 0 <= first < len(self.agents):
+            raise ValueError("first index out of range")
+        if not 0 <= second < len(self.agents):
+            raise ValueError("second index out of range")
+        if first == second:
+            return
+
+        def swap_queue(queue: deque[tuple[int, str]]) -> deque[tuple[int, str]]:
+            def swap_target(target: int) -> int:
+                if target == first:
+                    return second
+                if target == second:
+                    return first
+                return target
+
+            return deque((swap_target(target), prompt) for target, prompt in queue)
+
+        self._steering_queue = swap_queue(self._steering_queue)
+        self._direct_queue = swap_queue(self._direct_queue)
+        if self.last_active_index == first:
+            self.last_active_index = second
+        elif self.last_active_index == second:
+            self.last_active_index = first
+        if self.next_agent_index == first:
+            self.next_agent_index = second
+        elif self.next_agent_index == second:
+            self.next_agent_index = first
+
     async def send_direct_prompt(self, agent_index: int, prompt: str) -> str | None:
         """Send a private prompt while preserving the target's public context."""
         if not 0 <= agent_index < len(self.agents) or not self.active[agent_index]:

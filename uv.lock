@@ -194,7 +194,7 @@ wheels = [
 
 [[package]]
 name = "codeswarm"
-version = "0.6.39"
+version = "0.6.40"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

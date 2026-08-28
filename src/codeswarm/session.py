@@ -52,8 +52,9 @@ RelayTurn = Callable[[int, AgentBase, str], Awaitable[None] | None]
 class RosterEntry:
     """One agent in a session roster.
 
-    Roster indices are stable for the life of the session. Dropping an agent
-    tombstones the entry so queued direct prompts cannot be retargeted.
+    Roster indices are stable for the life of the session except for an
+    explicit owner transfer saved through the config screen. Dropping an
+    agent tombstones the entry so queued direct prompts cannot be retargeted.
     """
 
     data: AgentData
@@ -809,6 +810,64 @@ class SessionCoordinator:
                 raise RuntimeError("relay and roster indices diverged")
         self._introduce_roster()
 
+    async def promote_owner(self, index: int) -> None:
+        """Promote an already-started roster member into the owner slot.
+
+        The old owner is stopped only after the replacement has already been
+        started (``add`` handles startup). The replacement inherits the
+        persisted session slot and is rewound to the beginning of the public
+        journal so its next turn receives the complete retained context.
+        """
+        if not 0 <= index < len(self.roster):
+            raise IndexError("roster index out of range")
+        if index == 0:
+            return
+        replacement_entry = self.roster[index]
+        old_entry = self.roster[0]
+        replacement = replacement_entry.agent
+        old_owner = old_entry.agent
+        if not replacement_entry.active or replacement is None:
+            raise ValueError("replacement owner is not active")
+        if old_owner is None:
+            raise ValueError("session owner is not running")
+
+        # Keep the old owner and roster untouched if shutdown fails.
+        await old_owner.stop()
+
+        self.roster[0], self.roster[index] = replacement_entry, old_entry
+        replacement_entry.active = True
+        old_entry.active = False
+        self.owner_data = replacement_entry.data
+
+        if self.relay is not None:
+            self.relay.agents[0], self.relay.agents[index] = (
+                self.relay.agents[index],
+                self.relay.agents[0],
+            )
+            self.relay.active[0] = True
+            self.relay.active[index] = False
+            self.relay.swap_agent_indices(index, 0)
+
+        context = self._collaboration_context
+        if context is not None:
+            context.ensure_agent_count(len(self.roster))
+            history_was_truncated = any(context.history_truncated)
+            context.seen_event_count[0] = 0
+            context.history_truncated[0] = history_was_truncated
+
+        if self.selected_agent_index == index:
+            self.selected_agent_index = 0
+        if self.first_agent == index:
+            self.first_agent = 0
+
+        # Peer adapters normally do not persist a DB row. Once promoted, let
+        # the existing session row track their subsequent session updates.
+        if hasattr(replacement, "session_pk"):
+            setattr(replacement, "session_pk", self.session_pk)
+        if hasattr(replacement, "_persist"):
+            setattr(replacement, "_persist", True)
+        self._introduce_roster()
+
     async def drop(self, index: int) -> RosterEntry:
         """Tombstone and stop a peer; roster index zero is protected."""
         if index == 0:
@@ -857,6 +916,9 @@ class SessionCoordinator:
         await save_settings()
         if len(self.roster) <= 1 or self.owner is None:
             return
+        owner_data = self.owner_data
+        if owner_data is None:
+            return
 
         from codeswarm.db import DB
 
@@ -869,4 +931,21 @@ class SessionCoordinator:
             return
         meta = decode_session_meta(session["meta_json"])
         meta["roster"] = active_identities
-        await db.session_update_meta(session_pk, meta)
+        meta["agent_data"] = owner_data
+        # ACP peers may not advertise session loading. Keep the row's
+        # non-null legacy session-id column for compatibility, but tell the
+        # launcher to start a fresh session for such a transferred owner.
+        supports_load = getattr(self.owner, "supports_load_session", None)
+        if isinstance(supports_load, bool):
+            meta["agent_supports_load_session"] = supports_load
+        owner_session_id = getattr(self.owner, "session_id", None)
+        if not isinstance(owner_session_id, str):
+            owner_session_id = session["agent_session_id"]
+        await db.session_update_owner(
+            session_pk,
+            agent=owner_data["name"],
+            agent_identity=owner_data["identity"],
+            agent_session_id=owner_session_id,
+            protocol=owner_data.get("protocol", session["protocol"]),
+            meta=meta,
+        )

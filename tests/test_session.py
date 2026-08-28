@@ -9,6 +9,7 @@ from codeswarm.agent_schema import Agent as AgentData
 from codeswarm.db import decode_session_meta
 from codeswarm.acp.pinned import PinnedConversation
 from codeswarm.acp.relay import RelayConversation, RelayResult
+from codeswarm.acp.collaboration import RelayEvent
 from codeswarm.session import SessionCoordinator
 
 
@@ -52,6 +53,49 @@ class FakeAgent(AgentBase):
 
 
 class SessionCoordinatorTests(unittest.TestCase):
+    def test_promote_peer_to_owner_after_save_preserves_context(self) -> None:
+        async def scenario() -> None:
+            owner_data = agent_data("claude.ai", "Claude", "claude")
+            peer_data = agent_data("openai.com", "Codex", "codex")
+
+            def factory(
+                project_root: Path,
+                data: AgentData,
+                session_id: str | None,
+                session_pk: int | None,
+                *,
+                persist: bool = True,
+            ) -> FakeAgent:
+                return FakeAgent(project_root, data["name"])
+
+            coordinator = SessionCoordinator(
+                Path("."), owner_data, peers=(peer_data,), agent_factory=factory
+            )
+            await coordinator.start(object())
+            relay = coordinator.relay
+            assert relay is not None
+            old_owner = coordinator.roster[0].agent
+            promoted = coordinator.roster[1].agent
+            assert old_owner is not None and promoted is not None
+            context = coordinator._collaboration_context
+            assert context is not None
+            context.public_events = [RelayEvent("Claude", "earlier work")]
+            context.seen_event_count = [1, 0]
+
+            await coordinator.promote_owner(1)
+
+            self.assertIs(coordinator.roster[0].agent, promoted)
+            self.assertEqual(coordinator.roster[0].data["identity"], "openai.com")
+            self.assertTrue(coordinator.roster[0].active)
+            self.assertFalse(coordinator.roster[1].active)
+            self.assertIs(relay.agents[0], promoted)
+            self.assertTrue(relay.active[0])
+            self.assertFalse(relay.active[1])
+            self.assertEqual(coordinator.owner_data, peer_data)
+            self.assertEqual(context.seen_event_count[0], 0)
+
+        asyncio.run(scenario())
+
     def test_pair_mode_starts_each_batch_with_the_first_agent(self) -> None:
         async def scenario() -> None:
             def factory(

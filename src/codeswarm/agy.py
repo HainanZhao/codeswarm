@@ -20,7 +20,7 @@ from codeswarm.acp.agent import OPERATING_INSTRUCTIONS, Mode
 from codeswarm.acp.relay import STOP_TOKEN
 from codeswarm.agent import AgentBase, AgentFail, AgentReady
 from codeswarm.agent_schema import Agent as AgentData
-from codeswarm.db import DB
+from codeswarm.db import DB, decode_session_meta
 
 
 _MODES = {
@@ -350,7 +350,19 @@ class AgyAgent(AgentBase):
                 meta=meta,
             )
         else:
-            await DB().session_update_meta(self.session_pk, meta)
+            db = DB()
+            if session := await db.session_get(self.session_pk):
+                previous_meta = decode_session_meta(session["meta_json"])
+                previous_meta.update(meta)
+                meta = previous_meta
+            await db.session_update_owner(
+                self.session_pk,
+                agent=self._agent_data["name"],
+                agent_identity=self._agent_data["identity"],
+                agent_session_id=self.session_id,
+                protocol="native",
+                meta=meta,
+            )
 
     async def _drain_stderr(self, process: asyncio.subprocess.Process) -> str:
         if process.stderr is None:

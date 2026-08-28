@@ -569,6 +569,22 @@ class RelayConversationTests(unittest.TestCase):
 
 
 class RelayConversationRosterTests(unittest.TestCase):
+    def test_swapping_roster_slots_follows_queued_targets_and_runtime_state(self) -> None:
+        first = FakeAgent("A", [])
+        second = FakeAgent("B", [])
+        relay = RelayConversation((first, second))
+        relay.last_active_index = 0
+        relay.next_agent_index = 1
+        relay.enqueue_human("to first", agent_index=0)
+        relay.enqueue_direct(1, "to second")
+
+        relay.swap_agent_indices(0, 1)
+
+        self.assertEqual(list(relay._steering_queue), [(1, "to first")])
+        self.assertEqual(list(relay._direct_queue), [(0, "to second")])
+        self.assertEqual(relay.last_active_index, 1)
+        self.assertEqual(relay.next_agent_index, 0)
+
     def test_queued_work_survives_a_collapse_to_one_agent(self) -> None:
         first = FakeAgent("A", [])
         second = FakeAgent("B", [])

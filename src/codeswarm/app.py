@@ -789,11 +789,12 @@ class CodeSwarmApp(App, inherit_bindings=False):
             db = DB()
             session = await db.session_get(session_pk)
             if session is not None:
-                agent_data = decode_session_meta(session["meta_json"]).get(
-                    "agent_data"
-                )
+                session_meta = decode_session_meta(session["meta_json"])
+                agent_data = session_meta.get("agent_data")
                 if is_agent_snapshot(agent_data):
                     agent = agent_data  # type: ignore[assignment]
+                    if session_meta.get("agent_supports_load_session") is False:
+                        agent_session_id = None
 
         if agent is None:
             try:

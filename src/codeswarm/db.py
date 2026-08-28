@@ -158,6 +158,45 @@ class DB:
             return False
         return True
 
+    async def session_update_owner(
+        self,
+        id: int,
+        *,
+        agent: str,
+        agent_identity: str,
+        agent_session_id: str,
+        protocol: str,
+        meta: dict[str, object],
+    ) -> bool:
+        """Move a persisted session row to a newly selected owner.
+
+        A live roster can transfer ownership when the user saves config. The
+        row must follow that owner as one atomic update so a subsequent launch
+        does not restore the old adapter with the new roster metadata.
+        """
+        try:
+            async with self.open() as db:
+                await db.execute(
+                    """
+                    UPDATE sessions
+                    SET agent = ?, agent_identity = ?, agent_session_id = ?,
+                        protocol = ?, meta_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        agent,
+                        agent_identity,
+                        agent_session_id,
+                        protocol,
+                        json.dumps(meta),
+                        id,
+                    ),
+                )
+                await db.commit()
+        except aiosqlite.Error:
+            return False
+        return True
+
     async def session_get(self, id: int) -> Session | None:
         """Get a sesison from its ID (PK).
 

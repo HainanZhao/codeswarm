@@ -110,6 +110,7 @@ TRANSCRIPT_BUFFER_ROWS = 100
 TRANSCRIPT_OVERSCAN_ROWS = 25
 TRANSCRIPT_MAX_MOUNTED_ROWS = 260
 TRANSCRIPT_PINNED_TAIL_BLOCKS = 4
+TRANSCRIPT_SCROLL_DEBOUNCE = 0.02
 STREAM_RENDER_INTERVAL = 0.05
 
 STOP_REASON_MAX_TOKENS = """\
@@ -364,6 +365,11 @@ class Contents(containers.VerticalGroup, can_focus=False):
     async def _drain_window_requests(self) -> None:
         try:
             while self._requested_scroll_y is not None:
+                # Mouse wheels can deliver several scroll events per frame.
+                # Give Textual a chance to paint the cheap scroll update before
+                # rebuilding the virtual window, and use only the latest
+                # position from that burst.
+                await asyncio.sleep(TRANSCRIPT_SCROLL_DEBOUNCE)
                 scroll_y = self._requested_scroll_y
                 self._requested_scroll_y = None
                 conversation = self.query_ancestor(Conversation)
@@ -2355,13 +2361,11 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         requested_identities: Sequence[str],
         catalog: dict[str, AgentData],
     ) -> list[str]:
-        """Apply an idle config selection without disturbing stable live indices."""
+        """Apply an idle config selection, transferring ownership if needed."""
         desired = list(dict.fromkeys(requested_identities))
         if not self.session.roster:
             return []
         owner_identity = self.session.roster[0].data["identity"]
-        if owner_identity not in desired:
-            desired.insert(0, owner_identity)
 
         active_identities = {
             entry.data["identity"]
@@ -2369,10 +2373,81 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             if entry.active
         }
         failures: list[str] = []
+        attempted_identities: set[str] = set()
+
+        # The first checked identity is the owner selected for the next
+        # session. Start it before stopping the current owner, then promote it
+        # into slot zero so persistence and relay state follow the selection.
+        if desired and desired[0] != owner_identity:
+            added_replacement = False
+            replacement_index = next(
+                (
+                    index
+                    for index, entry in enumerate(self.session.roster)
+                    if entry.active and entry.data["identity"] == desired[0]
+                ),
+                None,
+            )
+            if replacement_index is None:
+                attempted_identities.add(desired[0])
+                data = catalog.get(desired[0])
+                if data is None:
+                    failures.append(desired[0])
+                else:
+                    try:
+                        await self.session.add(
+                            data,
+                            self,
+                            on_turn_start=self._label_relay_turn_start,
+                            on_queued_turn_start=self._label_queued_relay_turn_start,
+                            on_queued_turn_discarded=self._discard_queued_prompt,
+                            on_turn=self._label_relay_turn,
+                        )
+                    except Exception as error:
+                        failures.append(data["name"])
+                        details = str(error).strip() or "no details were provided"
+                        self.flash(
+                            f"Unable to add {data['name']} — {details}",
+                            style="error",
+                        )
+                    else:
+                        active_identities.add(desired[0])
+                        added_replacement = True
+                        replacement_index = next(
+                            index
+                            for index, entry in enumerate(self.session.roster)
+                            if entry.active
+                            and entry.data["identity"] == desired[0]
+                        )
+            if replacement_index is not None and not failures:
+                try:
+                    await self.session.promote_owner(replacement_index)
+                except Exception as error:
+                    failures.append(desired[0])
+                    if added_replacement and replacement_index is not None:
+                        try:
+                            await self.session.drop(replacement_index)
+                        except Exception:
+                            # The original owner remains intact; a failed
+                            # cleanup is reported through the transfer error
+                            # rather than risking another roster mutation.
+                            pass
+                    details = str(error).strip() or "no details were provided"
+                    self.flash(
+                        f"Unable to transfer session ownership — {details}",
+                        style="error",
+                    )
+                else:
+                    owner_identity = desired[0]
+                    active_identities = {
+                        entry.data["identity"]
+                        for entry in self.session.roster
+                        if entry.active
+                    }
 
         # Establish every requested replacement before removing a healthy peer.
         for identity in desired:
-            if identity in active_identities:
+            if identity in active_identities or identity in attempted_identities:
                 continue
             data = catalog.get(identity)
             if data is None:

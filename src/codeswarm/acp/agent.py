@@ -1343,17 +1343,32 @@ class Agent(AgentBase):
         if self.supports_load_session and self._persist:
             db = DB()
             session_name = "New Session"
-            self.session_pk = await db.session_new(
-                session_name,
-                self._agent_data["name"],
-                self._agent_data["identity"],
-                self.session_id,
-                protocol="acp",
-                meta={
-                    "cwd": str(self.project_root_path),
-                    "agent_data": self._agent_data,
-                },
-            )
+            meta = {
+                "cwd": str(self.project_root_path),
+                "agent_data": self._agent_data,
+            }
+            if self.session_pk is None:
+                self.session_pk = await db.session_new(
+                    session_name,
+                    self._agent_data["name"],
+                    self._agent_data["identity"],
+                    self.session_id,
+                    protocol="acp",
+                    meta=meta,
+                )
+            else:
+                if session := await db.session_get(self.session_pk):
+                    previous_meta = decode_session_meta(session["meta_json"])
+                    previous_meta.update(meta)
+                    meta = previous_meta
+                await db.session_update_owner(
+                    self.session_pk,
+                    agent=self._agent_data["name"],
+                    agent_identity=self._agent_data["identity"],
+                    agent_session_id=self.session_id,
+                    protocol="acp",
+                    meta=meta,
+                )
 
         if (modes := response.get("modes", None)) is not None:
             current_mode = modes["currentModeId"]
