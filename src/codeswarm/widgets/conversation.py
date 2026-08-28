@@ -108,7 +108,6 @@ AGENT_TURN_WORKER_GROUP = "agent-turn"
 TRANSCRIPT_WINDOW_ROWS = 240
 TRANSCRIPT_BUFFER_ROWS = 100
 TRANSCRIPT_OVERSCAN_ROWS = 25
-TRANSCRIPT_MAX_MOUNTED_ROWS = 260
 TRANSCRIPT_PINNED_TAIL_BLOCKS = 4
 TRANSCRIPT_SCROLL_DEBOUNCE = 0.02
 STREAM_RENDER_INTERVAL = 0.05
@@ -295,14 +294,10 @@ class Contents(containers.VerticalGroup, can_focus=False):
         guard_indices = frozenset(
             {*range(guard_first, guard_last), *range(tail_start, block_count)}
         )
-        mounted_rows = sum(
-            self.block_rows(self._transcript_blocks[index])
-            for index in self._mounted_indices
-            if index < block_count
-        )
-        if guard_indices.issubset(
-            self._mounted_indices
-        ) and mounted_rows <= TRANSCRIPT_MAX_MOUNTED_ROWS:
+        # The mounted window already covers this viewport. Rebuilding the
+        # identical widget tree is expensive, especially for tall Markdown
+        # replies, and does not reduce the retained window's size.
+        if guard_indices.issubset(self._mounted_indices):
             return
 
         window_top = max(0, int(scroll_y) - TRANSCRIPT_BUFFER_ROWS)
@@ -1034,6 +1029,9 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                         agent_index = active_agents.index(response_agent)
                     except ValueError:
                         pass
+                # Keep the initial source on the response itself. Markdown
+                # parses it when mounted, and the response preserves that
+                # source if virtualization detaches it before parsing starts.
                 agent_response = AgentResponse(fragment)
                 if response_agent is not None:
                     agent_response.add_class(f"-agent-tone-{agent_index % 4}")

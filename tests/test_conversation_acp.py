@@ -2506,6 +2506,17 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
                 self.assertEqual(conversation.window.max_scroll_y, max_scroll_y)
                 self.assertIn(blocks[0], conversation.contents.children)
+                # Virtualizing must detach and reattach the original message
+                # widgets without losing their rendered content.
+                content = blocks[0].query_one("#content")
+                self.assertEqual(content.source, "History 0")
+                self.assertTrue(content.children)
+                self.assertTrue(
+                    any(
+                        "History 0" in paragraph.render().plain
+                        for paragraph in content.query(MarkdownParagraph)
+                    )
+                )
                 # The live tail remains mounted so streamed updates can keep
                 # arriving while the user reads older history.
                 self.assertIn(blocks[-1], conversation.contents.children)
@@ -2532,7 +2543,6 @@ class ConversationACPDispatchTests(unittest.TestCase):
                 await pilot.pause(0.2)
                 conversation.window.scroll_home(animate=False, immediate=True)
                 await pilot.pause(0.1)
-
                 calls = 0
                 original = conversation.contents._virtualize
 
@@ -2548,6 +2558,84 @@ class ConversationACPDispatchTests(unittest.TestCase):
                 await pilot.pause(0.2)
 
                 self.assertLessEqual(calls, 10)
+
+        asyncio.run(scenario())
+
+    def test_small_scrolls_do_not_remount_a_tall_virtual_window(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(80, 12)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                for index in range(80):
+                    await conversation.post(
+                        Note("\n".join(f"History {index}" for _ in range(40)))
+                    )
+                await pilot.pause(0.3)
+                conversation.window.scroll_home(animate=False, immediate=True)
+                await pilot.pause(0.1)
+
+                remounts = 0
+                original_remove_children = conversation.contents.remove_children
+
+                async def record_remount(children):
+                    nonlocal remounts
+                    if children:
+                        remounts += 1
+                    return await original_remove_children(children)
+
+                conversation.contents.remove_children = record_remount  # type: ignore[method-assign]
+                for scroll_y in range(1, 20):
+                    conversation.contents.request_window(scroll_y)
+                    await pilot.pause(0.03)
+                await pilot.pause(0.1)
+
+                self.assertEqual(remounts, 0)
+
+        asyncio.run(scenario())
+
+    def test_scrolling_keeps_detached_agent_message_content_rendered(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(80, 12)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                agent = _RosterAgent("Claude")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.ai",
+                            name="Claude",
+                            short_name="claude",
+                        ),
+                        agent,  # type: ignore[arg-type]
+                    )
+                ]
+                messages = []
+                for index in range(130):
+                    conversation.new_block()
+                    conversation.begin_agent_output(agent)  # type: ignore[arg-type]
+                    response = await conversation.post_agent_response(
+                        f"Reply {index}"
+                    )
+                    self.assertIsNotNone(response)
+                    assert conversation._agent_message is not None
+                    messages.append(conversation._agent_message)
+                await pilot.pause(0.3)
+
+                conversation.window.scroll_home(animate=False, immediate=True)
+                await pilot.pause(0.3)
+
+                first_response = messages[0].response
+                self.assertIsNotNone(first_response)
+                self.assertEqual(first_response.source, "Reply 0")
+                self.assertTrue(first_response.children)
+                self.assertTrue(
+                    any(
+                        "Reply 0" in paragraph.render().plain
+                        for paragraph in first_response.query(MarkdownParagraph)
+                    )
+                )
 
         asyncio.run(scenario())
 

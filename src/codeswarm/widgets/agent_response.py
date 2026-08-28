@@ -2,8 +2,10 @@ from datetime import datetime
 
 from textual.app import ComposeResult
 from textual import containers, events
+from textual.await_complete import AwaitComplete
 from textual.binding import Binding
 from textual.content import Content
+from textual.events import Mount
 from textual.reactive import var
 from textual.widget import Widget
 from textual.widgets import Markdown, Static
@@ -39,7 +41,39 @@ class AgentResponse(ConversationMarkdown):
 
     def __init__(self, markdown: str | None = None) -> None:
         super().__init__(markdown)
+        # Markdown normally copies ``markdown`` into ``source`` from its
+        # asynchronous mount hook. Keep the source available synchronously so
+        # virtualization can safely detach this widget before that hook runs.
+        if markdown is not None:
+            self._markdown = markdown
         self._stream: MarkdownStream | None = None
+        self._skip_mount_update = False
+
+    async def _on_mount(self, _event: Mount) -> None:
+        """Initialize Markdown only once across virtual-window remounts.
+
+        Textual's base implementation calls ``update("")`` whenever a
+        Markdown widget is mounted without ``_initial_markdown``. That is
+        harmless for ordinary widgets, but virtualized transcript responses
+        are intentionally detached and reattached; remounting would erase
+        their already-rendered source.
+        """
+        if self._initial_markdown is None:
+            # Textual dispatches both this override and Markdown's base
+            # ``_on_mount`` through the MRO. Preserve the current document
+            # and skip the base update when its children are already present,
+            # so remounting does not erase or needlessly re-parse the
+            # already-rendered source. If the first mount was interrupted
+            # before Markdown parsed, allow the base handler to rebuild it.
+            self._initial_markdown = self.source
+            self._skip_mount_update = bool(self.children)
+
+    def update(self, markdown: str) -> AwaitComplete:
+        """Keep virtual remounts from clearing or rebuilding the document."""
+        if self._skip_mount_update:
+            self._skip_mount_update = False
+            return AwaitComplete.nothing()
+        return super().update(markdown)
 
     def block_cursor_clear(self) -> None:
         self.block_cursor_offset = -1
