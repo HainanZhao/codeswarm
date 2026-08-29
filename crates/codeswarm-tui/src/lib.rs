@@ -16,6 +16,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Widget},
 };
 
+pub mod frame_scheduler;
+
 #[derive(Debug)]
 pub struct App {
     pub transcript: Transcript,
