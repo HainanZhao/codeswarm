@@ -364,7 +364,8 @@ impl App {
         self.keyboard_help
     }
 
-    /// Return the transcript height for a terminal of `terminal_height`.
+    /// Return the available transcript viewport height for a terminal of
+    /// `terminal_height`.
     ///
     /// Input handlers use this alongside `scroll_by`/`follow_tail` so adding
     /// a queue, permission prompt, or help panel cannot make End follow an

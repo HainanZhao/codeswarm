@@ -67,8 +67,8 @@ pub trait AgentAdapter: Send {
     async fn next_event(&mut self) -> Option<AdapterResult<AgentEvent>>;
 }
 
-/// Owns one adapter's process and feeds normalized events through the
-/// deterministic core reducer. The UI consumes effects and state snapshots.
+/// Owns one adapter and feeds normalized events through the deterministic core
+/// reducer. The UI consumes effects and state snapshots.
 pub struct AdapterHost {
     adapter: Box<dyn AgentAdapter>,
     pub state: SessionState,
@@ -209,8 +209,8 @@ impl RelayHost {
     }
 
     /// Send each normalized event to a client while a turn is being drained.
-    /// The callback is synchronous and deliberately tiny: clients should
-    /// enqueue the event and return so adapter I/O never waits on rendering.
+    /// The callback runs synchronously on the relay task and should only
+    /// enqueue the event; expensive rendering must happen outside the callback.
     pub fn set_event_sink<F>(&mut self, sink: F)
     where
         F: Fn(AgentEvent) + Send + Sync + 'static,

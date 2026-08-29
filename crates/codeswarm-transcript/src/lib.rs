@@ -1,4 +1,4 @@
-//! Immutable, viewport-oriented transcript data.
+//! Viewport-oriented transcript data with stable logical blocks.
 //!
 //! This crate deliberately has no terminal or async dependencies. After the
 //! width cache is warm, rendering a scroll position is a lookup over cached

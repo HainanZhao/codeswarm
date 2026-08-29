@@ -2,7 +2,7 @@
 //!
 //! The first Rust implementation wrote bare [`AgentEvent`] values to JSONL.
 //! The types in this module deliberately accept that format as schema zero and
-//! provide a non-destructive migration to a versioned envelope.  Session
+//! provide migration helpers for versioned envelopes.  Session
 //! metadata is likewise accepted in the shape written by the Python client.
 //! Metadata is exported in a flattened form so the existing Python decoder can
 //! continue to find keys such as `roster` and `agent_data`.
@@ -22,7 +22,8 @@ use crate::AgentEvent;
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 const LEGACY_SCHEMA_VERSION: u32 = 0;
 
-/// Persistence failures are reported without changing the source file.
+/// Persistence operations report malformed input, unsupported versions, and
+/// I/O failures through this type.
 #[derive(Debug)]
 pub enum PersistenceError {
     Io(std::io::Error),
@@ -53,7 +54,8 @@ impl From<std::io::Error> for PersistenceError {
 /// Result of converting a file to the current schema.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MigrationReport {
-    /// `None` means that the source file did not exist.
+    /// `None` means that no source record/version was observed, including when
+    /// the source file is missing or empty.
     pub source_version: Option<u32>,
     pub target_version: u32,
     pub records: usize,
@@ -271,7 +273,7 @@ impl Deref for LoadedSessionMetadata {
     }
 }
 
-/// File-backed session metadata with non-destructive migration.
+/// File-backed session metadata with schema migration.
 #[derive(Clone, Debug)]
 pub struct SessionMetadataStore {
     path: PathBuf,
