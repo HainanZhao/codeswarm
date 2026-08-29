@@ -9,6 +9,7 @@ use std::{
 use codeswarm_adapters::{
     AcpAdapter, AdapterError, AdapterHost, AdapterResult, AgentAdapter, AgyAdapter, RelayHost,
 };
+use codeswarm_core::PermissionAnswer;
 use codeswarm_core::{AgentEvent, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{App, render};
@@ -22,8 +23,19 @@ use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
 #[derive(Debug)]
 enum AdapterControl {
     Prompt(String),
-    Queue { slot: usize, prompt: String },
-    Direct { slot: usize, prompt: String },
+    Queue {
+        slot: usize,
+        prompt: String,
+    },
+    Direct {
+        slot: usize,
+        prompt: String,
+    },
+    Permission {
+        slot: usize,
+        request_id: String,
+        answer: PermissionAnswer,
+    },
     Pause,
     Resume,
     Cancel,
@@ -317,6 +329,7 @@ fn run_agy_task(
                     }
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
+                    | Some(AdapterControl::Permission { .. })
                     | Some(AdapterControl::Pause)
                     | Some(AdapterControl::Resume) => {}
                     Some(AdapterControl::Stop) | None => break,
@@ -392,6 +405,7 @@ fn run_acp_task(
                     }
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
+                    | Some(AdapterControl::Permission { .. })
                     | Some(AdapterControl::Pause)
                     | Some(AdapterControl::Resume) => {}
                     Some(AdapterControl::Stop) | None => break,
@@ -523,6 +537,15 @@ fn run_relay_task(
                         let _ = sender.send(Err(error));
                     }
                 }
+                Some(AdapterControl::Permission {
+                    slot,
+                    request_id,
+                    answer,
+                }) => {
+                    if let Err(error) = relay.answer_permission(slot, request_id, answer).await {
+                        let _ = sender.send(Err(error));
+                    }
+                }
                 Some(AdapterControl::Pause) => relay.pause(),
                 Some(AdapterControl::Resume) => relay.resume(),
                 Some(AdapterControl::Cancel) => {
@@ -544,11 +567,18 @@ fn run_terminal(
 ) -> std::io::Result<()> {
     let mut selected_slot = selected_slot;
     let event_log = event_log().ok();
+    let mut pending_permission: Option<(usize, String)> = None;
     loop {
         if let Some(events) = &events {
             while let Ok(event) = events.try_recv() {
                 match event {
                     Ok(event) => {
+                        if let AgentEvent::Permission { slot, request } = &event {
+                            pending_permission = Some((*slot, request.id.clone()));
+                        }
+                        if let AgentEvent::TurnComplete { .. } = &event {
+                            pending_permission = None;
+                        }
                         if let Some(log) = &event_log {
                             let _ = log.append(&event);
                         }
@@ -601,6 +631,27 @@ fn run_terminal(
                     if slot > 0 {
                         selected_slot = Some(slot - 1);
                         app.status = format!("selected agent {}", slot - 1);
+                    }
+                }
+                KeyCode::Enter if pending_permission.is_some() && !app.prompt.trim().is_empty() => {
+                    if let Some(controls) = &controls {
+                        let prompt = std::mem::take(&mut app.prompt);
+                        let answer = if prompt.eq_ignore_ascii_case("/cancel")
+                            || prompt.eq_ignore_ascii_case("/deny")
+                        {
+                            PermissionAnswer::Cancelled
+                        } else {
+                            PermissionAnswer::Selected { option_id: prompt }
+                        };
+                        let (slot, request_id) = pending_permission
+                            .take()
+                            .expect("permission guard ensures pending request");
+                        let _ = controls.send(AdapterControl::Permission {
+                            slot,
+                            request_id,
+                            answer,
+                        });
+                        app.status = "permission answered".into();
                     }
                 }
                 KeyCode::Enter

@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use codeswarm_core::{
-    AgentCapabilities, AgentEvent, Effect, EventLog, Mode, PermissionRequest, RosterSlot,
-    SessionState, ToolStatus, ToolUpdate, reduce,
+    AgentCapabilities, AgentEvent, Effect, EventLog, Mode, PermissionAnswer, PermissionRequest,
+    RosterSlot, SessionState, ToolStatus, ToolUpdate, reduce,
     relay::{Relay, RelayDecision},
 };
 use serde_json::Value;
@@ -56,6 +56,11 @@ pub trait AgentAdapter: Send {
     async fn start(&mut self) -> AdapterResult<()>;
     async fn send_prompt(&mut self, prompt: String) -> AdapterResult<()>;
     async fn cancel(&mut self) -> AdapterResult<bool>;
+    async fn answer_permission(
+        &mut self,
+        request_id: String,
+        answer: PermissionAnswer,
+    ) -> AdapterResult<()>;
     async fn set_mode(&mut self, mode: String) -> AdapterResult<()>;
     async fn reload(&mut self) -> AdapterResult<()>;
     async fn stop(&mut self) -> AdapterResult<()>;
@@ -103,6 +108,14 @@ impl AdapterHost {
 
     pub async fn cancel(&mut self) -> AdapterResult<bool> {
         self.adapter.cancel().await
+    }
+
+    pub async fn answer_permission(
+        &mut self,
+        request_id: String,
+        answer: PermissionAnswer,
+    ) -> AdapterResult<()> {
+        self.adapter.answer_permission(request_id, answer).await
     }
 
     pub async fn set_mode(&mut self, mode: String) -> AdapterResult<()> {
@@ -217,6 +230,21 @@ impl RelayHost {
             host.stop().await?;
         }
         Ok(())
+    }
+
+    /// Forward a normalized permission answer to the adapter owning `slot`.
+    /// This keeps protocol-specific response framing out of the relay and UI.
+    pub async fn answer_permission(
+        &mut self,
+        slot: RosterSlot,
+        request_id: String,
+        answer: PermissionAnswer,
+    ) -> AdapterResult<()> {
+        let host = self
+            .hosts
+            .get_mut(slot)
+            .ok_or_else(|| AdapterError::Transport("permission target is missing".into()))?;
+        host.answer_permission(request_id, answer).await
     }
 
     pub fn pause(&mut self) {
@@ -350,6 +378,18 @@ impl AgentAdapter for ScriptedAdapter {
 
     async fn cancel(&mut self) -> AdapterResult<bool> {
         Ok(self.capabilities.supports_cancel)
+    }
+
+    async fn answer_permission(
+        &mut self,
+        _request_id: String,
+        _answer: PermissionAnswer,
+    ) -> AdapterResult<()> {
+        if self.capabilities.supports_permissions {
+            Ok(())
+        } else {
+            Err(AdapterError::Unsupported("permission answer"))
+        }
     }
 
     async fn set_mode(&mut self, _mode: String) -> AdapterResult<()> {
@@ -516,6 +556,14 @@ impl AgentAdapter for AgyAdapter {
             .start_kill()
             .map_err(|error| AdapterError::Transport(error.to_string()))?;
         Ok(true)
+    }
+
+    async fn answer_permission(
+        &mut self,
+        _request_id: String,
+        _answer: PermissionAnswer,
+    ) -> AdapterResult<()> {
+        Err(AdapterError::Unsupported("permission answer"))
     }
 
     async fn set_mode(&mut self, mode: String) -> AdapterResult<()> {
@@ -872,6 +920,29 @@ impl AgentAdapter for AcpAdapter {
         Ok(true)
     }
 
+    async fn answer_permission(
+        &mut self,
+        request_id: String,
+        answer: PermissionAnswer,
+    ) -> AdapterResult<()> {
+        let id = request_id
+            .parse::<u64>()
+            .map(Value::from)
+            .unwrap_or_else(|_| Value::String(request_id));
+        let outcome = match answer {
+            PermissionAnswer::Selected { option_id } => {
+                serde_json::json!({"outcome": "selected", "optionId": option_id})
+            }
+            PermissionAnswer::Cancelled => serde_json::json!({"outcome": "cancelled"}),
+        };
+        self.write_json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {"outcome": outcome},
+        }))
+        .await
+    }
+
     async fn set_mode(&mut self, mode: String) -> AdapterResult<()> {
         let session_id = self
             .session_id
@@ -913,13 +984,13 @@ impl AgentAdapter for AcpAdapter {
                 Ok(value) => value,
                 Err(error) => return Some(Err(AdapterError::Protocol(error.to_string()))),
             };
-            if value.get("id").is_some() {
-                return Some(Ok(AgentEvent::TurnComplete { slot: self.slot }));
-            }
             match parse_acp_notification(self.slot, &line) {
                 Ok(Some(event)) => return Some(Ok(event)),
                 Ok(None) => {}
                 Err(error) => return Some(Err(error)),
+            }
+            if value.get("id").is_some() {
+                return Some(Ok(AgentEvent::TurnComplete { slot: self.slot }));
             }
         }
     }
@@ -928,7 +999,21 @@ impl AgentAdapter for AcpAdapter {
 fn parse_acp_notification(slot: RosterSlot, line: &str) -> AdapterResult<Option<AgentEvent>> {
     let value: Value =
         serde_json::from_str(line).map_err(|error| AdapterError::Protocol(error.to_string()))?;
-    if value.get("method").and_then(Value::as_str) != Some("session/update") {
+    let method = value.get("method").and_then(Value::as_str);
+    if method == Some("session/request_permission") {
+        let params = value.get("params").cloned().unwrap_or(Value::Null);
+        let request_id = value
+            .get("id")
+            .map(rpc_id_to_string)
+            .unwrap_or_else(|| "permission".into());
+        return Ok(parse_permission_event(
+            slot,
+            &params,
+            &request_id,
+            params.get("options"),
+        ));
+    }
+    if method != Some("session/update") {
         return Ok(None);
     }
     let Some(update) = value.get("params").and_then(|params| params.get("update")) else {
@@ -936,38 +1021,17 @@ fn parse_acp_notification(slot: RosterSlot, line: &str) -> AdapterResult<Option<
     };
     let kind = update.get("sessionUpdate").and_then(Value::as_str);
     if kind == Some("request_permission") {
-        let id = update
+        let request_id = update
             .get("toolCall")
             .and_then(|tool| tool.get("toolCallId"))
             .and_then(Value::as_str)
-            .unwrap_or("permission")
-            .to_owned();
-        let title = update
-            .get("toolCall")
-            .and_then(|tool| tool.get("title"))
-            .and_then(Value::as_str)
-            .unwrap_or("Agent requests permission")
-            .to_owned();
-        let options = update
-            .get("options")
-            .and_then(Value::as_array)
-            .map(|options| {
-                options
-                    .iter()
-                    .filter_map(|option| {
-                        option
-                            .get("name")
-                            .or_else(|| option.get("optionId"))
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        return Ok(Some(AgentEvent::Permission {
+            .unwrap_or("permission");
+        return Ok(parse_permission_event(
             slot,
-            request: PermissionRequest { id, title, options },
-        }));
+            update,
+            request_id,
+            update.get("options"),
+        ));
     }
     let text = update
         .get("content")
@@ -1012,14 +1076,60 @@ fn parse_acp_notification(slot: RosterSlot, line: &str) -> AdapterResult<Option<
     }
 }
 
+fn parse_permission_event(
+    slot: RosterSlot,
+    value: &Value,
+    request_id: &str,
+    options: Option<&Value>,
+) -> Option<AgentEvent> {
+    let tool = value.get("toolCall").unwrap_or(value);
+    let title = tool
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("Agent requests permission")
+        .to_owned();
+    let options = options
+        .and_then(Value::as_array)
+        .map(|options| {
+            options
+                .iter()
+                .filter_map(|option| {
+                    option
+                        .get("name")
+                        .or_else(|| option.get("optionId"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(AgentEvent::Permission {
+        slot,
+        request: PermissionRequest {
+            id: request_id.to_owned(),
+            title,
+            options,
+        },
+    })
+}
+
+fn rpc_id_to_string(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| value.as_u64().map(|id| id.to_string()))
+        .unwrap_or_else(|| value.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use codeswarm_core::{AgentCapabilities, AgentEvent, EventLog, ToolStatus};
+    use codeswarm_core::{AgentCapabilities, AgentEvent, EventLog, PermissionAnswer, ToolStatus};
 
     use super::{
-        AcpAdapter, AdapterHost, AgentAdapter, ScriptedAdapter, parse_acp_notification,
+        AcpAdapter, AdapterHost, AgentAdapter, AgyAdapter, ScriptedAdapter, parse_acp_notification,
         parse_agy_line,
     };
+    use serde_json::Value;
 
     #[test]
     fn parses_acp_text_without_ui_dependency() {
@@ -1109,6 +1219,39 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn parses_acp_permission_request_as_json_rpc_request() {
+        let event = parse_acp_notification(
+            2,
+            r#"{"jsonrpc":"2.0","id":17,"method":"session/request_permission","params":{"sessionId":"s1","toolCall":{"title":"Write file"},"options":[{"optionId":"allow-once"},{"name":"reject"}]}}"#,
+        )
+        .expect("valid permission request")
+        .expect("permission event");
+        assert!(matches!(
+            event,
+            AgentEvent::Permission { request, .. }
+                if request.id == "17"
+                    && request.title == "Write file"
+                    && request.options == ["allow-once", "reject"]
+        ));
+    }
+
+    #[tokio::test]
+    async fn native_adapter_explicitly_rejects_permission_answers() {
+        let mut adapter = AgyAdapter::new(0, std::env::current_dir().expect("cwd"), "agy");
+        assert_eq!(
+            adapter
+                .answer_permission(
+                    "request".into(),
+                    PermissionAnswer::Selected {
+                        option_id: "allow".into()
+                    },
+                )
+                .await,
+            Err(super::AdapterError::Unsupported("permission answer"))
+        );
+    }
+
     #[tokio::test]
     async fn acp_adapter_initializes_session_and_completes_a_prompt() {
         let script = r#"read _; echo '{"jsonrpc":"2.0","id":1,"result":{"agentCapabilities":{"loadSession":true}}}'; read _; echo '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"session-1","modes":{"currentModeId":"plan","availableModes":[{"id":"plan","name":"Plan"}]}}}'; read _; echo '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}}}'; echo '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'"#;
@@ -1150,6 +1293,56 @@ mod tests {
             adapter.next_event().await,
             Some(Ok(AgentEvent::Ready { .. }))
         ));
+    }
+
+    #[tokio::test]
+    async fn acp_adapter_answers_permission_json_rpc_requests() {
+        let path = std::env::temp_dir().join(format!(
+            "codeswarm-permission-answer-{}",
+            std::process::id()
+        ));
+        let script = format!(
+            r#"read _; echo '{{"jsonrpc":"2.0","id":1,"result":{{"agentCapabilities":{{}}}}}}'; read _; echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s1"}}}}'; read _; echo '{{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{{"toolCall":{{"title":"Write file"}},"options":[{{"optionId":"allow-once"}}]}}}}'; read answer; printf '%s' "$answer" > '{}'; echo '{{"jsonrpc":"2.0","id":4,"result":{{"stopReason":"end_turn"}}}}'"#,
+            path.display()
+        );
+        let mut adapter = AcpAdapter::new(
+            0,
+            std::env::current_dir().expect("cwd"),
+            "sh",
+            vec!["-c".into(), script],
+        );
+        adapter.start().await.expect("start ACP");
+        assert!(matches!(
+            adapter.next_event().await,
+            Some(Ok(AgentEvent::Ready { .. }))
+        ));
+        adapter.send_prompt("do it".into()).await.expect("prompt");
+        assert!(matches!(
+            adapter.next_event().await,
+            Some(Ok(AgentEvent::Permission { request, .. }))
+                if request.id == "9"
+        ));
+        adapter
+            .answer_permission(
+                "9".into(),
+                PermissionAnswer::Selected {
+                    option_id: "allow-once".into(),
+                },
+            )
+            .await
+            .expect("permission answer");
+        assert!(matches!(
+            adapter.next_event().await,
+            Some(Ok(AgentEvent::TurnComplete { .. }))
+        ));
+        let answer: Value = serde_json::from_str(
+            &std::fs::read_to_string(&path).expect("captured permission answer"),
+        )
+        .expect("valid JSON-RPC answer");
+        assert_eq!(answer["id"], 9);
+        assert_eq!(answer["result"]["outcome"]["outcome"], "selected");
+        assert_eq!(answer["result"]["outcome"]["optionId"], "allow-once");
+        std::fs::remove_file(path).expect("cleanup");
     }
 
     #[tokio::test]
