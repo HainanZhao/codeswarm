@@ -224,6 +224,12 @@ remains provider-account dependent.
 
 ## Phase 0 — Baseline and Performance Harness
 
+> The phase checklist below is the original design decomposition retained for
+> traceability. Its unchecked boxes are historical planning notes; the
+> authoritative current status is the dated implementation checklist above.
+> The only remaining release gate is provider-backed real-agent dogfooding and
+> staged cutover, which depends on credentials and rollout policy.
+
 **Purpose:** Make “fast in tmux” falsifiable before a renderer exists.
 
 - [ ] Add a deterministic fixture generator for:
