@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use async_trait::async_trait;
-use codeswarm_core::{AgentCapabilities, AgentEvent, Mode, RosterSlot, ToolStatus, ToolUpdate};
+use codeswarm_core::{
+    AgentCapabilities, AgentEvent, Effect, EventLog, Mode, RosterSlot, SessionState, ToolStatus,
+    ToolUpdate, reduce,
+};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdout, Command};
@@ -49,6 +52,69 @@ pub trait AgentAdapter: Send {
     async fn reload(&mut self) -> AdapterResult<()>;
     async fn stop(&mut self) -> AdapterResult<()>;
     async fn next_event(&mut self) -> Option<AdapterResult<AgentEvent>>;
+}
+
+/// Owns one adapter's process and feeds normalized events through the
+/// deterministic core reducer. The UI consumes effects and state snapshots.
+pub struct AdapterHost {
+    adapter: Box<dyn AgentAdapter>,
+    pub state: SessionState,
+    event_log: Option<EventLog>,
+}
+
+impl std::fmt::Debug for AdapterHost {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AdapterHost")
+            .field("state", &self.state)
+            .field("event_log", &self.event_log)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AdapterHost {
+    pub fn new(adapter: Box<dyn AgentAdapter>, event_log: Option<EventLog>) -> Self {
+        let slot = adapter.slot();
+        Self {
+            adapter,
+            state: SessionState::new(slot.saturating_add(1)),
+            event_log,
+        }
+    }
+
+    pub async fn start(&mut self) -> AdapterResult<()> {
+        self.adapter.start().await
+    }
+
+    pub async fn send_prompt(&mut self, prompt: String) -> AdapterResult<()> {
+        self.adapter.send_prompt(prompt).await
+    }
+
+    pub async fn cancel(&mut self) -> AdapterResult<bool> {
+        self.adapter.cancel().await
+    }
+
+    pub async fn stop(&mut self) -> AdapterResult<()> {
+        self.adapter.stop().await
+    }
+
+    pub async fn next_effects(&mut self) -> Option<AdapterResult<Vec<Effect>>> {
+        let event = match self.adapter.next_event().await {
+            None => return None,
+            Some(Err(error)) => return Some(Err(error)),
+            Some(Ok(event)) => event,
+        };
+        if let Some(log) = &self.event_log
+            && let Err(error) = log.append(&event)
+        {
+            return Some(Err(AdapterError::Transport(error.to_string())));
+        }
+        Some(Ok(reduce(&mut self.state, event)))
+    }
+
+    pub fn adapter(&self) -> &dyn AgentAdapter {
+        &*self.adapter
+    }
 }
 
 /// Deterministic in-memory adapter used for contract and relay tests.
@@ -696,9 +762,12 @@ fn parse_acp_notification(slot: RosterSlot, line: &str) -> AdapterResult<Option<
 
 #[cfg(test)]
 mod tests {
-    use codeswarm_core::{AgentEvent, ToolStatus};
+    use codeswarm_core::{AgentCapabilities, AgentEvent, EventLog, ToolStatus};
 
-    use super::{AcpAdapter, AgentAdapter, parse_acp_notification, parse_agy_line};
+    use super::{
+        AcpAdapter, AdapterHost, AgentAdapter, ScriptedAdapter, parse_acp_notification,
+        parse_agy_line,
+    };
 
     #[test]
     fn parses_acp_text_without_ui_dependency() {
@@ -794,5 +863,28 @@ mod tests {
             adapter.next_event().await,
             Some(Ok(AgentEvent::TurnComplete { .. }))
         ));
+    }
+
+    #[tokio::test]
+    async fn host_reduces_and_persists_adapter_events() {
+        let path =
+            std::env::temp_dir().join(format!("codeswarm-host-{}.jsonl", std::process::id()));
+        let adapter = ScriptedAdapter::new(
+            0,
+            AgentCapabilities::default(),
+            [AgentEvent::Text {
+                slot: 0,
+                text: "hello".into(),
+            }],
+        );
+        let mut host = AdapterHost::new(Box::new(adapter), Some(EventLog::open(&path)));
+        host.start().await.expect("start");
+        host.next_effects()
+            .await
+            .expect("event")
+            .expect("valid event");
+        assert_eq!(host.state.public_text[0].1, "hello");
+        assert_eq!(EventLog::open(&path).read().expect("read").len(), 1);
+        std::fs::remove_file(path).expect("cleanup");
     }
 }
