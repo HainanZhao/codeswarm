@@ -183,9 +183,10 @@ Still required before cutover:
 - [x] Production terminal UI parity for the current rewrite slice: queue
   controls, permission answer focus, lazy tool/diff/terminal detail,
   launcher/settings persistence, and inline interaction behavior.
-- [ ] Add a catalog-backed live configuration surface for changing the active
-  roster from `/config`; `/add`, `/drop`, `/promote`, and `/swap` are the
-  current command-level equivalent.
+- [x] Add a catalog-backed `/config` roster editor for next-launch order and
+  membership; Enter toggles, Alt+↑/↓ reorders, and Ctrl+S persists it.
+- [ ] Reconcile `/config` roster edits live against the running session while
+  preserving ad-hoc adapters and rollback semantics.
 - [ ] Complete real-agent dogfooding, preview release/rollback, and staged
   default cutover.
 

@@ -86,7 +86,8 @@ to `launcher.roster` without overwriting other settings.
 Inside the conversation prompt:
 
 - `/help` shows keyboard and command help.
-- `/config` opens the lightweight inline settings panel.
+- `/config` opens the lightweight inline settings panel, including the
+  catalog-backed roster editor (Enter toggles, Alt+↑/↓ reorders, Ctrl+S saves).
 - `/agents` returns to the agent store to edit the saved roster.
 - `/add AGENT`, `/add agy:COMMAND`, or `/add acp:COMMAND` starts a new peer in
   the live roster.

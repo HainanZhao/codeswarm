@@ -773,6 +773,52 @@ fn load_ui_preferences(app: &mut App) {
     }
 }
 
+/// Seed the in-session config panel from the same catalog used by the launch
+/// store. Existing live display names are marked selected so opening and
+/// saving the panel cannot silently replace an active roster with defaults.
+fn load_config_agents(app: &mut App) {
+    let settings = settings_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let saved = parse_saved_roster(&settings);
+    let current_names = app.raw_agent_names();
+    let mut catalog = codeswarm_core::agents::active_catalog(catalog_from_settings(&settings));
+    catalog.sort_by_key(|agent| {
+        saved
+            .iter()
+            .position(|identity| identity.eq_ignore_ascii_case(&agent.identity))
+            .unwrap_or(usize::MAX)
+    });
+    let agents = catalog
+        .into_iter()
+        .map(|agent| {
+            let selected = saved
+                .iter()
+                .any(|identity| identity.eq_ignore_ascii_case(&agent.identity))
+                || current_names
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(&agent.name));
+            StoreAgent {
+                identity: agent.identity,
+                name: agent.name,
+                adapter: match agent.adapter {
+                    AdapterKind::Native => "native".into(),
+                    AdapterKind::Acp => "ACP".into(),
+                },
+                available: command_available(
+                    agent
+                        .detect_command
+                        .as_deref()
+                        .unwrap_or(agent.command.as_str()),
+                ),
+                command: agent.command,
+                selected,
+            }
+        })
+        .collect();
+    app.set_config_agents(agents);
+}
+
 fn apply_notification_preferences(app: &mut App, value: &serde_json::Value) {
     if let Some(policy) = value
         .get("notifications")
@@ -1511,6 +1557,7 @@ fn run_terminal(
     selected_slot: Option<usize>,
 ) -> std::io::Result<()> {
     load_ui_preferences(app);
+    load_config_agents(app);
     app.load_prompt_history(load_prompt_history());
     let mut completion_candidates = [
         "/add", "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/diff",
@@ -1658,6 +1705,15 @@ fn run_terminal(
                 }
                 if app.config_visible() {
                     let config_key = match key.code {
+                        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            Some(ConfigKey::Save)
+                        }
+                        KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                            Some(ConfigKey::MoveUp)
+                        }
+                        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                            Some(ConfigKey::MoveDown)
+                        }
                         KeyCode::Up => Some(ConfigKey::Up),
                         KeyCode::Down => Some(ConfigKey::Down),
                         KeyCode::Enter => Some(ConfigKey::Confirm),
@@ -1671,6 +1727,16 @@ fn run_terminal(
                             && let Err(error) = save_ui_preferences(app)
                         {
                             app.status = format!("unable to save preferences: {error}");
+                        }
+                        if config_action == ConfigAction::Close && app.config_roster_dirty() {
+                            let roster = app.config_roster_identities();
+                            if roster.is_empty() {
+                                app.status = "select at least one agent for the roster".into();
+                            } else if let Err(error) = save_roster(&roster) {
+                                app.status = format!("unable to save roster: {error}");
+                            } else {
+                                app.status = "roster preference saved".into();
+                            }
                         }
                         if let Some(mode) = app.take_requested_mode()
                             && let Some(controls) = &controls

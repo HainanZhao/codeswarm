@@ -89,9 +89,11 @@ bounded to preserve tmux responsiveness.
 
 Unknown slash commands are reported locally and are never sent to an agent.
 
-The configuration panel includes compact/comfortable density, normal/hidden
-scrollbar, thought visibility, tool-detail expansion, diff view, and an
-notification policy. On Linux notifications use `notify-send`; on
+The configuration panel includes the catalog-backed next-launch roster,
+compact/comfortable density, normal/hidden scrollbar, thought visibility,
+tool-detail expansion, diff view, and a notification policy. Enter toggles a
+catalog agent, Alt+↑/↓ changes its order, and Ctrl+S saves the roster. On Linux
+notifications use `notify-send`; on
 macOS they use `osascript` when the corresponding system tool is available.
 The notification policy and sound toggle are independent. Notifications can be
 set to `Never`, `When unfocused`, or `Always`; the default is `When unfocused`.

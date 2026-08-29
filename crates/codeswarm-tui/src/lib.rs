@@ -96,7 +96,10 @@ pub enum LocalCommand {
 pub enum ConfigKey {
     Up,
     Down,
+    MoveUp,
+    MoveDown,
     Confirm,
+    Save,
     Cancel,
 }
 
@@ -703,6 +706,8 @@ pub struct App {
     store_status: String,
     store_directory: String,
     store_editing_directory: bool,
+    config_agents: Vec<StoreAgent>,
+    config_roster_dirty: bool,
     prompt_editor: PromptEditor,
     agent_names: BTreeMap<usize, String>,
     agent_states: BTreeMap<usize, String>,
@@ -715,6 +720,8 @@ pub struct App {
     streaming_blocks: BTreeMap<(usize, codeswarm_transcript::BlockKind), u64>,
     focused_detail: Option<u64>,
 }
+
+const CONFIG_SETTING_COUNT: usize = 13;
 
 impl Default for App {
     fn default() -> Self {
@@ -747,6 +754,8 @@ impl Default for App {
             store_status: String::new(),
             store_directory: String::new(),
             store_editing_directory: false,
+            config_agents: Vec::new(),
+            config_roster_dirty: false,
             prompt_editor: PromptEditor::default(),
             agent_names: BTreeMap::new(),
             agent_states: BTreeMap::new(),
@@ -904,6 +913,35 @@ impl App {
         self.config_visible
     }
 
+    /// Install the catalog rows shown by the in-session configuration panel.
+    /// Rows retain catalog order while their `selected` bit represents the
+    /// desired next roster order.
+    pub fn set_config_agents(&mut self, agents: Vec<StoreAgent>) {
+        self.config_agents = agents;
+        self.config_roster_dirty = false;
+        let max = CONFIG_SETTING_COUNT
+            .saturating_add(self.config_agents.len())
+            .saturating_sub(1);
+        self.config_selected = self.config_selected.min(max);
+    }
+
+    pub fn config_agents(&self) -> &[StoreAgent] {
+        &self.config_agents
+    }
+
+    pub fn config_roster_dirty(&self) -> bool {
+        self.config_roster_dirty
+    }
+
+    /// Return selected catalog identities in their current editor order.
+    pub fn config_roster_identities(&self) -> Vec<String> {
+        self.config_agents
+            .iter()
+            .filter(|agent| agent.selected)
+            .map(|agent| agent.identity.clone())
+            .collect()
+    }
+
     pub fn show_store(&mut self, agents: Vec<StoreAgent>) {
         self.store_agents = agents;
         self.store_selected = 0;
@@ -1039,15 +1077,53 @@ impl App {
                 self.status = "configuration closed".into();
                 ConfigAction::Close
             }
+            ConfigKey::Save => {
+                self.config_visible = false;
+                self.status = "configuration saved".into();
+                ConfigAction::Close
+            }
             ConfigKey::Up => {
                 self.config_selected = self.config_selected.saturating_sub(1);
                 ConfigAction::Changed
             }
             ConfigKey::Down => {
-                self.config_selected = self.config_selected.saturating_add(1).min(12);
+                let max = CONFIG_SETTING_COUNT
+                    .saturating_add(self.config_agents.len())
+                    .saturating_sub(1);
+                self.config_selected = self.config_selected.saturating_add(1).min(max);
                 ConfigAction::Changed
             }
+            ConfigKey::MoveUp | ConfigKey::MoveDown
+                if self.config_selected >= CONFIG_SETTING_COUNT =>
+            {
+                let index = self.config_selected - CONFIG_SETTING_COUNT;
+                let target = if key == ConfigKey::MoveUp {
+                    index.checked_sub(1)
+                } else {
+                    (index + 1 < self.config_agents.len()).then_some(index + 1)
+                };
+                if let Some(target) = target {
+                    self.config_agents.swap(index, target);
+                    self.config_selected = CONFIG_SETTING_COUNT + target;
+                    self.config_roster_dirty = true;
+                }
+                ConfigAction::Changed
+            }
+            ConfigKey::MoveUp | ConfigKey::MoveDown => ConfigAction::Ignored,
             ConfigKey::Confirm => {
+                if self.config_selected >= CONFIG_SETTING_COUNT {
+                    let index = self.config_selected - CONFIG_SETTING_COUNT;
+                    if let Some(agent) = self.config_agents.get_mut(index) {
+                        agent.selected = !agent.selected;
+                        self.config_roster_dirty = true;
+                        self.status = if agent.selected {
+                            format!("{} added to roster", agent.name)
+                        } else {
+                            format!("{} removed from roster", agent.name)
+                        };
+                    }
+                    return ConfigAction::Changed;
+                }
                 match self.config_selected {
                     0 => self.follow_tail = !self.follow_tail,
                     1 => self.collapse_details = !self.collapse_details,
@@ -1309,6 +1385,13 @@ impl App {
 
     pub fn agent_count(&self) -> usize {
         self.agent_names.len()
+    }
+
+    /// Return the raw catalog/display names in stable roster order. This is
+    /// used by the CLI to seed the in-session catalog editor without exposing
+    /// the renderer's duplicate-name suffixes.
+    pub fn raw_agent_names(&self) -> Vec<String> {
+        self.agent_names.values().cloned().collect()
     }
 
     pub fn record_human_message(&mut self, prompt: &str, direct: bool) {
@@ -2266,7 +2349,7 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let width = area.width.clamp(36, 76);
-    let height = area.height.clamp(10, 18);
+    let height = area.height.clamp(10, 24);
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     let modal = Rect::new(x, y, width.min(area.width), height.min(area.height));
@@ -2329,9 +2412,10 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
         ),
         ("Sounds", if app.sounds { "On" } else { "Off" }, true),
         ("Renderer", "Inline · tmux safe", false),
-        ("Agent store", "Run /agents", false),
+        ("Roster", "Enter toggles agents", false),
     ];
-    let mut lines = Vec::with_capacity(rows.len() + 3);
+    let total_rows = rows.len().saturating_add(app.config_agents.len());
+    let mut lines = Vec::with_capacity(total_rows + 3);
     lines.push(Line::styled(
         "Configuration",
         Style::default()
@@ -2343,12 +2427,49 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
     let start = app
         .config_selected
         .saturating_sub(row_capacity.saturating_sub(1))
-        .min(rows.len().saturating_sub(1));
-    let end = (start + row_capacity).min(rows.len());
-    for (index, (label, value, mutable)) in rows.iter().enumerate().take(end).skip(start) {
+        .min(total_rows.saturating_sub(1));
+    let end = (start + row_capacity).min(total_rows);
+    for index in start..end {
+        if index >= rows.len() {
+            let roster_index = index - rows.len();
+            let Some(agent) = app.config_agents.get(roster_index) else {
+                continue;
+            };
+            let selected = index == app.config_selected;
+            let marker = if selected { "▶" } else { " " };
+            let checked = if agent.selected { "☑" } else { "☐" };
+            let line_style = if selected {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(38, 48, 65))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let availability = if agent.available { "ready" } else { "missing" };
+            let name = if compact {
+                compact_label(&agent.name, 18)
+            } else {
+                agent.name.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {marker} {checked} "), line_style),
+                Span::styled(format!("{name:<20}"), line_style),
+                Span::styled(
+                    format!(" {availability} · {}", agent.adapter),
+                    Style::default().fg(if agent.available {
+                        Color::Green
+                    } else {
+                        Color::Yellow
+                    }),
+                ),
+            ]));
+            continue;
+        }
+        let (label, value, mutable) = rows[index];
         let selected = index == app.config_selected;
         let marker = if selected { "▶" } else { " " };
-        let value_style = if *mutable {
+        let value_style = if mutable {
             Style::default().fg(if selected { Color::Green } else { Color::Cyan })
         } else {
             Style::default().fg(Color::Gray)
@@ -2362,7 +2483,7 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::White)
         };
         let label = if compact {
-            match *label {
+            match label {
                 "Follow output" => "Follow",
                 "Collapse details" => "Details",
                 "Notifications" => "Notify",
@@ -2374,11 +2495,11 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
                 "Sounds" => "Sound",
                 "Collaboration" => "Collab",
                 "Renderer" => "Render",
-                "Agent store" => "Agents",
+                "Roster" => "Roster",
                 other => other,
             }
         } else {
-            *label
+            label
         };
         let label_width = if compact { 11 } else { 20 };
         let value_width =
@@ -2392,9 +2513,9 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::raw(""));
     lines.push(Line::styled(
         format!(
-            " ↑/↓ select · Enter change · Esc close  ({}/{})",
+            " ↑/↓ select · Enter change · Alt+↑/↓ reorder · Ctrl+S save · Esc close  ({}/{})",
             app.config_selected + 1,
-            rows.len()
+            total_rows
         ),
         Style::default().fg(Color::Gray),
     ));
@@ -3730,6 +3851,52 @@ mod tests {
     }
 
     #[test]
+    fn config_roster_rows_toggle_and_reorder_without_losing_selection() {
+        let mut app = App::default();
+        app.set_config_agents(vec![
+            StoreAgent {
+                identity: "one.example".into(),
+                name: "One".into(),
+                adapter: "ACP".into(),
+                command: "one --acp".into(),
+                available: true,
+                selected: true,
+            },
+            StoreAgent {
+                identity: "two.example".into(),
+                name: "Two".into(),
+                adapter: "native".into(),
+                command: "two".into(),
+                available: true,
+                selected: false,
+            },
+        ]);
+        app.handle_local_command("/config");
+        for _ in 0..14 {
+            app.handle_config_key(ConfigKey::Down);
+        }
+        assert_eq!(
+            app.handle_config_key(ConfigKey::Confirm),
+            ConfigAction::Changed
+        );
+        assert_eq!(
+            app.config_roster_identities(),
+            ["one.example", "two.example"]
+        );
+        assert!(app.config_roster_dirty());
+        assert_eq!(
+            app.handle_config_key(ConfigKey::MoveUp),
+            ConfigAction::Changed
+        );
+        assert_eq!(
+            app.config_roster_identities(),
+            ["two.example", "one.example"]
+        );
+        assert_eq!(app.handle_config_key(ConfigKey::Save), ConfigAction::Close);
+        assert!(!app.config_visible());
+    }
+
+    #[test]
     fn notification_preference_is_a_persistent_config_value() {
         let mut app = App::default();
         app.handle_local_command("/config");
@@ -3912,9 +4079,17 @@ mod tests {
 
     #[test]
     fn config_panel_is_readable_and_does_not_render_the_transcript() {
-        let backend = TestBackend::new(64, 16);
+        let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut app = App::default();
+        app.set_config_agents(vec![StoreAgent {
+            identity: "codex.example".into(),
+            name: "Codex CLI".into(),
+            adapter: "ACP".into(),
+            command: "codex --acp".into(),
+            available: true,
+            selected: true,
+        }]);
         app.handle_local_command("/config");
         terminal
             .draw(|frame| render(frame, &mut app))
@@ -3933,6 +4108,7 @@ mod tests {
             "rendered={rendered:?}"
         );
         assert!(rendered.contains("Renderer"), "rendered={rendered:?}");
+        assert!(rendered.contains("Codex CLI"), "rendered={rendered:?}");
         assert!(
             !rendered.contains("No messages yet"),
             "rendered={rendered:?}"
