@@ -9,8 +9,8 @@ use std::process::Stdio;
 
 use async_trait::async_trait;
 use codeswarm_core::{
-    AgentCapabilities, AgentEvent, Effect, EventLog, Mode, RosterSlot, SessionState, ToolStatus,
-    ToolUpdate, reduce,
+    AgentCapabilities, AgentEvent, Effect, EventLog, Mode, PermissionRequest, RosterSlot,
+    SessionState, ToolStatus, ToolUpdate, reduce,
 };
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -744,6 +744,40 @@ fn parse_acp_notification(slot: RosterSlot, line: &str) -> AdapterResult<Option<
         return Ok(None);
     };
     let kind = update.get("sessionUpdate").and_then(Value::as_str);
+    if kind == Some("request_permission") {
+        let id = update
+            .get("toolCall")
+            .and_then(|tool| tool.get("toolCallId"))
+            .and_then(Value::as_str)
+            .unwrap_or("permission")
+            .to_owned();
+        let title = update
+            .get("toolCall")
+            .and_then(|tool| tool.get("title"))
+            .and_then(Value::as_str)
+            .unwrap_or("Agent requests permission")
+            .to_owned();
+        let options = update
+            .get("options")
+            .and_then(Value::as_array)
+            .map(|options| {
+                options
+                    .iter()
+                    .filter_map(|option| {
+                        option
+                            .get("name")
+                            .or_else(|| option.get("optionId"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Ok(Some(AgentEvent::Permission {
+            slot,
+            request: PermissionRequest { id, title, options },
+        }));
+    }
     let text = update
         .get("content")
         .and_then(|content| content.get("text"))
@@ -864,6 +898,23 @@ mod tests {
                 },
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn parses_acp_permission_requests() {
+        let event = parse_acp_notification(
+            0,
+            r#"{"method":"session/update","params":{"update":{"sessionUpdate":"request_permission","toolCall":{"toolCallId":"t1","title":"Write file"},"options":[{"name":"Allow once"},{"optionId":"Reject"}]}}}"#,
+        )
+        .expect("valid permission")
+        .expect("permission event");
+        assert!(matches!(
+            event,
+            AgentEvent::Permission { request, .. }
+                if request.id == "t1"
+                    && request.title == "Write file"
+                    && request.options == ["Allow once", "Reject"]
         ));
     }
 
