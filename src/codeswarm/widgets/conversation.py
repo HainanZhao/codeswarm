@@ -284,7 +284,7 @@ class Contents(containers.VerticalGroup, can_focus=False):
         *,
         follow_tail: bool,
     ) -> None:
-        metrics_changed = self._measure_mounted_blocks()
+        self._measure_mounted_blocks()
         starts, total_rows = self._block_positions()
         block_count = len(self._transcript_blocks)
         if not block_count:
@@ -322,8 +322,11 @@ class Contents(containers.VerticalGroup, can_focus=False):
         if (
             guard_indices.issubset(self._mounted_indices)
             and appended_since_rebuild <= TRANSCRIPT_PINNED_TAIL_BLOCKS
-            and not metrics_changed
         ):
+            # A block can finish Markdown layout after it is mounted. Keep
+            # scrolling cheap while the current guard window still covers the
+            # viewport; the next window transition will rebuild with the
+            # refreshed metrics.
             return
 
         window_top = max(0, int(scroll_y) - TRANSCRIPT_BUFFER_ROWS)
