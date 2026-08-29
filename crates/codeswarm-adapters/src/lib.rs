@@ -814,6 +814,15 @@ impl AgentAdapter for AgyAdapter {
     }
 
     async fn set_mode(&mut self, mode: String) -> AdapterResult<()> {
+        let mode = match mode.as_str() {
+            "full-access" | "codeswarm:mode:full-access" | "auto" | "autopilot" => {
+                "default".to_owned()
+            }
+            "codeswarm:mode:plan" | "readonly" => "plan".to_owned(),
+            "codeswarm:mode:accept-edits" | "acceptedits" => "accept-edits".to_owned(),
+            "codeswarm:mode:manual" | "manual" | "ask" => "default".to_owned(),
+            _ => mode,
+        };
         if !Self::modes().iter().any(|candidate| candidate.id == mode) {
             return Err(AdapterError::Unsupported("requested Agy mode"));
         }
@@ -1852,6 +1861,19 @@ mod tests {
                 .await,
             Err(super::AdapterError::Unsupported("permission answer"))
         );
+    }
+
+    #[tokio::test]
+    async fn native_mode_policy_aliases_resolve_to_its_supported_id() {
+        let mut adapter = AgyAdapter::new(0, std::env::current_dir().expect("cwd"), "agy");
+        adapter
+            .set_mode("full-access".into())
+            .await
+            .expect("auto-pilot alias");
+        assert!(matches!(
+            adapter.next_event().await,
+            Some(Ok(AgentEvent::ModesReplaced { current_mode: Some(mode), .. })) if mode == "default"
+        ));
     }
 
     #[tokio::test]
