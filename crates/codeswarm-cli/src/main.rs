@@ -819,6 +819,133 @@ fn load_config_agents(app: &mut App) {
     app.set_config_agents(agents);
 }
 
+fn live_slot_name(app: &App, slot: usize) -> String {
+    app.raw_agent_names().get(slot).cloned().unwrap_or_default()
+}
+
+fn find_live_slot(app: &App, name: &str) -> Option<usize> {
+    app.active_roster_slots()
+        .into_iter()
+        .find(|slot| live_slot_name(app, *slot).eq_ignore_ascii_case(name))
+}
+
+/// Apply a saved catalog roster to an idle live session using the same
+/// transactional coordinator controls exposed by slash commands. Unknown
+/// ad-hoc adapters are preserved; catalog rows can be added, dropped, and
+/// reordered without requiring a session restart.
+fn reconcile_config_roster(
+    app: &mut App,
+    controls: &tokio::sync::mpsc::UnboundedSender<AdapterControl>,
+    pending_adds: &mut BTreeSet<usize>,
+) -> Result<(), String> {
+    let desired = app
+        .config_agents()
+        .iter()
+        .filter(|agent| agent.selected)
+        .cloned()
+        .collect::<Vec<_>>();
+    if desired.is_empty() {
+        return Err("select at least one agent for the roster".into());
+    }
+    if app.agent_count() < 2 {
+        // Solo adapter loops intentionally do not host live roster controls;
+        // persist the catalog choice for the next multi-agent launch.
+        app.mark_config_roster_saved();
+        return Ok(());
+    }
+
+    // The first selected identity is the owner. If it is already present in
+    // a peer slot, promote it before dropping any other selected peer.
+    let desired_owner = &desired[0].name;
+    if !live_slot_name(app, 0).eq_ignore_ascii_case(desired_owner) {
+        let Some(peer_slot) = find_live_slot(app, desired_owner) else {
+            // A newly selected owner can be added now, but cannot become the
+            // protected slot until its adapter advertises Ready. Preserve the
+            // change for the next launch and report the actionable limitation.
+            return Err(
+                "new owner will apply on the next launch; select a live peer to transfer now"
+                    .into(),
+            );
+        };
+        controls
+            .send(AdapterControl::Promote(peer_slot))
+            .map_err(|_| "unable to queue owner transfer".to_owned())?;
+        if !app.promote_agent(peer_slot) {
+            return Err("owner transfer target is not active".into());
+        }
+    }
+
+    // Drop catalog peers removed from the desired roster. Ad-hoc names are
+    // intentionally retained because they have no catalog identity to map.
+    let desired_names = desired
+        .iter()
+        .map(|agent| agent.name.to_ascii_lowercase())
+        .collect::<std::collections::BTreeSet<_>>();
+    for slot in app
+        .active_roster_slots()
+        .into_iter()
+        .filter(|slot| *slot > 0)
+    {
+        let name = live_slot_name(app, slot);
+        if app
+            .config_agents()
+            .iter()
+            .any(|agent| agent.name.eq_ignore_ascii_case(&name))
+            && !desired_names.contains(&name.to_ascii_lowercase())
+        {
+            controls
+                .send(AdapterControl::Drop(slot))
+                .map_err(|_| "unable to queue agent removal".to_owned())?;
+            app.mark_agent_dropped(slot);
+        }
+    }
+
+    // Add selected catalog entries not represented by a live display name.
+    for agent in &desired {
+        if app
+            .active_roster_slots()
+            .into_iter()
+            .any(|slot| live_slot_name(app, slot).eq_ignore_ascii_case(&agent.name))
+        {
+            continue;
+        }
+        let spec = if agent.adapter.eq_ignore_ascii_case("native") {
+            AgentSpec::Agy(agent.command.clone())
+        } else {
+            AgentSpec::Acp(agent.command.clone())
+        };
+        let slot = app.agent_count();
+        controls
+            .send(AdapterControl::Add(spec))
+            .map_err(|_| "unable to queue agent addition".to_owned())?;
+        app.set_agent_name(slot, agent.name.clone());
+        pending_adds.insert(slot);
+    }
+
+    // Reorder the currently represented desired agents. Pending additions are
+    // left in catalog order and will be available for a subsequent swap once
+    // their Ready event arrives.
+    for (position, agent) in desired.iter().enumerate() {
+        let slots = app.active_roster_slots();
+        let Some(target_slot) = slots.get(position).copied() else {
+            break;
+        };
+        let Some(found_slot) = slots
+            .into_iter()
+            .find(|slot| live_slot_name(app, *slot).eq_ignore_ascii_case(&agent.name))
+        else {
+            continue;
+        };
+        if found_slot != target_slot && app.swap_agents(target_slot, found_slot) {
+            controls
+                .send(AdapterControl::Swap(target_slot, found_slot))
+                .map_err(|_| "unable to queue roster reorder".to_owned())?;
+        }
+    }
+    app.mark_config_roster_saved();
+    Ok(())
+}
+
 fn apply_notification_preferences(app: &mut App, value: &serde_json::Value) {
     if let Some(policy) = value
         .get("notifications")
@@ -1723,6 +1850,12 @@ fn run_terminal(
                     if let Some(config_key) = config_key {
                         let previous_collaboration = app.collaboration().to_owned();
                         let config_action = app.handle_config_key(config_key);
+                        if config_action == ConfigAction::Close && turn_active {
+                            app.reopen_config();
+                            app.status =
+                                "finish the active turn before saving configuration".into();
+                            continue;
+                        }
                         if config_action == ConfigAction::Close
                             && let Err(error) = save_ui_preferences(app)
                         {
@@ -1730,12 +1863,21 @@ fn run_terminal(
                         }
                         if config_action == ConfigAction::Close && app.config_roster_dirty() {
                             let roster = app.config_roster_identities();
-                            if roster.is_empty() {
-                                app.status = "select at least one agent for the roster".into();
-                            } else if let Err(error) = save_roster(&roster) {
+                            let save_result = save_roster(&roster);
+                            let reconcile = controls.as_ref().map_or_else(
+                                || Ok(()),
+                                |controls| {
+                                    reconcile_config_roster(app, controls, &mut pending_adds)
+                                },
+                            );
+                            if let Err(error) = save_result {
                                 app.status = format!("unable to save roster: {error}");
+                            } else if let Err(error) = reconcile {
+                                app.mark_config_roster_saved();
+                                app.status = format!("unable to apply roster: {error}");
                             } else {
-                                app.status = "roster preference saved".into();
+                                app.mark_config_roster_saved();
+                                app.status = "roster saved".into();
                             }
                         }
                         if let Some(mode) = app.take_requested_mode()
@@ -2383,11 +2525,13 @@ mod tests {
     use super::{
         AdapterControl, AgentSpec, Launch, apply_notification_preferences,
         bare_launch_from_settings, dispatch_permission_action, dispatch_queued_prompt,
-        normalize_arguments, parse_launch, project_dir_argument, run_relay_sequence_with_controls,
+        normalize_arguments, parse_launch, project_dir_argument, reconcile_config_roster,
+        run_relay_sequence_with_controls,
     };
     use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
     use codeswarm_core::{AgentCapabilities, AgentEvent, PermissionAnswer};
-    use codeswarm_tui::{PermissionAction, QueuedPrompt};
+    use codeswarm_tui::{PermissionAction, QueuedPrompt, StoreAgent};
+    use std::collections::BTreeSet;
     use std::path::PathBuf;
 
     #[test]
@@ -2457,6 +2601,30 @@ mod tests {
             super::resolve_live_agent_spec("agy:custom-agent"),
             Some(AgentSpec::Agy("custom-agent".into()))
         );
+    }
+
+    #[test]
+    fn config_roster_reconciliation_promotes_selected_live_peer() {
+        let mut app = codeswarm_tui::App::default();
+        app.set_agent_name(0, "Claude Code");
+        app.set_agent_name(1, "Codex CLI");
+        app.set_config_agents(vec![StoreAgent {
+            identity: "openai.com".into(),
+            name: "Codex CLI".into(),
+            adapter: "ACP".into(),
+            command: "codex --acp".into(),
+            available: true,
+            selected: true,
+        }]);
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut pending = BTreeSet::new();
+        reconcile_config_roster(&mut app, &sender, &mut pending).expect("reconcile");
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(AdapterControl::Promote(1))
+        ));
+        assert_eq!(app.agent_name(0), "Codex CLI");
+        assert_eq!(app.active_roster_slots(), vec![0]);
     }
 
     #[test]

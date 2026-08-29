@@ -87,7 +87,8 @@ Inside the conversation prompt:
 
 - `/help` shows keyboard and command help.
 - `/config` opens the lightweight inline settings panel, including the
-  catalog-backed roster editor (Enter toggles, Alt+↑/↓ reorders, Ctrl+S saves).
+  catalog-backed roster editor (Enter toggles, Alt+↑/↓ reorders, Ctrl+S saves
+  and applies idle-session changes when possible).
 - `/agents` returns to the agent store to edit the saved roster.
 - `/add AGENT`, `/add agy:COMMAND`, or `/add acp:COMMAND` starts a new peer in
   the live roster.

@@ -89,10 +89,11 @@ bounded to preserve tmux responsiveness.
 
 Unknown slash commands are reported locally and are never sent to an agent.
 
-The configuration panel includes the catalog-backed next-launch roster,
+The configuration panel includes the catalog-backed roster,
 compact/comfortable density, normal/hidden scrollbar, thought visibility,
 tool-detail expansion, diff view, and a notification policy. Enter toggles a
-catalog agent, Alt+↑/↓ changes its order, and Ctrl+S saves the roster. On Linux
+catalog agent, Alt+↑/↓ changes its order, and Ctrl+S saves the roster (and
+applies idle-session changes when possible). On Linux
 notifications use `notify-send`; on
 macOS they use `osascript` when the corresponding system tool is available.
 The notification policy and sound toggle are independent. Notifications can be

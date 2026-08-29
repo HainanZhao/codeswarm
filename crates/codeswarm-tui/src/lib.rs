@@ -913,6 +913,10 @@ impl App {
         self.config_visible
     }
 
+    pub fn reopen_config(&mut self) {
+        self.config_visible = true;
+    }
+
     /// Install the catalog rows shown by the in-session configuration panel.
     /// Rows retain catalog order while their `selected` bit represents the
     /// desired next roster order.
@@ -931,6 +935,10 @@ impl App {
 
     pub fn config_roster_dirty(&self) -> bool {
         self.config_roster_dirty
+    }
+
+    pub fn mark_config_roster_saved(&mut self) {
+        self.config_roster_dirty = false;
     }
 
     /// Return selected catalog identities in their current editor order.
@@ -1392,6 +1400,21 @@ impl App {
     /// the renderer's duplicate-name suffixes.
     pub fn raw_agent_names(&self) -> Vec<String> {
         self.agent_names.values().cloned().collect()
+    }
+
+    /// Stable slots that are currently eligible for dispatch. Dropped slots
+    /// remain in `agent_names` so their numeric identity is preserved, but do
+    /// not participate in live config reconciliation or roster ordering.
+    pub fn active_roster_slots(&self) -> Vec<usize> {
+        self.agent_names
+            .keys()
+            .copied()
+            .filter(|slot| {
+                self.agent_states
+                    .get(slot)
+                    .is_none_or(|state| state != "dropped")
+            })
+            .collect()
     }
 
     pub fn record_human_message(&mut self, prompt: &str, direct: bool) {
