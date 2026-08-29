@@ -61,48 +61,75 @@ impl AgentDefinition {
 
 /// The built-in catalog shipped with CodeSwarm.
 pub fn default_catalog() -> Vec<AgentDefinition> {
+    fn builtin(
+        identity: &str,
+        name: &str,
+        short_name: &str,
+        adapter: AdapterKind,
+        command: &str,
+        detect_command: &str,
+        aliases: &[&str],
+    ) -> AgentDefinition {
+        let mut agent = AgentDefinition::new(identity, name, short_name, adapter, command);
+        agent.detect_command = Some(detect_command.into());
+        agent.aliases = aliases.iter().map(|alias| (*alias).into()).collect();
+        agent
+    }
+
     vec![
-        AgentDefinition::new(
+        builtin(
             "antigravity.google.com",
             "Antigravity CLI",
             "antigravity",
             AdapterKind::Native,
             "agy",
+            "agy",
+            &["agy"],
         ),
-        AgentDefinition::new(
+        builtin(
             "claude.com",
             "Claude Code",
             "claude",
             AdapterKind::Acp,
             "npx -y @agentclientprotocol/claude-agent-acp",
+            "claude",
+            &[],
         ),
-        AgentDefinition::new(
+        builtin(
             "geminicli.com",
             "Gemini CLI",
             "gemini",
             AdapterKind::Acp,
             "gemini --acp",
+            "gemini",
+            &[],
         ),
-        AgentDefinition::new(
+        builtin(
             "openai.com",
             "Codex CLI",
             "codex",
             AdapterKind::Acp,
             "npx -y @agentclientprotocol/codex-acp",
+            "codex",
+            &["openai"],
         ),
-        AgentDefinition::new(
+        builtin(
             "opencode.ai",
             "OpenCode",
             "opencode",
             AdapterKind::Acp,
             "opencode acp",
+            "opencode",
+            &[],
         ),
-        AgentDefinition::new(
+        builtin(
             "qwen.ai",
             "Qwen Code",
             "qwen",
             AdapterKind::Acp,
             "qwen --acp",
+            "qwen",
+            &[],
         ),
     ]
 }
@@ -238,6 +265,28 @@ mod tests {
             !active_catalog(catalog)
                 .iter()
                 .any(|a| a.identity == "hidden")
+        );
+    }
+
+    #[test]
+    fn builtins_keep_python_aliases_and_detect_real_cli_not_npx_bridge() {
+        let catalog = default_catalog();
+        let antigravity = catalog
+            .iter()
+            .find(|agent| agent.identity == "antigravity.google.com")
+            .expect("antigravity");
+        assert_eq!(antigravity.aliases, ["agy"]);
+        assert_eq!(antigravity.detect_command.as_deref(), Some("agy"));
+
+        let codex = catalog
+            .iter()
+            .find(|agent| agent.identity == "openai.com")
+            .expect("codex");
+        assert_eq!(codex.aliases, ["openai"]);
+        assert_eq!(codex.detect_command.as_deref(), Some("codex"));
+        assert_ne!(
+            codex.detect_command.as_deref(),
+            Some(codex.command.as_str())
         );
     }
 }

@@ -16,6 +16,7 @@ pub mod agents;
 pub mod collaboration;
 pub mod contract;
 pub mod details;
+pub mod history;
 pub mod launcher;
 pub mod persistence;
 pub mod policy;
