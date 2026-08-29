@@ -803,6 +803,21 @@ impl App {
             .unwrap_or_else(|| format!("Agent {slot}"))
     }
 
+    /// Return a bounded, stable roster label for the status HUD. This keeps
+    /// loaded agent identity visible before the first response without adding
+    /// a second layout row or walking transcript history.
+    pub fn roster_summary(&self) -> String {
+        let names = self
+            .agent_names
+            .values()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if names.is_empty() {
+            return String::new();
+        }
+        compact_label(&names.join(" · "), 42)
+    }
+
     pub fn set_header(&mut self, active_agent: impl Into<String>, status: impl Into<String>) {
         self.active_agent = active_agent.into();
         self.status = status.into();
@@ -1249,6 +1264,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 Color::Yellow
             }),
         ),
+        if app.roster_summary().is_empty() {
+            Span::raw("")
+        } else {
+            Span::styled(
+                format!("  ·  {}", app.roster_summary()),
+                Style::default().fg(Color::Gray),
+            )
+        },
         if app.queued_count() > 0 {
             Span::styled(
                 format!("  ·  {} queued", app.queued_count()),
@@ -1284,6 +1307,12 @@ fn render_compact(frame: &mut Frame, app: &mut App, area: Rect) {
     // agent label when a narrow pane clips the line.
     let status_width = usize::from(area.width).saturating_sub(5);
     let status_text = compact_label(&app.status, status_width);
+    let roster = app.roster_summary();
+    let agent_text = if roster.is_empty() {
+        app.active_agent.clone()
+    } else {
+        roster
+    };
     let label_width =
         usize::from(area.width).saturating_sub(status_text.chars().count().saturating_add(8));
     let status = Line::from(vec![
@@ -1291,7 +1320,7 @@ fn render_compact(frame: &mut Frame, app: &mut App, area: Rect) {
         Span::styled(status_text, Style::default().fg(status_color(&app.status))),
         Span::styled(" · ", Style::default().fg(Color::Gray)),
         Span::styled(
-            compact_label(&app.active_agent, label_width),
+            compact_label(&agent_text, label_width),
             Style::default().fg(Color::White).bold(),
         ),
     ]);
@@ -2052,6 +2081,28 @@ mod tests {
             capabilities: codeswarm_core::AgentCapabilities::default(),
         });
         assert_eq!(app.active_agent, "Codex CLI");
+    }
+
+    #[test]
+    fn loaded_roster_names_are_visible_before_the_first_response() {
+        let backend = TestBackend::new(96, 12);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        app.set_agent_name(0, "Claude Code");
+        app.set_agent_name(1, "Codex CLI");
+        app.set_header("CodeSwarm roster", "starting");
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Claude Code"), "rendered={rendered:?}");
+        assert!(rendered.contains("Codex CLI"), "rendered={rendered:?}");
     }
 
     #[test]
