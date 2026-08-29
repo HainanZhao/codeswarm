@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     io::{Write, stdout},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     thread,
     time::{Duration, Instant},
@@ -15,6 +15,7 @@ use codeswarm_core::PermissionAnswer;
 use codeswarm_core::agents::{AdapterKind, AgentDefinition, catalog_from_settings};
 use codeswarm_core::history;
 use codeswarm_core::launcher::{LaunchDecision, launch_decision, parse_saved_roster};
+use codeswarm_core::persistence::SessionMetadataStore;
 use codeswarm_core::relay::{CollaborationStrategy, RelayDecision};
 use codeswarm_core::settings;
 use codeswarm_core::{AgentEvent, BufferedEventLog, EventLog};
@@ -1482,14 +1483,31 @@ fn run_relay_task(
                 AgentSpec::Agy(command) | AgentSpec::Acp(command) => display_agent_name(command),
             })
             .collect::<Vec<_>>();
+        let owner_session_id = roster_names
+            .first()
+            .and_then(|name| load_owner_session_id(&cwd, name));
         let hosts = specs
             .into_iter()
             .enumerate()
             .map(|(slot, spec)| {
                 let adapter = match spec {
                     AgentSpec::Agy(command) => {
-                        Ok(Box::new(AgyAdapter::new(slot, cwd.clone(), command))
-                            as Box<dyn AgentAdapter>)
+                        let adapter = if slot == 0 {
+                            owner_session_id.as_ref().map_or_else(
+                                || AgyAdapter::new(slot, cwd.clone(), command.clone()),
+                                |session_id| {
+                                    AgyAdapter::with_session_id(
+                                        slot,
+                                        cwd.clone(),
+                                        command.clone(),
+                                        session_id,
+                                    )
+                                },
+                            )
+                        } else {
+                            AgyAdapter::new(slot, cwd.clone(), command)
+                        };
+                        Ok(Box::new(adapter) as Box<dyn AgentAdapter>)
                     }
                     AgentSpec::Acp(command) => {
                         let (program, args) = match parse_command_line(&command) {
@@ -1500,8 +1518,30 @@ fn run_relay_task(
                                 )));
                             }
                         };
-                        Ok(Box::new(AcpAdapter::new(slot, cwd.clone(), program, args))
-                            as Box<dyn AgentAdapter>)
+                        let adapter = if slot == 0 {
+                            owner_session_id.as_ref().map_or_else(
+                                || {
+                                    AcpAdapter::new(
+                                        slot,
+                                        cwd.clone(),
+                                        program.clone(),
+                                        args.clone(),
+                                    )
+                                },
+                                |session_id| {
+                                    AcpAdapter::with_session_id(
+                                        slot,
+                                        cwd.clone(),
+                                        program.clone(),
+                                        args.clone(),
+                                        session_id,
+                                    )
+                                },
+                            )
+                        } else {
+                            AcpAdapter::new(slot, cwd.clone(), program, args)
+                        };
+                        Ok(Box::new(adapter) as Box<dyn AgentAdapter>)
                     }
                 }?;
                 Ok(AdapterHost::new(adapter, None))
@@ -1522,6 +1562,26 @@ fn run_relay_task(
             }
         };
         relay.set_roster_names(roster_names);
+        let settings_json = settings_path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .unwrap_or_default();
+        let catalog = catalog_from_settings(&settings_json);
+        let identities = relay
+            .roster_names()
+            .iter()
+            .map(|name| {
+                catalog
+                    .iter()
+                    .find(|agent| agent.name.eq_ignore_ascii_case(name))
+                    .map(|agent| agent.identity.clone())
+                    .unwrap_or_else(|| name.clone())
+            })
+            .collect::<Vec<_>>();
+        relay.set_roster_identities(identities);
+        relay.set_session_metadata_workspace(cwd.display().to_string());
+        if let Ok(writer) = SessionMetadataStore::open(session_metadata_path()).buffered() {
+            relay.set_session_metadata_writer(writer);
+        }
         let event_sender = sender.clone();
         relay.set_event_sink(move |event| {
             let _ = event_sender.send(Ok(event));
@@ -1822,11 +1882,12 @@ fn run_terminal(
                         if matches!(&event, AgentEvent::TurnComplete { .. })
                             && app.should_notify_system()
                         {
+                            // Python's turn-over notification deliberately
+                            // has no audio attachment.  Keep the terminal
+                            // BEL reserved for permission requests, whose
+                            // bundled `question.wav` is replaced by this
+                            // lightweight tmux-safe signal.
                             notify_turn_complete(&app.active_agent);
-                            if app.sounds_enabled() {
-                                let _ = stdout().write_all(b"\x07");
-                                let _ = stdout().flush();
-                            }
                         }
                         if matches!(&event, AgentEvent::TurnComplete { .. })
                             && let Some(queued) = app.next_queued_prompt().cloned()
@@ -2506,12 +2567,38 @@ fn spawn_local_shell(sender: Sender<AdapterResult<AgentEvent>>, command: String)
     });
 }
 
-fn event_log() -> std::io::Result<BufferedEventLog> {
+fn state_directory() -> PathBuf {
     let root = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from(".codeswarm-state"));
-    let directory = root.join("codeswarm");
+    root.join("codeswarm")
+}
+
+fn session_metadata_path() -> PathBuf {
+    state_directory().join("session.json")
+}
+
+fn load_owner_session_id(cwd: &Path, owner_name: &str) -> Option<String> {
+    let loaded = SessionMetadataStore::open(session_metadata_path())
+        .read()
+        .ok()??;
+    let stored_cwd = loaded.get("cwd").and_then(serde_json::Value::as_str)?;
+    if Path::new(stored_cwd) != cwd {
+        return None;
+    }
+    let stored_owner = loaded.get("owner").and_then(serde_json::Value::as_str)?;
+    if !stored_owner.eq_ignore_ascii_case(owner_name) {
+        return None;
+    }
+    loaded
+        .get("owner_session_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+fn event_log() -> std::io::Result<BufferedEventLog> {
+    let directory = state_directory();
     std::fs::create_dir_all(&directory)?;
     EventLog::open(directory.join("rust-events.jsonl")).buffered()
 }

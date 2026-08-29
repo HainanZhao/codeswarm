@@ -172,6 +172,9 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   protection across workspace changes.
 - [x] Harden session metadata writes with fsynced temporary files and atomic
   replacement, including parent-directory creation.
+- [x] Wire asynchronous runtime roster/owner snapshots into the relay host;
+  adapter session IDs are captured when a protocol exposes them and reload
+  can reuse the owner handle.
 - [x] Integrated resize settling and latest-state frame recovery into a
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
@@ -196,8 +199,8 @@ Still required before cutover:
   preserving ad-hoc adapters and coordinator rollback semantics.
 - [x] Cover deferred new-owner activation with a Ready-gated promotion and
   rollback cleanup when the replacement or owner transfer fails.
-- [ ] Complete full catalog/session metadata persistence for every live
-  reconfiguration branch.
+- [ ] Complete legacy session-row metadata compatibility for every live
+  reconfiguration branch (including titles and adapter-specific owner data).
 - [ ] Complete real-agent dogfooding, preview release/rollback, and staged
   default cutover.
 

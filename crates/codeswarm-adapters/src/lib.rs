@@ -16,7 +16,9 @@ use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use codeswarm_core::{
     AgentCapabilities, AgentEvent, Effect, EventLog, Mode, PermissionAnswer, PermissionRequest,
-    RosterSlot, SessionState, TerminalEvent, ToolStatus, ToolUpdate, reduce,
+    RosterSlot, SessionState, TerminalEvent, ToolStatus, ToolUpdate,
+    persistence::{BufferedSessionMetadataStore, SessionMetadata},
+    reduce,
     relay::{
         CollaborationStrategy, DEFAULT_STOP_ACKNOWLEDGMENT, Relay, RelayDecision, STOP_TOKEN,
         strip_stop_token,
@@ -347,6 +349,18 @@ pub trait AgentAdapter: Send {
     fn display_name(&self) -> String {
         format!("Agent {}", self.slot().saturating_add(1))
     }
+    /// Return the protocol session handle when this adapter has one. Custom
+    /// adapters may omit it; runtime metadata then still preserves roster
+    /// identity without claiming the session is resumable.
+    fn session_id(&self) -> Option<String> {
+        None
+    }
+    /// Stable protocol label recorded in the runtime session snapshot.
+    /// Custom adapters may override this when they expose a resumable
+    /// protocol distinct from the built-in native and ACP bridges.
+    fn protocol(&self) -> &'static str {
+        "custom"
+    }
     fn capabilities(&self) -> AgentCapabilities;
     async fn start(&mut self) -> AdapterResult<()>;
     async fn send_prompt(&mut self, prompt: String) -> AdapterResult<()>;
@@ -417,6 +431,14 @@ impl AgentAdapter for SlotMappedAdapter {
 
     fn display_name(&self) -> String {
         self.inner.display_name()
+    }
+
+    fn session_id(&self) -> Option<String> {
+        self.inner.session_id()
+    }
+
+    fn protocol(&self) -> &'static str {
+        self.inner.protocol()
     }
 
     fn capabilities(&self) -> AgentCapabilities {
@@ -570,6 +592,10 @@ impl AdapterHost {
         &*self.adapter
     }
 
+    pub fn session_id(&self) -> Option<String> {
+        self.adapter.session_id()
+    }
+
     /// Move this host to a new logical roster slot. The adapter process is not
     /// restarted; only normalized event identities and reducer state move.
     fn remap(self, logical_slot: RosterSlot) -> Self {
@@ -620,6 +646,9 @@ pub struct RelayHost {
     relay: Relay,
     introduced: Vec<bool>,
     roster_names: Vec<String>,
+    roster_identities: Vec<String>,
+    metadata_writer: Option<BufferedSessionMetadataStore>,
+    metadata_workspace: Option<String>,
     dispatches: Vec<(RosterSlot, String)>,
     event_sink: Option<Arc<dyn Fn(AgentEvent) + Send + Sync>>,
     cancel_requested: Arc<AtomicBool>,
@@ -669,6 +698,12 @@ impl RelayHost {
                 .iter()
                 .map(|host| host.adapter().display_name())
                 .collect(),
+            roster_identities: hosts
+                .iter()
+                .map(|host| host.adapter().display_name())
+                .collect(),
+            metadata_writer: None,
+            metadata_workspace: None,
             hosts,
             dispatches: Vec::new(),
             event_sink: None,
@@ -695,6 +730,94 @@ impl RelayHost {
         }
     }
 
+    /// Install catalog identities used by the launcher and persisted session
+    /// metadata. Names remain a separate display concern, so custom adapters
+    /// can retain friendly labels while still restoring by stable identity.
+    pub fn set_roster_identities(&mut self, identities: Vec<String>) {
+        if identities.len() == self.hosts.len() {
+            self.roster_identities = identities;
+        }
+    }
+
+    /// Attach a background metadata writer. Runtime changes enqueue complete
+    /// snapshots; no metadata filesystem work runs on the terminal thread.
+    pub fn set_session_metadata_writer(&mut self, writer: BufferedSessionMetadataStore) {
+        self.metadata_writer = Some(writer);
+    }
+
+    pub fn set_session_metadata_workspace(&mut self, workspace: impl Into<String>) {
+        self.metadata_workspace = Some(workspace.into());
+    }
+
+    /// Build the Python-compatible flattened session metadata snapshot for the
+    /// current active roster and owner.
+    pub fn session_metadata(&self) -> SessionMetadata {
+        let active = self.relay.active_slots().collect::<Vec<_>>();
+        let identities = active
+            .iter()
+            .filter_map(|slot| self.roster_identities.get(*slot))
+            .cloned()
+            .collect::<Vec<_>>();
+        let owner = self.hosts.first();
+        let mut data = serde_json::Map::new();
+        if let Some(workspace) = &self.metadata_workspace {
+            data.insert("cwd".into(), serde_json::Value::String(workspace.clone()));
+        }
+        data.insert("roster".into(), serde_json::json!(identities));
+        if let Some(owner) = owner {
+            let owner_identity = self
+                .roster_identities
+                .first()
+                .cloned()
+                .unwrap_or_else(|| owner.adapter().display_name());
+            let owner_name = self
+                .roster_names
+                .first()
+                .cloned()
+                .unwrap_or_else(|| owner.adapter().display_name());
+            data.insert(
+                "owner".into(),
+                serde_json::Value::String(owner_name.clone()),
+            );
+            data.insert(
+                "agent_data".into(),
+                serde_json::json!({
+                    "name": owner_name,
+                    "identity": owner_identity,
+                    "protocol": owner.adapter().protocol(),
+                }),
+            );
+            data.insert(
+                "agent_supports_load_session".into(),
+                serde_json::Value::Bool(owner.adapter().capabilities().supports_session_load),
+            );
+            if let Some(session_id) = owner.session_id() {
+                data.insert(
+                    "agent_session_id".into(),
+                    serde_json::Value::String(session_id),
+                );
+            }
+        }
+        SessionMetadata::new(data)
+    }
+
+    fn queue_session_metadata(&self) -> AdapterResult<()> {
+        if let Some(writer) = &self.metadata_writer {
+            writer
+                .write(self.session_metadata())
+                .map_err(|error| AdapterError::Transport(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    pub fn roster_names(&self) -> &[String] {
+        &self.roster_names
+    }
+
+    pub fn session_ids(&self) -> Vec<Option<String>> {
+        self.hosts.iter().map(AdapterHost::session_id).collect()
+    }
+
     pub async fn start(&mut self) -> AdapterResult<()> {
         for index in 0..self.hosts.len() {
             if let Err(error) = self.hosts[index].start().await {
@@ -704,6 +827,7 @@ impl RelayHost {
                 return Err(error);
             }
         }
+        self.queue_session_metadata()?;
         Ok(())
     }
 
@@ -719,6 +843,12 @@ impl RelayHost {
             {
                 first_error = Some(error);
             }
+        }
+        if let Some(writer) = &self.metadata_writer
+            && let Err(error) = writer.flush()
+            && first_error.is_none()
+        {
+            first_error = Some(AdapterError::Transport(error.to_string()));
         }
         first_error.map_or(Ok(()), Err)
     }
@@ -812,7 +942,9 @@ impl RelayHost {
         }
         self.relay
             .reactivate(slot)
-            .map_err(|error| AdapterError::Transport(error.into()))
+            .map_err(|error| AdapterError::Transport(error.into()))?;
+        self.queue_session_metadata()?;
+        Ok(())
     }
 
     /// Stop and tombstone a peer while preserving its stable roster slot.
@@ -822,10 +954,17 @@ impl RelayHost {
         self.relay
             .drop_agent(slot)
             .map_err(|error| AdapterError::Transport(error.into()))?;
-        if let Some(host) = self.hosts.get_mut(slot) {
-            host.stop().await?;
-        }
-        Ok(())
+        let stop_result = if let Some(host) = self.hosts.get_mut(slot) {
+            host.stop().await
+        } else {
+            Ok(())
+        };
+        // Persist the tombstone even when a third-party process reports a
+        // shutdown error; otherwise the next launch can resurrect a slot the
+        // user explicitly removed.
+        let metadata_result = self.queue_session_metadata();
+        stop_result?;
+        metadata_result
     }
 
     /// Start and append a new adapter in the next stable roster slot. The
@@ -851,6 +990,9 @@ impl RelayHost {
         self.relay.add_agent();
         self.introduced.push(false);
         self.roster_names.push(name.into());
+        self.roster_identities
+            .push(self.roster_names.last().cloned().unwrap_or_default());
+        self.queue_session_metadata()?;
         if let Some(sink) = &self.event_sink {
             sink(AgentEvent::Ready { slot, capabilities });
         }
@@ -887,6 +1029,7 @@ impl RelayHost {
         self.hosts.insert(0, replacement);
         self.hosts.insert(slot, old_owner);
         self.roster_names.swap(0, slot);
+        self.roster_identities.swap(0, slot);
         self.introduced[0] = false;
         self.introduced[slot] = false;
         if let Some(sink) = &self.event_sink {
@@ -895,6 +1038,7 @@ impl RelayHost {
                 capabilities: self.hosts[0].adapter().capabilities(),
             });
         }
+        self.queue_session_metadata()?;
         Ok(())
     }
 
@@ -918,6 +1062,7 @@ impl RelayHost {
         self.hosts.insert(low, high_host.remap(low));
         self.hosts.insert(high, low_host.remap(high));
         self.roster_names.swap(first, second);
+        self.roster_identities.swap(first, second);
         self.introduced.swap(first, second);
         if let Some(sink) = &self.event_sink {
             sink(AgentEvent::Ready {
@@ -929,6 +1074,7 @@ impl RelayHost {
                 capabilities: self.hosts[second].adapter().capabilities(),
             });
         }
+        self.queue_session_metadata()?;
         Ok(())
     }
 
@@ -1033,6 +1179,7 @@ impl RelayHost {
             .ok_or_else(|| AdapterError::Transport("relay selected missing adapter".into()))?;
         if let Err(error) = host.send_prompt(prompt.clone()).await {
             report_relay_failure(&mut self.relay, &event_sink, *slot, true, error.to_string());
+            let _ = self.queue_session_metadata();
             return Err(error);
         }
         if let Some(introduced) = self.introduced.get_mut(*slot) {
@@ -1057,6 +1204,7 @@ impl RelayHost {
                             true,
                             error.to_string(),
                         );
+                        let _ = self.queue_session_metadata();
                         return Err(error);
                     }
                     None => {
@@ -1068,6 +1216,7 @@ impl RelayHost {
                             true,
                             error.to_string(),
                         );
+                        let _ = self.queue_session_metadata();
                         return Err(error);
                     }
                 },
@@ -1106,6 +1255,7 @@ impl RelayHost {
                         *started,
                         detail.clone(),
                     );
+                    let _ = self.queue_session_metadata();
                     return Err(AdapterError::Transport(detail.clone()));
                 }
                 _ => {}
@@ -1155,6 +1305,7 @@ impl RelayHost {
         }
         self.relay.mark_context_seen(*slot);
         self.relay.finish(*slot, *direct, accepted_stop);
+        self.queue_session_metadata()?;
         Ok(decision)
     }
 }
@@ -1296,6 +1447,17 @@ impl AgyAdapter {
         }
     }
 
+    pub fn with_session_id(
+        slot: RosterSlot,
+        cwd: PathBuf,
+        command: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        let mut adapter = Self::new(slot, cwd, command);
+        adapter.session_id = Some(session_id.into());
+        adapter
+    }
+
     fn modes() -> Vec<Mode> {
         vec![
             Mode {
@@ -1322,6 +1484,14 @@ impl AgyAdapter {
 impl AgentAdapter for AgyAdapter {
     fn slot(&self) -> RosterSlot {
         self.slot
+    }
+
+    fn session_id(&self) -> Option<String> {
+        self.session_id.clone()
+    }
+
+    fn protocol(&self) -> &'static str {
+        "native"
     }
 
     fn capabilities(&self) -> AgentCapabilities {
@@ -2350,6 +2520,14 @@ impl AgentAdapter for AcpAdapter {
         self.slot
     }
 
+    fn session_id(&self) -> Option<String> {
+        self.session_id.clone()
+    }
+
+    fn protocol(&self) -> &'static str {
+        "acp"
+    }
+
     fn capabilities(&self) -> AgentCapabilities {
         self.capabilities.clone()
     }
@@ -2719,6 +2897,7 @@ mod tests {
     use codeswarm_core::TerminalEvent;
     use codeswarm_core::{
         AgentCapabilities, AgentEvent, EventLog, PermissionAnswer, ToolStatus,
+        persistence::SessionMetadataStore,
         relay::{DEFAULT_STOP_ACKNOWLEDGMENT, RelayDecision, STOP_TOKEN},
     };
     use serde_json::Value;
@@ -3931,6 +4110,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relay_host_persists_python_compatible_runtime_metadata() {
+        let path = unique_test_path("codeswarm-session-metadata", "json");
+        let metadata_store = codeswarm_core::persistence::SessionMetadataStore::open(&path);
+        let writer = metadata_store.buffered().expect("metadata writer");
+        let first = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(0, AgentCapabilities::default(), [])),
+            None,
+        );
+        let second = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(1, AgentCapabilities::default(), [])),
+            None,
+        );
+        let mut relay = RelayHost::new(vec![first, second], 4).expect("relay");
+        relay.set_roster_names(vec!["Claude Code".into(), "Codex CLI".into()]);
+        relay.set_roster_identities(vec!["claude.ai".into(), "openai.com".into()]);
+        relay.set_session_metadata_writer(writer);
+        relay.start().await.expect("start");
+        relay.drop_agent(1).await.expect("drop peer");
+        relay.stop().await.expect("stop");
+
+        let loaded = metadata_store
+            .read()
+            .expect("read metadata")
+            .expect("metadata snapshot");
+        assert_eq!(
+            loaded.get("roster"),
+            Some(&serde_json::json!(["claude.ai"]))
+        );
+        let agent_data = loaded.get("agent_data").expect("owner metadata");
+        assert_eq!(agent_data["identity"], "claude.ai");
+        assert_eq!(agent_data["protocol"], "custom");
+        assert_eq!(
+            loaded.get("agent_supports_load_session"),
+            Some(&serde_json::json!(false))
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn relay_host_promotes_peer_without_restarting_or_leaking_slot_identity() {
         let former_owner = AdapterHost::new(
             Box::new(ScriptedAdapter::new(
@@ -4023,6 +4241,51 @@ mod tests {
             matches!(event, AgentEvent::Text { slot: 0, text } if text == "peer stream")
         }));
         assert!(relay.dispatches()[0].1.contains("You are Peer"));
+    }
+
+    #[tokio::test]
+    async fn relay_host_persists_owner_and_active_roster_metadata_off_thread() {
+        let path = unique_test_path("codeswarm-session-metadata", "json");
+        let first = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(
+                0,
+                AgentCapabilities::default(),
+                [AgentEvent::TurnComplete { slot: 0 }],
+            )),
+            None,
+        );
+        let second = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(
+                1,
+                AgentCapabilities::default(),
+                [AgentEvent::TurnComplete { slot: 1 }],
+            )),
+            None,
+        );
+        let mut relay = RelayHost::new(vec![first, second], 4).expect("relay");
+        relay.set_roster_names(vec!["Claude Code".into(), "Codex CLI".into()]);
+        relay.set_roster_identities(vec!["claude.com".into(), "openai.com".into()]);
+        let writer = SessionMetadataStore::open(&path)
+            .buffered()
+            .expect("metadata writer");
+        relay.set_session_metadata_writer(writer);
+        relay.start().await.expect("start");
+        relay.stop().await.expect("stop");
+        let loaded = SessionMetadataStore::open(&path)
+            .read()
+            .expect("read metadata")
+            .expect("metadata snapshot");
+        assert_eq!(
+            loaded.get("roster"),
+            Some(&serde_json::json!(["claude.com", "openai.com"]))
+        );
+        assert_eq!(
+            loaded
+                .get("agent_data")
+                .and_then(|value| value.get("identity")),
+            Some(&serde_json::json!("claude.com"))
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
