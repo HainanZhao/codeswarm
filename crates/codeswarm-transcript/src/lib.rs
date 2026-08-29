@@ -72,6 +72,12 @@ impl Transcript {
         self.blocks.is_empty()
     }
 
+    pub fn clear(&mut self) {
+        self.blocks.clear();
+        self.next_id = 0;
+        self.invalidate_rows();
+    }
+
     /// Toggle one block's detail. No other source is reparsed until a caller
     /// asks for a viewport.
     pub fn set_collapsed(&mut self, id: u64, collapsed: bool) -> bool {

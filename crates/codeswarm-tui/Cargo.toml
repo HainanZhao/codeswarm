@@ -9,6 +9,7 @@ repository.workspace = true
 codeswarm-core = { path = "../codeswarm-core" }
 codeswarm-transcript = { path = "../codeswarm-transcript" }
 ratatui.workspace = true
+tui-textarea-2 = { version = "0.13.2", default-features = false, features = ["ratatui", "crossterm"] }
 
 [lints]
 workspace = true

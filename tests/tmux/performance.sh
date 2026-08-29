@@ -83,7 +83,8 @@ tmux -L "$socket_name" send-keys -t "$pane_target" End
 wait_for_text "following" 80
 frame_start="$(date +%s%N)"
 tmux -L "$socket_name" send-keys -t "$pane_target" x
-wait_for_text "› x" 40
+wait_for_text "Prompt" 40
+wait_for_text "x" 40
 frame_end="$(date +%s%N)"
 input_latency_ms=$(( (frame_end - frame_start) / 1000000 ))
 if (( input_latency_ms > frame_budget_ms )); then

@@ -16,6 +16,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget},
 };
+pub use tui_textarea::{Input, Key};
+use tui_textarea::{TextArea, WrapMode};
 
 pub mod frame_scheduler;
 
@@ -53,6 +55,15 @@ pub enum PermissionAction {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalCommand {
+    Handled,
+    Close,
+    Cancel,
+    Pause,
+    Resume,
+}
+
 /// One pending permission request owned by the TUI.
 ///
 /// The request is intentionally copied from the normalized event. Adapters
@@ -75,6 +86,305 @@ pub struct QueuedPrompt {
     pub prompt: String,
     pub target: Option<usize>,
     pub direct: bool,
+}
+
+/// The result of handling one prompt-editor input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PromptAction {
+    /// The key was not consumed by the editor.
+    Ignored,
+    /// The editor content or cursor changed.
+    Changed,
+    /// A non-empty prompt was submitted. The editor is cleared afterwards.
+    Submit(String),
+    /// A completion was applied. `index` and `total` let a caller display a
+    /// lightweight completion status without rebuilding the prompt widget.
+    Completion {
+        value: String,
+        index: usize,
+        total: usize,
+    },
+}
+
+/// A low-churn, multiline prompt editor backed by `tui-textarea`.
+///
+/// The editor owns cursor movement, Unicode-safe insertion/deletion, wrapped
+/// rendering, undo/redo, and bounded submission history. CodeSwarm-specific
+/// command completion is kept as a small candidate layer around the mature
+/// widget, so prompt editing does not add work to transcript rendering.
+#[derive(Debug)]
+pub struct PromptEditor {
+    textarea: TextArea<'static>,
+    history: VecDeque<String>,
+    history_position: Option<usize>,
+    completion_candidates: Vec<String>,
+    completion_matches: Vec<String>,
+    completion_index: Option<usize>,
+}
+
+const MAX_PROMPT_HISTORY: usize = 50;
+
+impl Default for PromptEditor {
+    fn default() -> Self {
+        let mut textarea = TextArea::default();
+        textarea.set_block(
+            Block::default()
+                .title(" Prompt ")
+                .title_style(Style::default().fg(Color::Cyan).bold())
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(Color::Rgb(55, 75, 95))),
+        );
+        textarea.set_style(Style::default().fg(Color::White).bg(Color::Rgb(18, 23, 32)));
+        textarea.set_cursor_style(Style::default().fg(Color::Black).bg(Color::Cyan));
+        textarea.set_wrap_mode(WrapMode::Word);
+        textarea.set_min_rows(1);
+        textarea.set_max_rows(8);
+        textarea.set_placeholder_text("Ask an agent… (Shift+Enter for a new line)");
+        Self {
+            textarea,
+            history: VecDeque::new(),
+            history_position: None,
+            completion_candidates: Vec::new(),
+            completion_matches: Vec::new(),
+            completion_index: None,
+        }
+    }
+}
+
+impl PromptEditor {
+    /// Create an editor initialized with text. Newlines are preserved.
+    pub fn from_text(text: impl Into<String>) -> Self {
+        let mut editor = Self::default();
+        editor.set_text(text);
+        editor
+    }
+
+    /// Return the complete prompt, including embedded newlines.
+    pub fn text(&self) -> String {
+        self.textarea.lines().join("\n")
+    }
+
+    /// Return the cursor as a zero-based `(line, character)` pair.
+    pub fn cursor(&self) -> (usize, usize) {
+        self.textarea.cursor()
+    }
+
+    /// Return the logical lines currently in the editor.
+    pub fn lines(&self) -> &[String] {
+        self.textarea.lines()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.textarea.is_empty()
+    }
+
+    /// Replace the editor content and place the cursor at its end.
+    pub fn set_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        let mut lines = text.split('\n').map(ToOwned::to_owned).collect::<Vec<_>>();
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        let row = lines.len() - 1;
+        let col = lines[row].chars().count();
+        self.textarea.set_lines(lines, (row, col));
+        self.history_position = None;
+        self.reset_completion();
+    }
+
+    /// Clear the editor and return it to its initial cursor position.
+    pub fn clear(&mut self) {
+        self.set_text("");
+    }
+
+    /// Set slash-command candidates. Candidate order is preserved when Tab
+    /// cycles through matches.
+    pub fn set_completion_candidates<I, S>(&mut self, candidates: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.completion_candidates = candidates.into_iter().map(Into::into).collect();
+        self.reset_completion();
+    }
+
+    /// Current candidates matching the token before the cursor.
+    pub fn completion_matches(&self) -> &[String] {
+        &self.completion_matches
+    }
+
+    /// Record a successful submission in the bounded history.
+    pub fn remember(&mut self, prompt: impl Into<String>) {
+        let prompt = prompt.into();
+        if prompt.trim().is_empty() {
+            return;
+        }
+        if self.history.back() == Some(&prompt) {
+            self.history_position = None;
+            return;
+        }
+        self.history.push_back(prompt);
+        while self.history.len() > MAX_PROMPT_HISTORY {
+            self.history.pop_front();
+        }
+        self.history_position = None;
+    }
+
+    pub fn history(&self) -> &VecDeque<String> {
+        &self.history
+    }
+
+    /// Move to the previous submitted prompt.
+    pub fn history_previous(&mut self) -> bool {
+        let next = self
+            .history_position
+            .unwrap_or(self.history.len())
+            .checked_sub(1);
+        let Some(next) = next else { return false };
+        let Some(prompt) = self.history.get(next).cloned() else {
+            return false;
+        };
+        self.set_text(prompt);
+        self.history_position = Some(next);
+        true
+    }
+
+    /// Move to the next submitted prompt, or to a blank draft after the newest.
+    pub fn history_next(&mut self) -> bool {
+        let Some(current) = self.history_position else {
+            return false;
+        };
+        if let Some(prompt) = self.history.get(current + 1).cloned() {
+            self.set_text(prompt);
+            self.history_position = Some(current + 1);
+        } else {
+            self.history_position = None;
+            self.set_text("");
+        }
+        true
+    }
+
+    /// Apply one backend-agnostic key. Plain Enter submits; Shift+Enter (or
+    /// Ctrl+Enter) inserts a newline. Tab cycles slash-command completions.
+    pub fn handle_input(&mut self, input: Input) -> PromptAction {
+        if input.key == Key::Enter && !input.ctrl && !input.alt && !input.shift {
+            let prompt = self.text();
+            return if prompt.trim().is_empty() {
+                PromptAction::Ignored
+            } else {
+                self.remember(prompt.clone());
+                self.clear();
+                PromptAction::Submit(prompt)
+            };
+        }
+        if input.key == Key::Tab && !input.ctrl && !input.alt && !input.shift {
+            return self.complete();
+        }
+        if input.key == Key::Up
+            && !input.ctrl
+            && !input.alt
+            && !input.shift
+            && self.lines().len() == 1
+            && self.history_previous()
+        {
+            return PromptAction::Changed;
+        }
+        if input.key == Key::Down
+            && !input.ctrl
+            && !input.alt
+            && !input.shift
+            && self.lines().len() == 1
+            && self.cursor_at_end()
+            && self.history_position.is_some()
+            && self.history_next()
+        {
+            return PromptAction::Changed;
+        }
+        let cursor_before = self.cursor();
+        let modified = self.textarea.input(input);
+        let cursor_moved = self.cursor() != cursor_before;
+        if modified {
+            self.history_position = None;
+            self.reset_completion();
+            PromptAction::Changed
+        } else if cursor_moved {
+            PromptAction::Changed
+        } else {
+            PromptAction::Ignored
+        }
+    }
+
+    /// Render the editor as a Ratatui widget. Only the editor viewport is
+    /// measured; transcript history is not touched.
+    pub fn render(&self, frame: &mut Frame, area: Rect) {
+        frame.render_widget(&self.textarea, area);
+    }
+
+    fn cursor_at_end(&self) -> bool {
+        let (row, col) = self.cursor();
+        self.lines()
+            .get(row)
+            .is_some_and(|line| row + 1 == self.lines().len() && col == line.chars().count())
+    }
+
+    fn complete(&mut self) -> PromptAction {
+        let Some((start, prefix)) = self.completion_prefix() else {
+            self.reset_completion();
+            return PromptAction::Ignored;
+        };
+        if self.completion_matches.is_empty() {
+            self.completion_matches = self
+                .completion_candidates
+                .iter()
+                .filter(|candidate| candidate.starts_with(&prefix))
+                .cloned()
+                .collect();
+        }
+        if self.completion_matches.is_empty() {
+            return PromptAction::Ignored;
+        }
+        let index = self
+            .completion_index
+            .map_or(0, |index| (index + 1) % self.completion_matches.len());
+        let candidate = self.completion_matches[index].clone();
+        self.replace_token(start, &candidate);
+        self.completion_index = Some(index);
+        PromptAction::Completion {
+            value: candidate,
+            index,
+            total: self.completion_matches.len(),
+        }
+    }
+
+    fn completion_prefix(&self) -> Option<(usize, String)> {
+        let (row, col) = self.cursor();
+        let line = self.lines().get(row)?;
+        let chars = line.chars().collect::<Vec<_>>();
+        let start = chars[..col.min(chars.len())]
+            .iter()
+            .rposition(|character| character.is_whitespace())
+            .map_or(0, |index| index + 1);
+        let prefix = chars[start..col.min(chars.len())]
+            .iter()
+            .collect::<String>();
+        prefix.starts_with('/').then_some((start, prefix))
+    }
+
+    fn replace_token(&mut self, start: usize, replacement: &str) {
+        let (row, col) = self.cursor();
+        let mut chars = self.lines()[row].chars().collect::<Vec<_>>();
+        let end = col.min(chars.len());
+        chars.splice(start..end, replacement.chars());
+        let mut lines = self.lines().to_vec();
+        lines[row] = chars.into_iter().collect();
+        let cursor = start + replacement.chars().count();
+        self.textarea.set_lines(lines, (row, cursor));
+    }
+
+    fn reset_completion(&mut self) {
+        self.completion_matches.clear();
+        self.completion_index = None;
+    }
 }
 
 impl PermissionPrompt {
@@ -124,6 +434,8 @@ pub struct App {
     pub active_agent: String,
     pub status: String,
     pub permission: Option<PermissionPrompt>,
+    prompt_editor: PromptEditor,
+    agent_names: BTreeMap<usize, String>,
     queued_prompts: VecDeque<QueuedPrompt>,
     next_queue_id: u64,
     selected_queue: Option<usize>,
@@ -142,6 +454,8 @@ impl Default for App {
             active_agent: "Initializing".into(),
             status: "idle".into(),
             permission: None,
+            prompt_editor: PromptEditor::default(),
+            agent_names: BTreeMap::new(),
             queued_prompts: VecDeque::new(),
             next_queue_id: 0,
             selected_queue: None,
@@ -153,9 +467,62 @@ impl Default for App {
 }
 
 impl App {
+    pub fn handle_local_command(&mut self, input: &str) -> Option<LocalCommand> {
+        let command = input.trim().to_ascii_lowercase();
+        let result = match command.as_str() {
+            "/quit" | "/exit" | "/close" => LocalCommand::Close,
+            "/cancel" => LocalCommand::Cancel,
+            "/pause" => LocalCommand::Pause,
+            "/resume" => LocalCommand::Resume,
+            "/help" => {
+                self.keyboard_help = true;
+                self.status = "keyboard help shown".into();
+                LocalCommand::Handled
+            }
+            "/clear" => {
+                self.transcript.clear();
+                self.scroll_y = 0;
+                self.status = "conversation cleared".into();
+                LocalCommand::Handled
+            }
+            "/config" => {
+                self.transcript.append(
+                    codeswarm_transcript::BlockKind::Notice,
+                    "Configuration: inline viewport, cached transcript, lazy details, and tmux-safe frame scheduling. Use /help for controls.",
+                    false,
+                );
+                self.status = "configuration".into();
+                LocalCommand::Handled
+            }
+            _ if command.starts_with('/') => {
+                self.status = format!("unknown command: {input}");
+                LocalCommand::Handled
+            }
+            _ => return None,
+        };
+        Some(result)
+    }
+
+    pub fn set_agent_name(&mut self, slot: usize, name: impl Into<String>) {
+        self.agent_names.insert(slot, name.into());
+    }
+
+    pub fn agent_name(&self, slot: usize) -> String {
+        self.agent_names
+            .get(&slot)
+            .cloned()
+            .unwrap_or_else(|| format!("Agent {slot}"))
+    }
+
     pub fn set_header(&mut self, active_agent: impl Into<String>, status: impl Into<String>) {
         self.active_agent = active_agent.into();
         self.status = status.into();
+    }
+
+    fn sync_prompt_editor(&mut self) {
+        if self.prompt_editor.text() != self.prompt {
+            self.prompt_editor.set_text(self.prompt.clone());
+        }
     }
 
     /// Apply normalized adapter state without exposing protocol-specific
@@ -164,7 +531,7 @@ impl App {
     pub fn apply_event(&mut self, event: &AgentEvent) {
         match event {
             AgentEvent::Ready { slot, .. } => {
-                self.active_agent = format!("Agent {slot}");
+                self.active_agent = self.agent_name(*slot);
                 self.status = "ready".into();
             }
             AgentEvent::ModesReplaced { .. } => {}
@@ -178,7 +545,7 @@ impl App {
                     id
                 });
                 self.transcript.extend(block, text);
-                self.active_agent = format!("Agent {slot}");
+                self.active_agent = self.agent_name(*slot);
                 self.status = "streaming".into();
             }
             AgentEvent::Thought { slot, text } => {
@@ -186,14 +553,14 @@ impl App {
                 let id = self.streaming_blocks.get(&key).copied().unwrap_or_else(|| {
                     let id = self.transcript.append(
                         codeswarm_transcript::BlockKind::Thought,
-                        format!("Agent {slot}: "),
+                        format!("{}: ", self.agent_name(*slot)),
                         true,
                     );
                     self.streaming_blocks.insert(key, id);
                     id
                 });
                 self.transcript.extend(id, text);
-                self.active_agent = format!("Agent {slot}");
+                self.active_agent = self.agent_name(*slot);
                 self.status = "thinking".into();
                 self.focused_detail = Some(id);
             }
@@ -206,13 +573,13 @@ impl App {
                 };
                 let id = self.transcript.append(
                     codeswarm_transcript::BlockKind::Tool,
-                    format!("Agent {slot}: {} · {state}", update.title),
+                    format!("{}: {} · {state}", self.agent_name(*slot), update.title),
                     true,
                 );
                 self.focused_detail = Some(id);
             }
             AgentEvent::Permission { slot, request } => {
-                self.active_agent = format!("Agent {slot}");
+                self.active_agent = self.agent_name(*slot);
                 self.status = format!("permission: {}", request.title);
                 self.permission = Some(PermissionPrompt::new(
                     *slot,
@@ -223,10 +590,18 @@ impl App {
             }
             AgentEvent::Terminal { slot, event } => {
                 let text = match event {
-                    TerminalEvent::Created { command, .. } => format!("Agent {slot}: {command}"),
-                    TerminalEvent::Output { text, .. } => format!("Agent {slot}: {text}"),
-                    TerminalEvent::Exited { code, .. } => format!("Agent {slot}: exited {code}"),
-                    TerminalEvent::Released { .. } => format!("Agent {slot}: terminal released"),
+                    TerminalEvent::Created { command, .. } => {
+                        format!("{}: {command}", self.agent_name(*slot))
+                    }
+                    TerminalEvent::Output { text, .. } => {
+                        format!("{}: {text}", self.agent_name(*slot))
+                    }
+                    TerminalEvent::Exited { code, .. } => {
+                        format!("{}: exited {code}", self.agent_name(*slot))
+                    }
+                    TerminalEvent::Released { .. } => {
+                        format!("{}: terminal released", self.agent_name(*slot))
+                    }
                 };
                 self.focused_detail = Some(self.transcript.append(
                     codeswarm_transcript::BlockKind::Tool,
@@ -264,7 +639,7 @@ impl App {
                 {
                     self.permission = None;
                 }
-                self.active_agent = format!("Agent {slot}");
+                self.active_agent = self.agent_name(*slot);
                 self.status = if *started {
                     format!("crashed: {detail}")
                 } else {
@@ -462,6 +837,7 @@ impl App {
 }
 
 pub fn render(frame: &mut Frame, app: &mut App) {
+    app.sync_prompt_editor();
     let area = frame.area();
     let rows = Layout::vertical([
         Constraint::Min(1),
@@ -528,19 +904,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.keyboard_help_visible() {
         render_keyboard_help(frame.buffer_mut(), rows[4]);
     }
-    Paragraph::new(Line::from(vec![
-        Span::styled(" › ", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(app.prompt.as_str(), Style::default().fg(Color::White)),
-    ]))
-    .style(Style::default().bg(Color::Rgb(18, 23, 32)))
-    .block(
-        Block::default()
-            .title(" Prompt ")
-            .title_style(Style::default().fg(Color::Cyan).bold())
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(Color::Rgb(55, 75, 95))),
-    )
-    .render(rows[5], frame.buffer_mut());
+    app.prompt_editor.render(frame, rows[5]);
 }
 
 fn status_color(status: &str) -> Color {
@@ -666,9 +1030,118 @@ fn block_style(kind: codeswarm_transcript::BlockKind) -> Style {
 #[cfg(test)]
 mod tests {
     use codeswarm_transcript::BlockKind;
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+    use tui_textarea::{Input, Key};
 
-    use super::{App, PermissionAction, PermissionKey, render};
+    use super::{
+        App, LocalCommand, PermissionAction, PermissionKey, PromptAction, PromptEditor, render,
+    };
+
+    fn key(key: Key) -> Input {
+        Input {
+            key,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        }
+    }
+
+    #[test]
+    fn prompt_editor_supports_multiline_unicode_cursor_editing() {
+        let mut editor = PromptEditor::default();
+        for character in "héllo".chars() {
+            assert_eq!(
+                editor.handle_input(key(Key::Char(character))),
+                PromptAction::Changed
+            );
+        }
+        assert_eq!(editor.cursor(), (0, 5));
+        assert_eq!(
+            editor.handle_input(Input {
+                key: Key::Enter,
+                ctrl: false,
+                alt: false,
+                shift: true,
+            }),
+            PromptAction::Changed
+        );
+        for character in "世界".chars() {
+            editor.handle_input(key(Key::Char(character)));
+        }
+        assert_eq!(editor.handle_input(key(Key::Left)), PromptAction::Changed);
+        editor.handle_input(key(Key::Char('!')));
+        assert_eq!(editor.text(), "héllo\n世!界");
+        assert_eq!(editor.cursor(), (1, 2));
+    }
+
+    #[test]
+    fn prompt_editor_submits_and_bounds_deduplicated_history() {
+        let mut editor = PromptEditor::from_text("first\nsecond");
+        assert_eq!(
+            editor.handle_input(key(Key::Enter)),
+            PromptAction::Submit("first\nsecond".into())
+        );
+        editor.remember("first\nsecond");
+        assert_eq!(editor.history().len(), 1);
+        for index in 0..55 {
+            editor.remember(format!("prompt-{index}"));
+        }
+        assert_eq!(editor.history().len(), 50);
+        assert_eq!(
+            editor.history().front().map(String::as_str),
+            Some("prompt-5")
+        );
+        assert!(editor.history_previous());
+        assert_eq!(editor.text(), "prompt-54");
+        assert!(editor.history_next());
+        assert_eq!(editor.text(), "");
+    }
+
+    #[test]
+    fn prompt_editor_cycles_slash_command_completions() {
+        let mut editor = PromptEditor::from_text("/h");
+        editor.set_completion_candidates(["/help", "/history", "/quit"]);
+        assert!(editor.completion_matches().is_empty());
+        assert_eq!(
+            editor.handle_input(key(Key::Tab)),
+            PromptAction::Completion {
+                value: "/help".into(),
+                index: 0,
+                total: 2,
+            }
+        );
+        assert_eq!(editor.text(), "/help");
+        assert_eq!(editor.completion_matches(), &["/help", "/history"]);
+        assert_eq!(
+            editor.handle_input(key(Key::Tab)),
+            PromptAction::Completion {
+                value: "/history".into(),
+                index: 1,
+                total: 2,
+            }
+        );
+        assert_eq!(editor.text(), "/history");
+    }
+
+    #[test]
+    fn prompt_editor_renders_bounded_multiline_widget() {
+        let backend = TestBackend::new(48, 8);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let editor = PromptEditor::from_text("review\nthese changes");
+        terminal
+            .draw(|frame| editor.render(frame, Rect::new(0, 0, 48, 8)))
+            .expect("draw prompt editor");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Prompt"));
+        assert!(rendered.contains("review"));
+        assert!(rendered.contains("these changes"));
+    }
 
     #[test]
     fn long_history_draws_only_a_terminal_viewport() {
@@ -688,6 +1161,32 @@ mod tests {
             .expect("draw");
         let rendered = terminal.backend().buffer();
         assert!(rendered.content().iter().any(|cell| cell.symbol() == "w"));
+    }
+
+    #[test]
+    fn ready_event_preserves_human_readable_agent_name() {
+        let mut app = App::default();
+        app.set_agent_name(0, "Codex CLI");
+        app.apply_event(&codeswarm_core::AgentEvent::Ready {
+            slot: 0,
+            capabilities: codeswarm_core::AgentCapabilities::default(),
+        });
+        assert_eq!(app.active_agent, "Codex CLI");
+    }
+
+    #[test]
+    fn local_commands_do_not_become_agent_prompts() {
+        let mut app = App::default();
+        assert_eq!(
+            app.handle_local_command("/config"),
+            Some(LocalCommand::Handled)
+        );
+        assert_eq!(app.status, "configuration");
+        assert_eq!(
+            app.handle_local_command("/close"),
+            Some(LocalCommand::Close)
+        );
+        assert_eq!(app.handle_local_command("ordinary text"), None);
     }
 
     #[test]

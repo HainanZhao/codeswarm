@@ -13,7 +13,7 @@ use codeswarm_core::PermissionAnswer;
 use codeswarm_core::launcher::{LaunchDecision, launch_decision};
 use codeswarm_core::{AgentEvent, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
-use codeswarm_tui::{App, QueuedPrompt, render};
+use codeswarm_tui::{App, LocalCommand, QueuedPrompt, render};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
@@ -284,6 +284,23 @@ fn split_command(command: &str) -> (String, Vec<String>) {
     (program, parts.map(ToOwned::to_owned).collect())
 }
 
+fn display_agent_name(command: &str) -> String {
+    let lower = command.to_ascii_lowercase();
+    if lower.contains("claude") {
+        "Claude Code".into()
+    } else if lower.contains("codex") {
+        "Codex CLI".into()
+    } else if lower.contains("qwen") {
+        "Qwen Code".into()
+    } else if lower.contains("gemini") {
+        "Gemini CLI".into()
+    } else if lower == "agy" || lower.contains("antigravity") {
+        "Antigravity CLI".into()
+    } else {
+        command.into()
+    }
+}
+
 fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
     let mut app = App::default();
     app.set_header("CodeSwarm agent store", "select a roster with --roster");
@@ -325,6 +342,7 @@ fn run_agy_command(
 ) -> std::io::Result<()> {
     let (events, controls) = spawn_agy_command(prompt, command.to_owned());
     let mut app = App::default();
+    app.set_agent_name(0, display_agent_name(command));
     app.set_header(command, "starting");
     run_terminal(terminal, &mut app, Some(events), Some(controls), None)
 }
@@ -344,6 +362,7 @@ fn run_acp_program(
 ) -> std::io::Result<()> {
     let (events, controls) = spawn_acp(program.clone(), prompt);
     let mut app = App::default();
+    app.set_agent_name(0, display_agent_name(&program));
     app.set_header(program, "starting");
     run_terminal(terminal, &mut app, Some(events), Some(controls), None)
 }
@@ -361,8 +380,14 @@ fn run_roster(
             AgentSpec::Acp(program) => run_acp_program(terminal, program.clone(), prompt),
         };
     }
-    let (events, controls) = spawn_relay(specs, prompt, first_slot, max_rounds);
     let mut app = App::default();
+    for (slot, spec) in specs.iter().enumerate() {
+        let name = match spec {
+            AgentSpec::Agy(command) | AgentSpec::Acp(command) => command,
+        };
+        app.set_agent_name(slot, display_agent_name(name));
+    }
+    let (events, controls) = spawn_relay(specs, prompt, first_slot, max_rounds);
     app.set_header("CodeSwarm roster", "starting");
     run_terminal(
         terminal,
@@ -795,6 +820,35 @@ fn run_terminal(
                     if slot > 0 {
                         selected_slot = Some(slot - 1);
                         app.status = format!("selected agent {}", slot - 1);
+                    }
+                }
+                KeyCode::Enter if app.prompt.trim_start().starts_with('/') => {
+                    let command = std::mem::take(&mut app.prompt);
+                    if let Some(local) = app.handle_local_command(&command) {
+                        match local {
+                            LocalCommand::Handled => {}
+                            LocalCommand::Close => {
+                                if let Some(controls) = &controls {
+                                    let _ = controls.send(AdapterControl::Stop);
+                                }
+                                return Ok(());
+                            }
+                            LocalCommand::Cancel => {
+                                if let Some(controls) = &controls {
+                                    let _ = controls.send(AdapterControl::Cancel);
+                                }
+                            }
+                            LocalCommand::Pause => {
+                                if let Some(controls) = &controls {
+                                    let _ = controls.send(AdapterControl::Pause);
+                                }
+                            }
+                            LocalCommand::Resume => {
+                                if let Some(controls) = &controls {
+                                    let _ = controls.send(AdapterControl::Resume);
+                                }
+                            }
+                        }
                     }
                 }
                 KeyCode::Enter if pending_permission.is_some() && !app.prompt.trim().is_empty() => {
