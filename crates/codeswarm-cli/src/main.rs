@@ -703,7 +703,11 @@ fn load_ui_preferences(app: &mut App) {
     }
     if let Some(enabled) = value
         .get("notifications")
-        .and_then(|notifications| notifications.get("enabled"))
+        .and_then(|notifications| {
+            notifications
+                .get("enabled")
+                .or_else(|| notifications.get("turn_over"))
+        })
         .and_then(serde_json::Value::as_bool)
     {
         app.set_notifications_enabled(enabled);
@@ -782,6 +786,9 @@ fn save_ui_preferences(app: &App) -> std::io::Result<()> {
             *notifications = serde_json::json!({});
         }
         notifications["enabled"] = serde_json::Value::Bool(app.notifications_enabled());
+        // Keep the legacy Python key readable by either client while the
+        // Rust UI uses the shorter `enabled` spelling internally.
+        notifications["turn_over"] = serde_json::Value::Bool(app.notifications_enabled());
         let agent = settings
             .entry("agent")
             .or_insert_with(|| serde_json::json!({}));
