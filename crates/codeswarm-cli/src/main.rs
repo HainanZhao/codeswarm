@@ -137,8 +137,18 @@ enum AgentSpec {
 
 fn main() -> std::io::Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    if let Some(path) = project_dir_argument(&arguments) {
+        if !path.is_dir() {
+            eprintln!("project directory is not a directory: {}", path.display());
+            return Ok(());
+        }
+        std::env::set_current_dir(path)?;
+    }
     let alternate_screen = arguments.iter().any(|argument| argument == "--alt-screen");
-    let launch = parse_launch(&arguments).or_else(|| arguments.is_empty().then(bare_launch));
+    let launch = parse_launch(&arguments).or_else(|| {
+        (arguments.is_empty() || (arguments.len() == 2 && arguments.first()? == "--project-dir"))
+            .then(bare_launch)
+    });
     let Some(launch) = launch else {
         println!(
             "CodeSwarm Rust preview. Use --demo, --agy PROMPT, --acp PROGRAM PROMPT, or repeated --roster agy:COMMAND/acp:PROGRAM PROMPT."
@@ -178,7 +188,23 @@ fn main() -> std::io::Result<()> {
     result
 }
 
+fn project_dir_argument(arguments: &[String]) -> Option<PathBuf> {
+    let index = arguments
+        .iter()
+        .position(|argument| argument == "--project-dir")?;
+    arguments.get(index + 1).map(PathBuf::from)
+}
+
 fn parse_launch(arguments: &[String]) -> Option<Launch> {
+    if let Some(index) = arguments
+        .iter()
+        .position(|argument| argument == "--project-dir")
+    {
+        arguments.get(index + 1)?;
+        let mut filtered = arguments.to_vec();
+        filtered.drain(index..=index + 1);
+        return parse_launch(&filtered);
+    }
     if arguments.iter().any(|argument| argument == "--demo") {
         return Some(Launch::Preview);
     }
@@ -279,6 +305,7 @@ fn parse_roster_launch(arguments: &[String]) -> Option<Launch> {
                 }
                 index += 2;
             }
+            "--project-dir" => index += 2,
             "--alt-screen" | "--demo" => index += 1,
             value if !value.starts_with('-') => {
                 if prompt.is_some() {
@@ -1285,7 +1312,22 @@ fn run_terminal(
                 KeyCode::Enter => {
                     if let PromptAction::Submit(prompt) = app.handle_prompt_input(Input::from(key))
                     {
-                        if let Some(local) = app.handle_local_command(&prompt) {
+                        if let Some(command) = prompt.trim().strip_prefix('!') {
+                            let command = command.trim();
+                            if command.is_empty() {
+                                app.status = "type a command after !".into();
+                            } else {
+                                app.record_human_message(&prompt, false);
+                                app.transcript.append(
+                                    BlockKind::Tool,
+                                    format!("$ {command}"),
+                                    false,
+                                );
+                                app.status = format!(
+                                    "local shell commands are not yet supported: {command}"
+                                );
+                            }
+                        } else if let Some(local) = app.handle_local_command(&prompt) {
                             match local {
                                 LocalCommand::Handled => {}
                                 LocalCommand::Close => {
@@ -1438,17 +1480,37 @@ fn event_log() -> std::io::Result<BufferedEventLog> {
 mod tests {
     use super::{
         AdapterControl, AgentSpec, Launch, bare_launch_from_settings, dispatch_permission_action,
-        dispatch_queued_prompt, parse_launch, run_relay_sequence_with_controls,
+        dispatch_queued_prompt, parse_launch, project_dir_argument,
+        run_relay_sequence_with_controls,
     };
     use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
     use codeswarm_core::{AgentCapabilities, AgentEvent, PermissionAnswer};
     use codeswarm_tui::{PermissionAction, QueuedPrompt};
+    use std::path::PathBuf;
 
     #[test]
     fn parses_native_agent_prompt_without_treating_it_as_acp() {
         assert!(matches!(
             parse_launch(&["--agy".into(), "summarize".into()]),
             Some(Launch::Agy { prompt }) if prompt == "summarize"
+        ));
+    }
+
+    #[test]
+    fn accepts_a_project_directory_flag_without_routing_it_to_the_agent() {
+        assert_eq!(
+            project_dir_argument(&["--project-dir".into(), "/tmp".into()]),
+            Some(PathBuf::from("/tmp"))
+        );
+        assert!(matches!(
+            parse_launch(&[
+                "--project-dir".into(),
+                "/tmp".into(),
+                "--roster".into(),
+                "acp:codex-acp".into(),
+                "task".into(),
+            ]),
+            Some(Launch::Roster { prompt: Some(prompt), .. }) if prompt == "task"
         ));
     }
 

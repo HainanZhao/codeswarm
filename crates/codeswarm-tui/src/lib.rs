@@ -1012,10 +1012,12 @@ impl App {
                         format!("{}: terminal released", self.agent_name(*slot))
                     }
                 };
+                let expanded =
+                    matches!(event, TerminalEvent::Output { id, .. } if id == "local-shell");
                 self.focused_detail = Some(self.transcript.append(
                     codeswarm_transcript::BlockKind::Tool,
                     text,
-                    true,
+                    !expanded,
                 ));
                 self.agent_states.insert(*slot, "working".into());
             }
@@ -2146,6 +2148,31 @@ mod tests {
             .collect::<String>();
         assert!(!rendered.contains("No messages yet"));
         assert!(!rendered.contains("Type a prompt below"));
+    }
+
+    #[test]
+    fn local_shell_output_is_visible_in_the_transcript() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        app.apply_event(&codeswarm_core::AgentEvent::Terminal {
+            slot: 0,
+            event: codeswarm_core::TerminalEvent::Output {
+                id: "local-shell".into(),
+                text: "shell-ok".into(),
+            },
+        });
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("shell-ok"), "rendered={rendered:?}");
     }
 
     #[test]

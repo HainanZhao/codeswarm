@@ -20,8 +20,8 @@ matrix records behavior, not widget-level implementation details.
 | Pause/resume/cancel/queue | Implemented | CLI controls and relay cancellation. |
 | Mode policy synchronization | Partial | Semantic local mode and adapter forwarding exist; shared native catalog negotiation still needs completion. |
 | Crash tombstone/reload UX | Partial | Core reducer tombstones; live reload/drop flow still needs a dedicated UI action. |
-| Project-directory picker | Missing | Rust currently uses the process working directory; add `--project-dir` and a store editor. |
-| Local `!command` shell execution | Missing | Python supported workspace-local shell commands; Rust does not yet expose this. |
+| Project-directory selection | Partial | Rust supports `--project-dir PATH`; an in-store directory editor remains to be added. |
+| Local `!command` shell execution | Missing | The Rust CLI reports this as unsupported; add an async workspace-local shell runner before claiming parity. |
 | Persistent prompt/settings preferences | Partial | Roster and custom agents persist; density/theme/notification/tool/diff preferences do not. |
 | Rich Markdown/diff views | Deliberately compact | Rust keeps rich details lazy; a full diff renderer is not yet ported. |
 | OS notifications/sounds | Missing | No Rust notification or sound backend yet. |

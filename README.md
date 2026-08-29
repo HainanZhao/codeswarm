@@ -29,6 +29,7 @@ launches. For a deterministic preview or smoke test:
 codeswarm --demo
 codeswarm --agy "describe the repository"
 codeswarm --acp "codex-acp" "review the current changes"
+codeswarm --project-dir ~/projects/example
 ```
 
 Launch a mixed roster with repeated `--roster` arguments:
