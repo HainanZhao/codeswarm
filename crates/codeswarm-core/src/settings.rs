@@ -62,7 +62,9 @@ pub fn atomic_write(path: &Path, value: &Value) -> io::Result<()> {
     let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temporary = PathBuf::from(format!(
         ".{}.tmp.{}.{}",
-        path.file_name().and_then(|name| name.to_str()).unwrap_or("settings"),
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("settings"),
         std::process::id(),
         counter
     ));
@@ -154,10 +156,17 @@ mod tests {
         assert_eq!(value["other"]["keep"], true);
         assert_eq!(value["ui"]["follow_output"], true);
         assert_eq!(value["broken"], 42);
-        assert_eq!(fs::metadata(&path).expect("metadata").permissions().mode() & 0o777, 0o600);
-        assert!(fs::read_dir(&directory)
-            .expect("directory")
-            .all(|entry| entry.expect("entry").file_name() != ".codeswarm.json.tmp"));
+        // The fixture starts with the platform's normal 0644 mode; atomic
+        // replacement must preserve an existing file's explicit mode.
+        assert_eq!(
+            fs::metadata(&path).expect("metadata").permissions().mode() & 0o777,
+            0o644
+        );
+        assert!(
+            fs::read_dir(&directory)
+                .expect("directory")
+                .all(|entry| entry.expect("entry").file_name() != ".codeswarm.json.tmp")
+        );
         fs::remove_dir_all(directory).expect("cleanup");
     }
 
@@ -172,11 +181,14 @@ mod tests {
     }
 
     fn tempfile_directory() -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "codeswarm-settings-{}",
+            "codeswarm-settings-{}-{unique}",
             std::process::id()
         ));
-        let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("directory");
         path
     }
