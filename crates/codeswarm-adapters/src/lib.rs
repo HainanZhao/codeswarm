@@ -615,6 +615,18 @@ impl AcpAdapter {
         }
     }
 
+    pub fn with_session_id(
+        slot: RosterSlot,
+        cwd: PathBuf,
+        program: impl Into<String>,
+        args: Vec<String>,
+        session_id: impl Into<String>,
+    ) -> Self {
+        let mut adapter = Self::new(slot, cwd, program, args);
+        adapter.session_id = Some(session_id.into());
+        adapter
+    }
+
     async fn request(&mut self, method: &str, params: Value) -> AdapterResult<Value> {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
@@ -731,21 +743,37 @@ impl AgentAdapter for AcpAdapter {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
         };
-        let session = self
-            .request(
-                "session/new",
-                serde_json::json!({"cwd": self.cwd, "mcpServers": []}),
+        let session = if let Some(session_id) = self.session_id.clone() {
+            if !self.capabilities.supports_session_load {
+                return Err(AdapterError::Unsupported("session/load"));
+            }
+            self.request(
+                "session/load",
+                serde_json::json!({
+                    "cwd": self.cwd,
+                    "mcpServers": [],
+                    "sessionId": session_id,
+                }),
             )
-            .await?;
-        self.session_id = session
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        if self.session_id.is_none() {
-            return Err(AdapterError::Protocol(
-                "session/new returned no sessionId".into(),
-            ));
-        }
+            .await?
+        } else {
+            let session = self
+                .request(
+                    "session/new",
+                    serde_json::json!({"cwd": self.cwd, "mcpServers": []}),
+                )
+                .await?;
+            self.session_id = session
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if self.session_id.is_none() {
+                return Err(AdapterError::Protocol(
+                    "session/new returned no sessionId".into(),
+                ));
+            }
+            session
+        };
         if let Some(modes) = session.get("modes") {
             let available = modes
                 .get("availableModes")
@@ -1069,6 +1097,24 @@ mod tests {
         assert!(matches!(
             adapter.next_event().await,
             Some(Ok(AgentEvent::TurnComplete { .. }))
+        ));
+    }
+
+    #[tokio::test]
+    async fn acp_adapter_loads_existing_session_when_capability_allows_it() {
+        let script = r#"read _; echo '{"jsonrpc":"2.0","id":1,"result":{"agentCapabilities":{"loadSession":true}}}'; read _; echo '{"jsonrpc":"2.0","id":2,"result":{}}'"#;
+        let cwd = std::env::current_dir().expect("cwd");
+        let mut adapter = AcpAdapter::with_session_id(
+            0,
+            cwd,
+            "sh",
+            vec!["-c".into(), script.into()],
+            "existing-session",
+        );
+        adapter.start().await.expect("load existing session");
+        assert!(matches!(
+            adapter.next_event().await,
+            Some(Ok(AgentEvent::Ready { .. }))
         ));
     }
 
