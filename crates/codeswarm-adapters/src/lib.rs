@@ -48,14 +48,20 @@ struct TerminalProcess {
 impl TerminalProcess {
     async fn kill(&self) {
         if let Some(child) = self.child.lock().await.as_mut() {
+            #[cfg(unix)]
+            if let Some(pid) = child.id() {
+                let _ = Command::new("kill")
+                    .args(["-TERM", &format!("-{pid}")])
+                    .status()
+                    .await;
+            }
             let _ = child.start_kill();
         }
     }
 
     async fn stop(&self) {
         if let Some(mut child) = self.child.lock().await.take() {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
+            let _ = terminate_child(&mut child).await;
         }
     }
 
