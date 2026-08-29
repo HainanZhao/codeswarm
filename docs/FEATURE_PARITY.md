@@ -30,7 +30,7 @@ matrix records behavior, not widget-level implementation details.
 | Persistent prompt/settings preferences | Partial | Roster, custom agents, Python-compatible prompt history, follow-tail, collapsed-details, notifications, thoughts, tool-expansion, density, scrollbar, and diff view persist; theme/focus preferences do not. |
 | Rich Markdown/diff views | Partial | Tool payloads are retained for lazy expansion/export, unified patches support inline or side-by-side views with line colors, and basic Markdown headings/fences are styled; full Markdown layout remains intentionally unported. |
 | OS notifications/sounds | Partial | Optional `notify-send`/`osascript` plus terminal bell completion notifications are available from `/config`; focus-aware delivery and named sound assets are not yet ported. |
-| Session history browser | Partial | Rust provides event replay and bounded prompt history, but the Python client's persisted multi-session SQLite browser/restore flow is not yet wired into the launcher. |
+| Session history browser | Not applicable | The Python baseline persisted session rows for adapter resume, but exposed no session browser, picker, CLI flag, or store action: `session_get_recent` is only exercised by persistence tests. Rust preserves the exposed behavior with event replay, adapter session loading, and bounded prompt history. |
 
 The Rust client is therefore functionally complete for the tmux-first relay
 path, but not yet a claim of 100% parity until the remaining partial/missing
