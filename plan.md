@@ -83,6 +83,13 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   keyboard expansion, keeping expensive detail off the scroll path.
 - [x] Core reducer tracks active-turn boundaries across text, thought, tool,
   permission, and terminal events for deterministic relay handoff.
+- [x] Added \`RelayHost\` orchestration over live adapter hosts, including
+  sequential dispatch, pause/collapse handling, public-context routing, and
+  dispatch-history tests.
+- [x] Added saved-roster launcher decisions that filter stale identities,
+  preserve order, and open the agent store when no saved roster resolves.
+- [x] Integrated resize settling and latest-state frame recovery into a
+  reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
   \`make rust-tmux\`.
 
