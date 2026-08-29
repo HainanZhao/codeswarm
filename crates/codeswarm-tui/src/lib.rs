@@ -1129,7 +1129,7 @@ impl App {
                 self.agent_states.insert(*slot, "error".into());
                 self.failed_agent = Some(*slot);
                 self.status = if *started {
-                    format!("crashed: {detail}")
+                    format!("crashed: {detail} · /reload")
                 } else {
                     format!("failed to start: {detail}")
                 };
@@ -2374,6 +2374,7 @@ mod tests {
                 .iter()
                 .any(|cell| cell.fg == ratatui::style::Color::Red)
         );
+        assert!(app.status.contains("/reload"));
     }
 
     #[test]
