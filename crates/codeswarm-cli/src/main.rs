@@ -1135,7 +1135,7 @@ fn run_relay_task(
                 Some(AdapterControl::Resume) => relay.resume(),
                 Some(AdapterControl::SetStrategy(strategy)) => relay.set_strategy(strategy),
                 Some(AdapterControl::SetMode(mode)) => {
-                    if let Err(error) = relay.set_mode(mode).await {
+                    if let Err(error) = relay.set_policy(mode).await {
                         let _ = sender.send(Err(error));
                     }
                 }

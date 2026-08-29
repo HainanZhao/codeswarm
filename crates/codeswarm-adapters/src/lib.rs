@@ -416,6 +416,40 @@ impl RelayHost {
         Ok(())
     }
 
+    /// Translate a CodeSwarm semantic policy to each adapter's currently
+    /// advertised native mode, falling back to conventional IDs before the
+    /// first catalog update arrives.
+    pub async fn set_policy(&mut self, policy: String) -> AdapterResult<()> {
+        let policy_id = match policy.as_str() {
+            "plan" => "codeswarm:mode:plan",
+            "default" | "manual" => "codeswarm:mode:manual",
+            "accept-edits" => "codeswarm:mode:accept-edits",
+            "full-access" | "auto" | "autopilot" => "codeswarm:mode:full-access",
+            _ => policy.as_str(),
+        };
+        for host in &mut self.hosts {
+            if !host.adapter().capabilities().supports_modes {
+                continue;
+            }
+            let slot = host.adapter().slot();
+            let native = host
+                .state
+                .slots
+                .get(slot)
+                .and_then(|agent| codeswarm_core::policy::resolve(policy_id, &agent.modes))
+                .map(|mode| mode.id)
+                .unwrap_or_else(|| match policy_id {
+                    "codeswarm:mode:plan" => "plan".into(),
+                    "codeswarm:mode:manual" => "default".into(),
+                    "codeswarm:mode:accept-edits" => "accept-edits".into(),
+                    "codeswarm:mode:full-access" => "full-access".into(),
+                    other => other.into(),
+                });
+            host.set_mode(native).await?;
+        }
+        Ok(())
+    }
+
     pub async fn reload(&mut self, slot: RosterSlot) -> AdapterResult<()> {
         let host = self
             .hosts
