@@ -64,6 +64,10 @@ pub struct PermissionRequest {
     pub id: String,
     pub title: String,
     pub options: Vec<String>,
+    /// Protocol identities aligned by index with `options`. Empty entries
+    /// fall back to the visible option label for legacy/native adapters.
+    #[serde(default)]
+    pub option_ids: Vec<String>,
 }
 
 /// The normalized answer to an adapter permission request. Native adapters

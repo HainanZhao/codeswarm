@@ -2354,19 +2354,26 @@ fn parse_permission_event(
         .and_then(Value::as_str)
         .unwrap_or("Agent requests permission")
         .to_owned();
-    let options = options
+    let (options, option_ids) = options
         .and_then(Value::as_array)
         .map(|options| {
             options
                 .iter()
                 .filter_map(|option| {
-                    option
+                    let label = option
                         .get("name")
                         .or_else(|| option.get("optionId"))
+                        .and_then(Value::as_str)?
+                        .to_owned();
+                    let option_id = option
+                        .get("optionId")
+                        .or_else(|| option.get("id"))
                         .and_then(Value::as_str)
                         .map(str::to_owned)
+                        .unwrap_or_else(|| label.clone());
+                    Some((label, option_id))
                 })
-                .collect()
+                .unzip()
         })
         .unwrap_or_default();
     Some(AgentEvent::Permission {
@@ -2375,6 +2382,7 @@ fn parse_permission_event(
             id: request_id.to_owned(),
             title,
             options,
+            option_ids,
         },
     })
 }
@@ -2647,7 +2655,7 @@ mod tests {
     fn parses_acp_permission_requests() {
         let event = parse_acp_notification(
             0,
-            r#"{"method":"session/update","params":{"update":{"sessionUpdate":"request_permission","toolCall":{"toolCallId":"t1","title":"Write file"},"options":[{"name":"Allow once"},{"optionId":"Reject"}]}}}"#,
+            r#"{"method":"session/update","params":{"update":{"sessionUpdate":"request_permission","toolCall":{"toolCallId":"t1","title":"Write file"},"options":[{"name":"Allow once","optionId":"allow-once"},{"name":"Reject","optionId":"reject"}]}}}"#,
         )
         .expect("valid permission")
         .expect("permission event");
@@ -2657,6 +2665,7 @@ mod tests {
                 if request.id == "t1"
                     && request.title == "Write file"
                     && request.options == ["Allow once", "Reject"]
+                    && request.option_ids == ["allow-once", "reject"]
         ));
     }
 
@@ -2674,6 +2683,7 @@ mod tests {
                 if request.id == "17"
                     && request.title == "Write file"
                     && request.options == ["allow-once", "reject"]
+                    && request.option_ids == ["allow-once", "reject"]
         ));
     }
 
@@ -2859,7 +2869,7 @@ mod tests {
             std::process::id()
         ));
         let script = format!(
-            r#"read _; echo '{{"jsonrpc":"2.0","id":1,"result":{{"agentCapabilities":{{}}}}}}'; read _; echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s1"}}}}'; read _; echo '{{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{{"toolCall":{{"title":"Write file"}},"options":[{{"optionId":"allow-once"}}]}}}}'; read answer; printf '%s' "$answer" > '{}'; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}'"#,
+            r#"read _; echo '{{"jsonrpc":"2.0","id":1,"result":{{"agentCapabilities":{{}}}}}}'; read _; echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s1"}}}}'; read _; echo '{{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{{"toolCall":{{"title":"Write file"}},"options":[{{"optionId":"allow-once","name":"Allow once"}}]}}}}'; read answer; printf '%s' "$answer" > '{}'; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}'"#,
             path.display()
         );
         let mut adapter = AcpAdapter::new(
@@ -2878,6 +2888,8 @@ mod tests {
             adapter.next_event().await,
             Some(Ok(AgentEvent::Permission { request, .. }))
                 if request.id == "9"
+                    && request.options == ["Allow once"]
+                    && request.option_ids == ["allow-once"]
         ));
         adapter
             .answer_permission(

@@ -15,7 +15,7 @@ matrix records behavior, not widget-level implementation details.
 | Prompt editing/history/completion | Implemented | `tui-textarea`, bounded history, slash completion. |
 | Cached transcript/long output | Implemented | Logical blocks, lazy details, viewport cache, tmux benchmark. |
 | Tool/terminal/thought lifecycle | Implemented | Normalized events, collapsed detail blocks, root-bound ACP filesystem mediation, and client-mediated terminal create/output/wait/kill/release. |
-| Permission prompts | Implemented | Keyboard focus and ACP response routing. |
+| Permission prompts | Implemented | Keyboard focus, readable option labels, stable ACP `optionId` routing, and cancellation. |
 | Relay roster mode | Implemented | Sequential automatic ring with max-round safety. |
 | Relay manual mode | Implemented | Explicitly targeted follow-ups; no implicit handoff. |
 | Relay pair mode | Implemented | Owner/reviewer alternation. |

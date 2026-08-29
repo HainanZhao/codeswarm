@@ -63,6 +63,7 @@ pub enum PermissionAction {
         request_id: String,
         option_index: usize,
         option: String,
+        option_id: String,
     },
     Cancel {
         slot: usize,
@@ -211,6 +212,7 @@ pub struct PermissionPrompt {
     pub request_id: String,
     pub title: String,
     pub options: Vec<String>,
+    pub option_ids: Vec<String>,
     selected: usize,
 }
 
@@ -572,12 +574,14 @@ impl PermissionPrompt {
         request_id: impl Into<String>,
         title: impl Into<String>,
         options: Vec<String>,
+        option_ids: Vec<String>,
     ) -> Self {
         Self {
             slot,
             request_id: request_id.into(),
             title: title.into(),
             options,
+            option_ids,
             selected: 0,
         }
     }
@@ -1378,6 +1382,7 @@ impl App {
                     request.id.clone(),
                     request.title.clone(),
                     request.options.clone(),
+                    request.option_ids.clone(),
                 ));
             }
             AgentEvent::Terminal { slot, event } => {
@@ -1625,11 +1630,18 @@ impl App {
                 let Some(option) = request.selected_option().map(str::to_owned) else {
                     return PermissionAction::Ignored;
                 };
+                let option_id = request
+                    .option_ids
+                    .get(request.selected)
+                    .cloned()
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or_else(|| option.clone());
                 let action = PermissionAction::Answer {
                     slot: request.slot,
                     request_id: request.request_id.clone(),
                     option_index: request.selected,
                     option,
+                    option_id,
                 };
                 self.permission = None;
                 self.status = "permission answered".into();
@@ -2893,6 +2905,7 @@ mod tests {
                 id: "narrow-permission".into(),
                 title: "Allow this operation?".into(),
                 options: vec!["Allow".into(), "Deny".into(), "Always".into()],
+                option_ids: Vec::new(),
             },
         });
         app.toggle_keyboard_help();
@@ -2924,6 +2937,7 @@ mod tests {
                 id: "permission".into(),
                 title: "Allow operation?".into(),
                 options: vec!["Allow".into(), "Deny".into()],
+                option_ids: Vec::new(),
             },
         });
         app.toggle_keyboard_help();
@@ -3783,6 +3797,7 @@ mod tests {
                 id: "permission-7".into(),
                 title: "Write to the workspace".into(),
                 options: vec!["Allow once".into(), "Always allow".into(), "Deny".into()],
+                option_ids: vec!["allow-once".into(), "always".into(), "deny".into()],
             },
         });
 
@@ -3802,6 +3817,7 @@ mod tests {
                 request_id: "permission-7".into(),
                 option_index: 2,
                 option: "Deny".into(),
+                option_id: "deny".into(),
             }
         );
         assert!(app.permission.is_none());
@@ -3816,6 +3832,7 @@ mod tests {
                 id: "first".into(),
                 title: "First".into(),
                 options: vec!["one".into(), "two".into()],
+                option_ids: Vec::new(),
             },
         });
         assert_eq!(
@@ -3828,6 +3845,7 @@ mod tests {
                 id: "replacement".into(),
                 title: "Replacement".into(),
                 options: vec!["only choice".into()],
+                option_ids: Vec::new(),
             },
         });
         assert_eq!(
@@ -3857,6 +3875,7 @@ mod tests {
                 id: "permission-1".into(),
                 title: "Run this command?".into(),
                 options: vec!["Allow".into(), "Deny".into()],
+                option_ids: Vec::new(),
             },
         });
         terminal
@@ -3883,6 +3902,7 @@ mod tests {
                 id: "empty".into(),
                 title: "No choices".into(),
                 options: Vec::new(),
+                option_ids: Vec::new(),
             },
         });
         assert_eq!(

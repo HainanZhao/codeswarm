@@ -92,12 +92,12 @@ fn dispatch_permission_action(
         PermissionAction::Answer {
             slot,
             request_id,
-            option,
+            option_id,
             ..
         } => AdapterControl::Permission {
             slot,
             request_id,
-            answer: PermissionAnswer::Selected { option_id: option },
+            answer: PermissionAnswer::Selected { option_id },
         },
         PermissionAction::Cancel { slot, request_id } => AdapterControl::Permission {
             slot,
@@ -2255,6 +2255,7 @@ mod tests {
                 request_id: "request-7".into(),
                 option_index: 1,
                 option: "allow-once".into(),
+                option_id: "allow-once".into(),
             }
         ));
         assert!(matches!(
