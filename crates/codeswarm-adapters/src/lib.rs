@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use async_trait::async_trait;
-use codeswarm_core::{AgentCapabilities, AgentEvent, Mode, RosterSlot};
+use codeswarm_core::{AgentCapabilities, AgentEvent, Mode, RosterSlot, ToolStatus, ToolUpdate};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -312,14 +312,48 @@ fn parse_agy_line(slot: RosterSlot, line: &str) -> AdapterResult<Option<AgentEve
                 .and_then(Value::as_str)
                 .is_some_and(|kind| kind == "agent_response");
             let text = update.get("text_delta").and_then(Value::as_str);
-            Ok(is_response
+            let response = is_response
                 .then(|| text.map(str::to_owned))
                 .flatten()
                 .filter(|text| !text.is_empty())
-                .map(|text| AgentEvent::Text { slot, text }))
+                .map(|text| AgentEvent::Text { slot, text });
+            Ok(response.or_else(|| parse_agy_tool(slot, &value)))
         }
         _ => Ok(None),
     }
+}
+
+fn parse_agy_tool(slot: RosterSlot, value: &Value) -> Option<AgentEvent> {
+    let update = value.get("step_update")?;
+    if update.get("step_type")?.as_str()? != "tool" {
+        return None;
+    }
+    let step_index = update.get("step_index")?.as_i64()?;
+    let title = update
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("Tool call")
+        .replace('_', " ");
+    let status = match update.get("state").and_then(Value::as_str) {
+        Some("DONE") => ToolStatus::Completed,
+        Some("FAILED") => ToolStatus::Failed,
+        Some("ACTIVE") => ToolStatus::Running,
+        _ => ToolStatus::Pending,
+    };
+    let detail = update
+        .get("tool_info")
+        .and_then(|info| info.get("output"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    Some(AgentEvent::Tool {
+        slot,
+        update: ToolUpdate {
+            id: format!("agy-tool-{step_index}"),
+            title,
+            status,
+            detail,
+        },
+    })
 }
 
 /// Stdio ACP transport. Protocol-specific response handling belongs here,
@@ -485,13 +519,40 @@ fn parse_acp_notification(slot: RosterSlot, line: &str) -> AdapterResult<Option<
         (Some("agent_thought_chunk"), Some(text)) if !text.is_empty() => {
             Ok(Some(AgentEvent::Thought { slot, text }))
         }
+        (Some("tool_call"), _) | (Some("tool_call_update"), _) => {
+            let id = update
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown-tool")
+                .to_owned();
+            let title = update
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("Tool call")
+                .to_owned();
+            let status = match update.get("status").and_then(Value::as_str) {
+                Some("completed") => ToolStatus::Completed,
+                Some("failed") => ToolStatus::Failed,
+                Some("in_progress") => ToolStatus::Running,
+                _ => ToolStatus::Pending,
+            };
+            Ok(Some(AgentEvent::Tool {
+                slot,
+                update: ToolUpdate {
+                    id,
+                    title,
+                    status,
+                    detail: None,
+                },
+            }))
+        }
         _ => Ok(None),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use codeswarm_core::AgentEvent;
+    use codeswarm_core::{AgentEvent, ToolStatus};
 
     use super::{parse_acp_notification, parse_agy_line};
 
@@ -527,5 +588,42 @@ mod tests {
                 text: "hello".into(),
             }
         );
+    }
+
+    #[test]
+    fn parses_tool_lifecycle_from_each_protocol() {
+        let agy = parse_agy_line(
+            1,
+            r#"{"event":"step_update","step_update":{"step_type":"tool","step_index":4,"tool_name":"run_command","state":"DONE","tool_info":{"output":"ok"}}}"#,
+        )
+        .expect("valid native tool")
+        .expect("tool event");
+        assert!(matches!(
+            agy,
+            AgentEvent::Tool {
+                update: codeswarm_core::ToolUpdate {
+                    status: ToolStatus::Completed,
+                    ..
+                },
+                ..
+            }
+        ));
+
+        let acp = parse_acp_notification(
+            1,
+            r#"{"method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"t1","title":"Run tests","status":"failed"}}}"#,
+        )
+        .expect("valid ACP tool")
+        .expect("tool event");
+        assert!(matches!(
+            acp,
+            AgentEvent::Tool {
+                update: codeswarm_core::ToolUpdate {
+                    status: ToolStatus::Failed,
+                    ..
+                },
+                ..
+            }
+        ));
     }
 }

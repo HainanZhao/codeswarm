@@ -32,6 +32,37 @@ pub struct AgentCapabilities {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ToolUpdate {
+    pub id: String,
+    pub title: String,
+    pub status: ToolStatus,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ToolStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PermissionRequest {
+    pub id: String,
+    pub title: String,
+    pub options: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum TerminalEvent {
+    Created { id: String, command: String },
+    Output { id: String, text: String },
+    Exited { id: String, code: i32 },
+    Released { id: String },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum AgentEvent {
     Ready {
         slot: RosterSlot,
@@ -49,6 +80,18 @@ pub enum AgentEvent {
     Thought {
         slot: RosterSlot,
         text: String,
+    },
+    Tool {
+        slot: RosterSlot,
+        update: ToolUpdate,
+    },
+    Permission {
+        slot: RosterSlot,
+        request: PermissionRequest,
+    },
+    Terminal {
+        slot: RosterSlot,
+        event: TerminalEvent,
     },
     TurnComplete {
         slot: RosterSlot,
@@ -131,7 +174,10 @@ pub fn reduce(state: &mut SessionState, event: AgentEvent) -> Vec<Effect> {
             state.public_text.push((slot, text));
             vec![Effect::Render]
         }
-        AgentEvent::Thought { .. } => vec![Effect::Render],
+        AgentEvent::Thought { .. }
+        | AgentEvent::Tool { .. }
+        | AgentEvent::Permission { .. }
+        | AgentEvent::Terminal { .. } => vec![Effect::Render],
         AgentEvent::TurnComplete { .. } => {
             state.active_slot = None;
             let next =
