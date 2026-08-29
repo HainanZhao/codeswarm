@@ -108,6 +108,9 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   fixtures covering omitted, malformed, reordered, and replaced external state.
 - [x] Added a real tmux performance harness covering 5k-word scroll,
   prompt-input latency, warm capture p99, and resize-storm settling.
+- [x] Visual tmux smoke coverage exercises inline layout, scroll/follow-tail,
+  keyboard help, prompt/status regions, and clean quit behavior; fixed inline
+  viewport geometry so scrolling no longer snaps back to the tail.
 - [x] Added terminal queue/help interaction state: queued and direct prompts,
   target selection, cancellation, follow-tail behavior, and inline keyboard
   help rendering.
