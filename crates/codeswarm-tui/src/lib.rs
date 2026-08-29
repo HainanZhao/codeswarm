@@ -127,6 +127,7 @@ pub enum StoreAction {
     Ignored,
     Changed,
     Save(Vec<usize>),
+    Directory(String),
     Launch(Vec<usize>),
     Close,
 }
@@ -518,6 +519,8 @@ pub struct App {
     store_selected: usize,
     store_agents: Vec<StoreAgent>,
     store_status: String,
+    store_directory: String,
+    store_editing_directory: bool,
     prompt_editor: PromptEditor,
     agent_names: BTreeMap<usize, String>,
     agent_states: BTreeMap<usize, String>,
@@ -550,6 +553,8 @@ impl Default for App {
             store_selected: 0,
             store_agents: Vec::new(),
             store_status: String::new(),
+            store_directory: String::new(),
+            store_editing_directory: false,
             prompt_editor: PromptEditor::default(),
             agent_names: BTreeMap::new(),
             agent_states: BTreeMap::new(),
@@ -667,6 +672,44 @@ impl App {
         self.store_selected = 0;
         self.store_visible = true;
         self.store_status.clear();
+        self.store_editing_directory = false;
+    }
+
+    pub fn set_store_directory(&mut self, directory: impl Into<String>) {
+        self.store_directory = directory.into();
+    }
+
+    pub fn store_directory(&self) -> &str {
+        &self.store_directory
+    }
+
+    pub fn store_editing_directory(&self) -> bool {
+        self.store_editing_directory
+    }
+
+    pub fn begin_store_directory_edit(&mut self) {
+        self.store_editing_directory = true;
+        self.prompt_editor.set_text(self.store_directory.clone());
+    }
+
+    pub fn cancel_store_directory_edit(&mut self) {
+        self.store_editing_directory = false;
+        self.prompt_editor.clear();
+    }
+
+    pub fn handle_store_directory_input(&mut self, input: Input) -> StoreAction {
+        if !self.store_editing_directory {
+            return StoreAction::Ignored;
+        }
+        match self.prompt_editor.handle_input(input) {
+            PromptAction::Submit(directory) => {
+                self.store_directory = directory.clone();
+                self.store_editing_directory = false;
+                StoreAction::Directory(directory)
+            }
+            PromptAction::Changed | PromptAction::Completion { .. } => StoreAction::Changed,
+            PromptAction::Ignored => StoreAction::Ignored,
+        }
     }
 
     pub fn store_visible(&self) -> bool {
@@ -1296,6 +1339,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     app.sync_prompt_editor();
     let area = frame.area();
     if app.store_visible {
+        if app.store_editing_directory {
+            render_store_directory(frame, app, area);
+            return;
+        }
         render_store(frame, app, area);
         return;
     }
@@ -1712,10 +1759,18 @@ fn render_store(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Line::styled(
             if compact {
-                "Space select · Ctrl+S save · Enter run"
+                "Ctrl+D dir · Ctrl+S save · Enter run"
             } else {
-                "Space select · Ctrl+S save · Enter save + launch · Esc quit"
+                "Space select · Ctrl+D dir · Ctrl+S save · Enter launch · Esc quit"
             },
+            Style::default().fg(Color::Gray),
+        ),
+        Line::styled(
+            format!(
+                " {}{}",
+                if compact { "Dir: " } else { "Workspace: " },
+                compact_label(app.store_directory(), if compact { 24 } else { 64 })
+            ),
             Style::default().fg(Color::Gray),
         ),
     ];
@@ -1799,6 +1854,40 @@ fn render_store(frame: &mut Frame, app: &App, area: Rect) {
                 .border_style(Style::default().fg(Color::Cyan)),
         )
         .render(modal, frame.buffer_mut());
+}
+
+fn render_store_directory(frame: &mut Frame, app: &mut App, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let width = area.width.clamp(32, 80);
+    let height = area.height.clamp(4, 8);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width.min(area.width),
+        height.min(area.height),
+    );
+    frame.render_widget(Clear, modal);
+    let inner = Rect::new(
+        modal.x.saturating_add(1),
+        modal.y.saturating_add(1),
+        modal.width.saturating_sub(2),
+        modal.height.saturating_sub(2),
+    );
+    Paragraph::new(Line::styled(
+        " Enter apply · Esc cancel",
+        Style::default().fg(Color::Gray),
+    ))
+    .block(
+        Block::default()
+            .title(" Workspace directory ")
+            .title_style(Style::default().fg(Color::Cyan).bold())
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    )
+    .render(modal, frame.buffer_mut());
+    app.prompt_editor.render(frame, inner);
 }
 
 fn render_permission(buffer: &mut Buffer, area: Rect, request: &PermissionPrompt) {
@@ -2528,6 +2617,31 @@ mod tests {
             rendered.contains("custom-agent --acp"),
             "rendered={rendered:?}"
         );
+    }
+
+    #[test]
+    fn store_directory_editor_accepts_a_new_workspace() {
+        let mut app = App::default();
+        app.show_store(vec![StoreAgent {
+            identity: "agent.example".into(),
+            name: "Agent".into(),
+            adapter: "ACP".into(),
+            command: "agent".into(),
+            available: true,
+            selected: false,
+        }]);
+        app.set_store_directory("");
+        app.begin_store_directory_edit();
+        app.handle_store_directory_input(key(Key::Char('/')));
+        for character in "tmp".chars() {
+            app.handle_store_directory_input(key(Key::Char(character)));
+        }
+        assert_eq!(
+            app.handle_store_directory_input(key(Key::Enter)),
+            StoreAction::Directory("/tmp".into())
+        );
+        assert_eq!(app.store_directory(), "/tmp");
+        assert!(!app.store_editing_directory());
     }
 
     #[test]

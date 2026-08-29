@@ -409,6 +409,12 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
         })
         .collect();
     app.show_store(agents);
+    app.set_store_directory(
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .display()
+            .to_string(),
+    );
     loop {
         terminal.draw(|frame| render(frame, &mut app))?;
         if !event::poll(Duration::from_millis(50))? {
@@ -420,6 +426,28 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
         if key.kind != KeyEventKind::Press {
             continue;
         }
+        if app.store_editing_directory() {
+            if key.code == KeyCode::Esc {
+                app.cancel_store_directory_edit();
+            } else if let StoreAction::Directory(directory) =
+                app.handle_store_directory_input(Input::from(key))
+            {
+                match PathBuf::from(&directory).canonicalize() {
+                    Ok(path) if path.is_dir() => match std::env::set_current_dir(&path) {
+                        Ok(()) => {
+                            app.set_store_directory(path.display().to_string());
+                            app.set_store_status(format!("Workspace: {}", path.display()));
+                        }
+                        Err(error) => app.set_store_status(format!("Directory failed: {error}")),
+                    },
+                    Ok(path) => {
+                        app.set_store_status(format!("Not a directory: {}", path.display()))
+                    }
+                    Err(error) => app.set_store_status(format!("Directory failed: {error}")),
+                }
+            }
+            continue;
+        }
         let store_key = match key.code {
             KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => Some(StoreKey::MoveUp),
             KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => Some(StoreKey::MoveDown),
@@ -428,6 +456,10 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
             KeyCode::Char(' ') => Some(StoreKey::Toggle),
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(StoreKey::Save)
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.begin_store_directory_edit();
+                None
             }
             KeyCode::Enter => Some(StoreKey::Confirm),
             KeyCode::Esc | KeyCode::Char('q') => Some(StoreKey::Cancel),
@@ -470,6 +502,7 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
                 return run_roster(terminal, specs, None, 0, 100);
             }
             StoreAction::Close => return Ok(()),
+            StoreAction::Directory(_) => {}
             StoreAction::Ignored | StoreAction::Changed => {}
         }
     }
