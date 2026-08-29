@@ -80,6 +80,7 @@ Inside the conversation prompt:
 - `/pause` and `/resume` control a relay.
 - `/reload` retries the most recently crashed agent in its roster slot.
 - `/clear` clears the local transcript; `/close` exits the session.
+- `!command` runs a bounded local shell command in the selected workspace.
 
 The interface keeps streamed output coalesced and transcript rows cached, so a
 5,000-word response remains interactive in tmux. Run the performance harness

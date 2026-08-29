@@ -62,6 +62,7 @@ terminal output, and UI history stay local to the producing agent.
 - `/pause` and `/resume` — pause or resume a multi-agent relay.
 - `/reload` — retry the most recently crashed adapter in place.
 - `/clear` — clear the local transcript.
+- `!command` — run a bounded shell command in the current workspace.
 - `/cancel` — cancel the active turn when an adapter supports cancellation.
 - `/close`, `/quit`, and `/exit` — leave the session.
 

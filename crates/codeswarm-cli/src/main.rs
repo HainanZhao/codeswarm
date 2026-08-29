@@ -1168,6 +1168,7 @@ fn run_terminal(
     ]);
     let mut selected_slot = selected_slot;
     let event_log = event_log().ok();
+    let (shell_sender, shell_receiver) = mpsc::channel::<AdapterResult<AgentEvent>>();
     let mut pending_permission: Option<(usize, String)> = None;
     let mut turn_active = false;
     let mut cancel_requested_at: Option<Instant> = None;
@@ -1226,6 +1227,26 @@ fn run_terminal(
                         let active_agent = app.active_agent.clone();
                         app.set_header(active_agent, format!("error: {error}"));
                     }
+                }
+            }
+        }
+        while let Ok(event) = shell_receiver.try_recv() {
+            match event {
+                Ok(event) => {
+                    if matches!(&event, AgentEvent::TurnComplete { .. }) {
+                        turn_active = false;
+                        cancel_requested_at = None;
+                    } else {
+                        turn_active = true;
+                    }
+                    if let Some(log) = &event_log {
+                        let _ = log.append(&event);
+                    }
+                    app.apply_event(&event);
+                }
+                Err(error) => {
+                    turn_active = false;
+                    app.set_header(app.active_agent.clone(), format!("error: {error}"));
                 }
             }
         }
@@ -1425,9 +1446,9 @@ fn run_terminal(
                                     format!("$ {command}"),
                                     false,
                                 );
-                                app.status = format!(
-                                    "local shell commands are not yet supported: {command}"
-                                );
+                                turn_active = true;
+                                app.status = "running local command".into();
+                                spawn_local_shell(shell_sender.clone(), command.to_owned());
                             }
                         } else if let Some(local) = app.handle_local_command(&prompt) {
                             match local {
@@ -1576,6 +1597,52 @@ fn export_conversation(app: &App) -> std::io::Result<PathBuf> {
     }
     std::fs::write(&path, app.export_markdown())?;
     Ok(path)
+}
+
+fn spawn_local_shell(sender: Sender<AdapterResult<AgentEvent>>, command: String) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    thread::spawn(move || {
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .current_dir(cwd)
+            .output();
+        match output {
+            Ok(output) => {
+                const MAX_SHELL_OUTPUT: usize = 64 * 1024;
+                let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+                if text.len() > MAX_SHELL_OUTPUT {
+                    text.truncate(MAX_SHELL_OUTPUT);
+                    text.push_str("\n[CodeSwarm truncated local command output]\n");
+                }
+                if !output.stderr.is_empty() {
+                    text.push_str(&String::from_utf8_lossy(&output.stderr));
+                }
+                if !text.is_empty() {
+                    let _ = sender.send(Ok(AgentEvent::Terminal {
+                        slot: 0,
+                        event: codeswarm_core::TerminalEvent::Output {
+                            id: "local-shell".into(),
+                            text,
+                        },
+                    }));
+                }
+                let _ = sender.send(Ok(AgentEvent::Terminal {
+                    slot: 0,
+                    event: codeswarm_core::TerminalEvent::Exited {
+                        id: "local-shell".into(),
+                        code: output.status.code().unwrap_or(-1),
+                    },
+                }));
+                let _ = sender.send(Ok(AgentEvent::TurnComplete { slot: 0 }));
+            }
+            Err(error) => {
+                let _ = sender.send(Err(AdapterError::Transport(format!(
+                    "local command failed: {error}"
+                ))));
+            }
+        }
+    });
 }
 
 fn event_log() -> std::io::Result<BufferedEventLog> {

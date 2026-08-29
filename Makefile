@@ -16,6 +16,7 @@ rust-tmux:
 	bash tests/tmux/smoke.sh
 	bash tests/tmux/store.sh
 	bash tests/tmux/config.sh
+	bash tests/tmux/shell.sh
 	bash tests/tmux/performance.sh
 
 diff-check:
