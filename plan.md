@@ -113,6 +113,9 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   help rendering.
 - [x] Added normalized terminal lifecycle parsing for ACP/native events and a
   deterministic replay/trace comparison command for cross-protocol fixtures.
+- [x] Enforced reviewer-only stop-token stripping and acknowledgment behavior
+  at relay-host handoff, so internal control tokens cannot leak into UI or
+  public context.
 - [x] Integrated resize settling and latest-state frame recovery into a
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
@@ -125,9 +128,8 @@ Still required before cutover:
 - [x] Wire the relay host into the Rust CLI roster UX, including native/ACP
   selection, selected-first routing, direct prompts, pause/resume, and live
   normalized event streaming.
-- [ ] Finish adapter parity for real terminal lifecycle operations, full mode
-  replacement/synchronization, reviewer-only stop semantics, and all roster
-  failure/reload branches.
+- [ ] Finish adapter parity for real terminal process lifecycle ownership, full
+  mode replacement/synchronization, and all roster failure/reload branches.
 - [x] Production terminal UI parity for the current rewrite slice: queue
   controls, permission answer focus, lazy tool/diff/terminal detail,
   launcher/settings persistence, and inline interaction behavior.
