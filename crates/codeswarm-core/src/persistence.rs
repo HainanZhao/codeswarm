@@ -328,8 +328,26 @@ impl SessionMetadataStore {
 
     pub fn write(&self, metadata: &SessionMetadata) -> Result<(), PersistenceError> {
         let json = metadata.to_json()?;
-        fs::write(&self.path, format!("{json}\n"))?;
-        Ok(())
+        let temporary = temporary_path(&self.path);
+        let result = (|| {
+            if let Some(parent) = self.path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent)?;
+            }
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)?;
+            file.write_all(format!("{json}\n").as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&temporary, &self.path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
     }
 
     pub fn migrate_in_place(&self) -> Result<MigrationReport, PersistenceError> {
@@ -554,6 +572,34 @@ mod tests {
         assert_eq!(report.source_version, Some(1));
         assert!(!report.changed);
         std::fs::remove_file(metadata_path).expect("cleanup");
+    }
+
+    #[test]
+    fn metadata_write_creates_parent_and_replaces_previous_snapshot() {
+        let path = temp_path("nested").join("session.json");
+        let store = SessionMetadataStore::open(&path);
+
+        let mut first = serde_json::Map::new();
+        first.insert("owner".into(), json!("Claude Code"));
+        store
+            .write(&SessionMetadata::new(first))
+            .expect("first write");
+
+        let mut second = serde_json::Map::new();
+        second.insert("owner".into(), json!("Codex CLI"));
+        second.insert("roster".into(), json!(["openai.com", "claude.ai"]));
+        store
+            .write(&SessionMetadata::new(second))
+            .expect("replacement write");
+
+        let loaded = store.read().expect("read").expect("snapshot");
+        assert_eq!(loaded.source_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(loaded.get("owner"), Some(&json!("Codex CLI")));
+        assert_eq!(
+            loaded.get("roster"),
+            Some(&json!(["openai.com", "claude.ai"]))
+        );
+        std::fs::remove_dir_all(path.parent().expect("parent")).expect("cleanup");
     }
 
     #[test]

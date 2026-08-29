@@ -20,15 +20,17 @@ use codeswarm_core::settings;
 use codeswarm_core::{AgentEvent, BufferedEventLog, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{
-    App, ConfigAction, ConfigKey, Input, LocalCommand, PermissionAction, PermissionKey,
-    PromptAction, QueuedPrompt, StoreAction, StoreAgent, StoreKey, render,
+    App, ConfigAction, ConfigKey, Input, Key as TuiKey, LocalCommand, PermissionAction,
+    PermissionKey, PromptAction, QueuedPrompt, StoreAction, StoreAgent, StoreKey, render,
 };
 use crossterm::{
     event::{
         self, DisableFocusChange, EnableFocusChange, Event, KeyCode, KeyEventKind, KeyModifiers,
     },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
+    },
 };
 use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
 
@@ -219,6 +221,9 @@ fn main() -> std::io::Result<()> {
             max_rounds,
         } => run_roster(&mut terminal, specs, prompt, first_slot, max_rounds),
     };
+    // Do not leave an agent-specific or blinking OSC title behind after the
+    // inline viewport exits back to the user's shell.
+    execute!(terminal.backend_mut(), SetTitle("CodeSwarm"))?;
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), DisableFocusChange)?;
     if alternate_screen {
@@ -737,6 +742,13 @@ fn load_ui_preferences(app: &mut App) {
         app.set_sounds_enabled(enabled);
     }
     if let Some(enabled) = value
+        .get("notifications")
+        .and_then(|notifications| notifications.get("blink_title"))
+        .and_then(serde_json::Value::as_bool)
+    {
+        app.set_blink_title_enabled(enabled);
+    }
+    if let Some(enabled) = value
         .get("agent")
         .and_then(|agent| agent.get("thoughts"))
         .and_then(serde_json::Value::as_bool)
@@ -837,6 +849,7 @@ fn reconcile_config_roster(
     app: &mut App,
     controls: &tokio::sync::mpsc::UnboundedSender<AdapterControl>,
     pending_adds: &mut BTreeSet<usize>,
+    pending_owner: &mut Option<usize>,
 ) -> Result<(), String> {
     let desired = app
         .config_agents()
@@ -858,20 +871,19 @@ fn reconcile_config_roster(
     // a peer slot, promote it before dropping any other selected peer.
     let desired_owner = &desired[0].name;
     if !live_slot_name(app, 0).eq_ignore_ascii_case(desired_owner) {
-        let Some(peer_slot) = find_live_slot(app, desired_owner) else {
-            // A newly selected owner can be added now, but cannot become the
-            // protected slot until its adapter advertises Ready. Preserve the
-            // change for the next launch and report the actionable limitation.
-            return Err(
-                "new owner will apply on the next launch; select a live peer to transfer now"
-                    .into(),
-            );
-        };
-        controls
-            .send(AdapterControl::Promote(peer_slot))
-            .map_err(|_| "unable to queue owner transfer".to_owned())?;
-        if !app.promote_agent(peer_slot) {
-            return Err("owner transfer target is not active".into());
+        if let Some(peer_slot) = find_live_slot(app, desired_owner) {
+            controls
+                .send(AdapterControl::Promote(peer_slot))
+                .map_err(|_| "unable to queue owner transfer".to_owned())?;
+            if !app.promote_agent(peer_slot) {
+                return Err("owner transfer target is not active".into());
+            }
+        } else {
+            // Match the Python coordinator's two-phase behavior: a catalog
+            // entry selected as the new owner is started as a normal peer,
+            // then promoted only after its Ready event proves the adapter is
+            // usable. The add loop below records the slot for that handoff.
+            *pending_owner = None;
         }
     }
 
@@ -901,7 +913,7 @@ fn reconcile_config_roster(
     }
 
     // Add selected catalog entries not represented by a live display name.
-    for agent in &desired {
+    for (position, agent) in desired.iter().enumerate() {
         if app
             .active_roster_slots()
             .into_iter()
@@ -915,11 +927,22 @@ fn reconcile_config_roster(
             AgentSpec::Acp(agent.command.clone())
         };
         let slot = app.agent_count();
+        if position == 0 && !live_slot_name(app, 0).eq_ignore_ascii_case(&agent.name) {
+            *pending_owner = Some(slot);
+        }
         controls
             .send(AdapterControl::Add(spec))
             .map_err(|_| "unable to queue agent addition".to_owned())?;
         app.set_agent_name(slot, agent.name.clone());
         pending_adds.insert(slot);
+    }
+
+    // Wait for the new owner's Ready event before reordering or dropping
+    // surrounding slots; until then slot zero still represents the old
+    // owner and any eager swap would invert the eventual promotion.
+    if pending_owner.is_some() {
+        app.mark_config_roster_saved();
+        return Ok(());
     }
 
     // Reorder the currently represented desired agents. Pending additions are
@@ -1013,6 +1036,7 @@ fn save_ui_preferences(app: &App) -> std::io::Result<()> {
         // Rust UI uses the shorter `enabled` spelling internally.
         notifications["turn_over"] = serde_json::Value::Bool(app.notifications_enabled());
         notifications["enable_sounds"] = serde_json::Value::Bool(app.sounds_enabled());
+        notifications["blink_title"] = serde_json::Value::Bool(app.blink_title_enabled());
         let agent = settings
             .entry("agent")
             .or_insert_with(|| serde_json::json!({}));
@@ -1685,8 +1709,11 @@ fn run_terminal(
 ) -> std::io::Result<()> {
     load_ui_preferences(app);
     load_config_agents(app);
+    if let Ok(root) = std::env::current_dir() {
+        app.set_workspace_root(root);
+    }
     app.load_prompt_history(load_prompt_history());
-    let mut completion_candidates = [
+    let completion_candidates = [
         "/add", "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/diff",
         "/exit", "/export", "/help", "/mode", "/pause", "/quit", "/reload", "/drop", "/promote",
         "/swap", "/resume",
@@ -1694,7 +1721,6 @@ fn run_terminal(
     .into_iter()
     .map(String::from)
     .collect::<Vec<_>>();
-    completion_candidates.extend(workspace_completion_candidates());
     app.set_prompt_completions(completion_candidates);
     let mut selected_slot = selected_slot;
     let event_log = event_log().ok();
@@ -1702,8 +1728,12 @@ fn run_terminal(
     let mut pending_permission: Option<(usize, String)> = None;
     let mut synced_mode_slots = std::collections::BTreeSet::new();
     let mut pending_adds = BTreeSet::new();
+    let mut pending_owner: Option<usize> = None;
+    let mut pending_owner_requested = false;
     let mut turn_active = false;
     let mut cancel_requested_at: Option<Instant> = None;
+    let mut title_blink_at = Instant::now();
+    let mut last_terminal_title = String::new();
     loop {
         if let Some(events) = &events {
             while let Ok(event) = events.try_recv() {
@@ -1721,6 +1751,29 @@ fn run_terminal(
                             }
                             AgentEvent::Ready { slot, .. } => {
                                 pending_adds.remove(slot);
+                                if pending_owner == Some(*slot) && !pending_owner_requested {
+                                    pending_owner_requested = true;
+                                    if let Some(controls) = &controls {
+                                        if controls.send(AdapterControl::Promote(*slot)).is_ok() {
+                                            app.status = format!(
+                                                "agent {} is ready; transferring ownership",
+                                                slot
+                                            );
+                                        } else {
+                                            app.status =
+                                                "new owner started but transfer could not be queued"
+                                                    .into();
+                                        }
+                                    }
+                                } else if *slot == 0
+                                    && pending_owner_requested
+                                    && let Some(promoted_slot) = pending_owner.take()
+                                {
+                                    pending_owner_requested = false;
+                                    if app.promote_agent(promoted_slot) {
+                                        app.status = "new owner is active".into();
+                                    }
+                                }
                             }
                             AgentEvent::Failed { .. } => {}
                             AgentEvent::ModesReplaced { slot, .. } => {
@@ -1735,9 +1788,11 @@ fn run_terminal(
                         }
                         if let AgentEvent::Permission { slot, request } = &event {
                             pending_permission = Some((*slot, request.id.clone()));
+                            app.terminal_alert(true);
                         }
                         if let AgentEvent::TurnComplete { .. } = &event {
                             pending_permission = None;
+                            app.clear_terminal_alerts();
                         }
                         if let Some(log) = &event_log {
                             let _ = log.append(&event);
@@ -1778,8 +1833,22 @@ fn run_terminal(
                         }
                     }
                     Err(error) => {
+                        let failed_owner_slot = pending_owner.take();
+                        if let Some(slot) = failed_owner_slot {
+                            app.remove_agent(slot);
+                        }
+                        pending_owner_requested = false;
                         for slot in std::mem::take(&mut pending_adds) {
                             app.remove_agent(slot);
+                        }
+                        if let Some(slot) = failed_owner_slot
+                            && let Some(controls) = &controls
+                        {
+                            // If promotion failed after the adapter started,
+                            // remove that appended slot from the coordinator
+                            // so a failed config transaction cannot leak a
+                            // live process into the next turn.
+                            let _ = controls.send(AdapterControl::Drop(slot));
                         }
                         if let Some(log) = &event_log {
                             let _ = log.flush();
@@ -1812,6 +1881,20 @@ fn run_terminal(
                     app.set_header(app.active_agent.clone(), format!("error: {error}"));
                 }
             }
+        }
+        if app.terminal_alert_active() && app.blink_title_enabled() {
+            if title_blink_at.elapsed() >= Duration::from_millis(500) {
+                app.toggle_terminal_title_blink();
+                title_blink_at = Instant::now();
+            }
+        } else if app.terminal_title_blink() {
+            app.toggle_terminal_title_blink();
+            title_blink_at = Instant::now();
+        }
+        let terminal_title = app.terminal_title();
+        if terminal_title != last_terminal_title {
+            execute!(terminal.backend_mut(), SetTitle(terminal_title.as_str()))?;
+            last_terminal_title = terminal_title;
         }
         terminal.draw(|frame| render(frame, app))?;
         if !event::poll(Duration::from_millis(50))? {
@@ -1867,7 +1950,12 @@ fn run_terminal(
                             let reconcile = controls.as_ref().map_or_else(
                                 || Ok(()),
                                 |controls| {
-                                    reconcile_config_roster(app, controls, &mut pending_adds)
+                                    reconcile_config_roster(
+                                        app,
+                                        controls,
+                                        &mut pending_adds,
+                                        &mut pending_owner,
+                                    )
                                 },
                             );
                             if let Err(error) = save_result {
@@ -1904,6 +1992,9 @@ fn run_terminal(
                         }
                         return Ok(());
                     }
+                    KeyCode::Esc if pending_permission.is_none() && app.path_picker_visible() => {
+                        let _ = app.handle_path_picker_key(TuiKey::Esc);
+                    }
                     KeyCode::Esc if pending_permission.is_none() => {
                         if let Some(controls) = &controls {
                             let _ = controls.send(AdapterControl::Stop);
@@ -1913,6 +2004,7 @@ fn run_terminal(
                     KeyCode::Esc if pending_permission.is_some() => {
                         let action = app.handle_permission_key(PermissionKey::Cancel);
                         if dispatch_permission_action(controls.as_ref(), action) {
+                            app.clear_terminal_alerts();
                             pending_permission = None;
                         }
                     }
@@ -1925,6 +2017,7 @@ fn run_terminal(
                     KeyCode::Enter if pending_permission.is_some() => {
                         let action = app.handle_permission_key(PermissionKey::Confirm);
                         if dispatch_permission_action(controls.as_ref(), action) {
+                            app.clear_terminal_alerts();
                             pending_permission = None;
                         }
                     }
@@ -1934,6 +2027,15 @@ fn run_terminal(
                         } else {
                             app.status = "queue empty".into();
                         }
+                    }
+                    KeyCode::Up if app.path_picker_visible() => {
+                        let _ = app.handle_path_picker_key(TuiKey::Up);
+                    }
+                    KeyCode::Down if app.path_picker_visible() => {
+                        let _ = app.handle_path_picker_key(TuiKey::Down);
+                    }
+                    KeyCode::Enter if app.path_picker_visible() => {
+                        let _ = app.handle_path_picker_key(TuiKey::Enter);
                     }
                     KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
                         if app.move_queue_selection(-1).is_some() {
@@ -2221,6 +2323,7 @@ fn run_terminal(
                                             Ok(path) if path.is_dir() => {
                                                 match std::env::set_current_dir(&path) {
                                                     Ok(()) => {
+                                                        app.refresh_workspace_root(path.clone());
                                                         app.status =
                                                             format!("workspace: {}", path.display())
                                                     }
@@ -2411,46 +2514,6 @@ fn prompt_history_path() -> Option<PathBuf> {
         .map(|root| root.join("codeswarm").join("prompt-history.jsonl"))
 }
 
-/// Collect a bounded, symlink-free candidate set for `@path` completion.
-/// Discovery is intentionally shallow and capped so startup remains cheap in
-/// large repositories; the existing editor performs prefix matching from its
-/// in-memory candidate cache.
-fn workspace_completion_candidates() -> Vec<String> {
-    let root = std::env::current_dir().ok();
-    let Some(root) = root else { return Vec::new() };
-    let mut pending = vec![(root.clone(), PathBuf::new(), 0_u8)];
-    let mut candidates = Vec::new();
-    while let Some((directory, relative, depth)) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if candidates.len() >= 512 {
-                return candidates;
-            }
-            let file_type = match entry.file_type() {
-                Ok(file_type) => file_type,
-                Err(_) => continue,
-            };
-            if file_type.is_symlink() {
-                continue;
-            }
-            let name = entry.file_name();
-            if name == ".git" || name == "node_modules" || name == "target" {
-                continue;
-            }
-            let child_relative = relative.join(&name);
-            let display = child_relative.to_string_lossy().replace('\\', "/");
-            candidates.push(format!("@{display}"));
-            if file_type.is_dir() && depth < 3 {
-                pending.push((entry.path(), child_relative, depth + 1));
-            }
-        }
-    }
-    candidates.sort();
-    candidates
-}
-
 fn load_prompt_history() -> Vec<String> {
     let Some(path) = prompt_history_path() else {
         return Vec::new();
@@ -2618,13 +2681,39 @@ mod tests {
         }]);
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut pending = BTreeSet::new();
-        reconcile_config_roster(&mut app, &sender, &mut pending).expect("reconcile");
+        let mut pending_owner = None;
+        reconcile_config_roster(&mut app, &sender, &mut pending, &mut pending_owner)
+            .expect("reconcile");
         assert!(matches!(
             receiver.try_recv(),
             Ok(AdapterControl::Promote(1))
         ));
         assert_eq!(app.agent_name(0), "Codex CLI");
         assert_eq!(app.active_roster_slots(), vec![0]);
+    }
+
+    #[test]
+    fn config_roster_reconciliation_starts_a_new_owner_before_transfer() {
+        let mut app = codeswarm_tui::App::default();
+        app.set_agent_name(0, "Claude Code");
+        app.set_agent_name(1, "Gemini CLI");
+        app.set_config_agents(vec![StoreAgent {
+            identity: "openai.com".into(),
+            name: "Codex CLI".into(),
+            adapter: "ACP".into(),
+            command: "codex --acp".into(),
+            available: true,
+            selected: true,
+        }]);
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut pending = BTreeSet::new();
+        let mut pending_owner = None;
+        reconcile_config_roster(&mut app, &sender, &mut pending, &mut pending_owner)
+            .expect("reconcile");
+        assert!(matches!(receiver.try_recv(), Ok(AdapterControl::Add(_))));
+        assert_eq!(pending_owner, Some(2));
+        assert!(pending.contains(&2));
+        assert_eq!(app.agent_name(2), "Codex CLI");
     }
 
     #[test]

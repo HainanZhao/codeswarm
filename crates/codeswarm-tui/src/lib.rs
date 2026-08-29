@@ -4,7 +4,10 @@
 //! after the transcript cache is warm, scrolling asks for a small cached slice
 //! and draws that slice.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    path::PathBuf,
+};
 
 use codeswarm_core::{AgentEvent, TerminalEvent, ToolStatus};
 use codeswarm_transcript::{RenderRow, Transcript};
@@ -20,6 +23,11 @@ pub use tui_textarea::{Input, Key};
 use tui_textarea::{TextArea, WrapMode};
 
 pub mod frame_scheduler;
+pub mod path_index;
+pub use path_index::{
+    MAX_INDEX_ENTRIES, MAX_PATH_RESULTS, MIN_PATH_QUERY_CHARS, PathCandidate, PathIndex,
+    PathIndexUpdate, PathMatch, completion_values, insertion_text, rank_matches, scan_workspace,
+};
 
 const MAX_QUEUED_PROMPTS: usize = 100;
 const TRANSCRIPT_BG: Color = Color::Rgb(12, 16, 23);
@@ -296,6 +304,15 @@ pub enum PromptAction {
         index: usize,
         total: usize,
     },
+}
+
+/// Result of a key handled by the asynchronous workspace path picker.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PathPickerAction {
+    Ignored,
+    Changed,
+    Insert(String),
+    Dismiss,
 }
 
 /// A low-churn, multiline prompt editor backed by `tui-textarea`.
@@ -588,13 +605,26 @@ impl PromptEditor {
         let (row, col) = self.cursor();
         let line = self.lines().get(row)?;
         let chars = line.chars().collect::<Vec<_>>();
-        let start = chars[..col.min(chars.len())]
+        let end = col.min(chars.len());
+        let mut start = chars[..end]
             .iter()
             .rposition(|character| character.is_whitespace())
             .map_or(0, |index| index + 1);
-        let prefix = chars[start..col.min(chars.len())]
-            .iter()
-            .collect::<String>();
+        // Keep a quoted `@path` together when the path itself contains
+        // spaces.  The Python picker treats the opening `@"` as the token
+        // start until the matching quote is entered.
+        if let Some(quoted_start) = chars[..end]
+            .windows(2)
+            .rposition(|window| window == ['@', '"'])
+            && chars[quoted_start + 2..end]
+                .iter()
+                .filter(|character| **character == '"')
+                .count()
+                .is_multiple_of(2)
+        {
+            start = quoted_start;
+        }
+        let prefix = chars[start..end].iter().collect::<String>();
         (prefix.starts_with('/') || prefix.starts_with('@')).then_some((start, prefix))
     }
 
@@ -612,6 +642,19 @@ impl PromptEditor {
     fn reset_completion(&mut self) {
         self.completion_matches.clear();
         self.completion_index = None;
+    }
+
+    /// Replace the `@path` token immediately before the cursor.  The picker
+    /// uses this instead of rebuilding the whole prompt, preserving cursor
+    /// and multiline-editor state while avoiding an allocation for unrelated
+    /// lines.
+    pub fn replace_current_token(&mut self, replacement: &str) -> bool {
+        let Some((start, _prefix)) = self.completion_prefix() else {
+            return false;
+        };
+        self.replace_token(start, replacement);
+        self.reset_completion();
+        true
     }
 }
 
@@ -693,6 +736,9 @@ pub struct App {
     collapse_details: bool,
     notification_policy: NotificationPolicy,
     sounds: bool,
+    blink_title: bool,
+    terminal_title_flash: usize,
+    terminal_title_blink: bool,
     terminal_focused: bool,
     show_thoughts: bool,
     expand_tools: bool,
@@ -719,9 +765,16 @@ pub struct App {
     keyboard_help: bool,
     streaming_blocks: BTreeMap<(usize, codeswarm_transcript::BlockKind), u64>,
     focused_detail: Option<u64>,
+    /// Background workspace index used only by the optional `@path` picker.
+    /// It is deliberately separate from transcript state so index updates do
+    /// not invalidate the virtualized scroll cache.
+    path_index: Option<PathIndex>,
+    path_query: String,
+    path_matches: Vec<PathMatch>,
+    path_selection: usize,
 }
 
-const CONFIG_SETTING_COUNT: usize = 13;
+const CONFIG_SETTING_COUNT: usize = 14;
 
 impl Default for App {
     fn default() -> Self {
@@ -741,6 +794,9 @@ impl Default for App {
             collapse_details: true,
             notification_policy: NotificationPolicy::Blur,
             sounds: true,
+            blink_title: true,
+            terminal_title_flash: 0,
+            terminal_title_blink: false,
             terminal_focused: true,
             show_thoughts: false,
             expand_tools: false,
@@ -767,6 +823,10 @@ impl Default for App {
             keyboard_help: false,
             streaming_blocks: BTreeMap::new(),
             focused_detail: None,
+            path_index: None,
+            path_query: String::new(),
+            path_matches: Vec::new(),
+            path_selection: 0,
         }
     }
 }
@@ -1181,7 +1241,13 @@ impl App {
                     }
                     9 => self.show_scrollbar = !self.show_scrollbar,
                     10 => self.sounds = !self.sounds,
-                    11..=12 => {}
+                    11 => {
+                        self.blink_title = !self.blink_title;
+                        if !self.blink_title {
+                            self.terminal_title_blink = false;
+                        }
+                    }
+                    12..=14 => {}
                     _ => return ConfigAction::Ignored,
                 }
                 self.status = "configuration updated".into();
@@ -1233,6 +1299,74 @@ impl App {
 
     pub fn set_sounds_enabled(&mut self, enabled: bool) {
         self.sounds = enabled;
+    }
+
+    pub fn blink_title_enabled(&self) -> bool {
+        self.blink_title
+    }
+
+    pub fn set_blink_title_enabled(&mut self, enabled: bool) {
+        self.blink_title = enabled;
+        if !enabled {
+            self.terminal_title_blink = false;
+        }
+    }
+
+    /// Mark the terminal title as needing attention until the user handles
+    /// the pending prompt. The counter mirrors the Python client's
+    /// reference-counted alerts so overlapping completion and permission
+    /// events cannot accidentally clear each other.
+    pub fn terminal_alert(&mut self, flash: bool) {
+        if flash {
+            self.terminal_title_flash = self.terminal_title_flash.saturating_add(1);
+        } else {
+            self.terminal_title_flash = self.terminal_title_flash.saturating_sub(1);
+            if self.terminal_title_flash == 0 {
+                self.terminal_title_blink = false;
+            }
+        }
+    }
+
+    pub fn terminal_alert_active(&self) -> bool {
+        self.terminal_title_flash > 0
+    }
+
+    pub fn clear_terminal_alerts(&mut self) {
+        self.terminal_title_flash = 0;
+        self.terminal_title_blink = false;
+    }
+
+    pub fn terminal_title_blink(&self) -> bool {
+        self.terminal_title_blink
+    }
+
+    pub fn toggle_terminal_title_blink(&mut self) {
+        if self.blink_title && self.terminal_alert_active() {
+            self.terminal_title_blink = !self.terminal_title_blink;
+        } else {
+            self.terminal_title_blink = false;
+        }
+    }
+
+    /// Return a sanitized OSC title. Agent names can originate in external
+    /// catalog/configuration files, so control characters must never reach
+    /// the terminal title escape sequence.
+    pub fn terminal_title(&self) -> String {
+        let agent = self
+            .active_agent
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect::<String>();
+        let title = if agent.trim().is_empty() {
+            "CodeSwarm".to_owned()
+        } else {
+            format!("{agent} · CodeSwarm")
+        };
+        if self.terminal_title_blink {
+            format!("👉 {title}")
+        } else {
+            format!("✈ {title}")
+        }
     }
 
     /// Track terminal focus separately from the notification preference. A
@@ -1567,7 +1701,38 @@ impl App {
         self.sync_prompt_editor();
         let action = self.prompt_editor.handle_input(input);
         self.prompt = self.prompt_editor.text();
+        self.update_path_query();
         action
+    }
+
+    fn update_path_query(&mut self) {
+        // Use the editor's cursor-aware token rather than the final line:
+        // Python's picker follows the line under the cursor in a multiline
+        // prompt, and a path typed earlier in the draft must remain editable.
+        let token = self
+            .prompt_editor
+            .completion_prefix()
+            .map_or_else(String::new, |(_, prefix)| prefix);
+        let normalized_token = token
+            .strip_prefix("@\"")
+            .map_or_else(|| token.clone(), |query| format!("@{query}"));
+        let valid = normalized_token.starts_with('@')
+            && normalized_token
+                .strip_prefix('@')
+                .is_some_and(|query| query.chars().count() >= MIN_PATH_QUERY_CHARS);
+        if !valid {
+            self.path_query.clear();
+            self.path_matches.clear();
+            self.path_selection = 0;
+            return;
+        }
+        if self.path_query != normalized_token {
+            self.path_query = normalized_token.clone();
+            self.path_selection = 0;
+            if let Some(index) = &mut self.path_index {
+                index.query(normalized_token);
+            }
+        }
     }
 
     /// Remove the current prompt from both the compatibility field and the
@@ -1586,6 +1751,138 @@ impl App {
         S: Into<String>,
     {
         self.prompt_editor.set_completion_candidates(candidates);
+    }
+
+    /// Start a lazy workspace index for `@path` prompt references.  Starting
+    /// this index never scans synchronously; callers may invoke it when a
+    /// session starts or after `/cd` changes the workspace.
+    pub fn set_workspace_root(&mut self, root: impl Into<PathBuf>) {
+        self.path_index = Some(PathIndex::new(root));
+        self.path_query.clear();
+        self.path_matches.clear();
+        self.path_selection = 0;
+    }
+
+    /// Request a fresh index after the workspace changes.  Existing matches
+    /// remain visible until replacement results arrive.
+    pub fn refresh_workspace_root(&mut self, root: impl Into<PathBuf>) {
+        if let Some(index) = &mut self.path_index {
+            index.rescan(root);
+        } else {
+            self.set_workspace_root(root);
+        }
+    }
+
+    /// Drain background index messages without waiting.  This is safe to call
+    /// once per terminal frame and intentionally ignores stale queries.
+    pub fn poll_path_index(&mut self) {
+        let generation = self.path_index.as_ref().map(PathIndex::generation);
+        let updates = self
+            .path_index
+            .as_ref()
+            .map_or_else(Vec::new, PathIndex::poll);
+        for update in updates {
+            match update {
+                PathIndexUpdate::Ready { .. } => {
+                    // Re-submit the current token after a rescan.  A scan may
+                    // finish after the user's first query and should still
+                    // populate the picker without another keystroke.
+                    let query = self.path_query.clone();
+                    if !query.is_empty()
+                        && let Some(index) = &mut self.path_index
+                    {
+                        index.query(query);
+                    }
+                }
+                PathIndexUpdate::Matches {
+                    generation: update_generation,
+                    query,
+                    matches,
+                } if Some(update_generation) == generation && query == self.path_query => {
+                    self.path_matches = matches;
+                    self.path_selection = self
+                        .path_selection
+                        .min(self.path_matches.len().saturating_sub(1));
+                }
+                PathIndexUpdate::Matches { .. } => {}
+            }
+        }
+    }
+
+    /// Return whether the compact file picker should be rendered.
+    pub fn path_picker_visible(&self) -> bool {
+        !self.path_matches.is_empty() && !self.path_query.is_empty()
+    }
+
+    pub fn path_matches(&self) -> &[PathMatch] {
+        &self.path_matches
+    }
+
+    pub fn path_selection(&self) -> usize {
+        self.path_selection
+    }
+
+    /// Height needed for the picker, capped to six rows so it cannot steal
+    /// the whole tmux pane from the transcript or prompt.
+    pub fn path_picker_height(&self) -> u16 {
+        if !self.path_picker_visible() {
+            0
+        } else {
+            self.path_matches.len().min(5).saturating_add(2) as u16
+        }
+    }
+
+    /// Handle navigation in the path picker.  The caller can pass this before
+    /// regular prompt/scroll handling for Up/Down/Enter/Esc keys.
+    pub fn handle_path_picker_key(&mut self, key: Key) -> PathPickerAction {
+        if !self.path_picker_visible() {
+            return PathPickerAction::Ignored;
+        }
+        match key {
+            Key::Up => {
+                let previous = self.path_selection;
+                self.path_selection = self.path_selection.saturating_sub(1);
+                if self.path_selection != previous {
+                    PathPickerAction::Changed
+                } else {
+                    PathPickerAction::Ignored
+                }
+            }
+            Key::Down => {
+                let previous = self.path_selection;
+                self.path_selection = self
+                    .path_selection
+                    .saturating_add(1)
+                    .min(self.path_matches.len().saturating_sub(1));
+                if self.path_selection != previous {
+                    PathPickerAction::Changed
+                } else {
+                    PathPickerAction::Ignored
+                }
+            }
+            Key::Enter => {
+                let Some(selected) = self.path_matches.get(self.path_selection) else {
+                    return PathPickerAction::Ignored;
+                };
+                let value = insertion_text(&selected.path, selected.directory);
+                if self.prompt_editor.replace_current_token(&value) {
+                    self.prompt = self.prompt_editor.text();
+                    self.path_query.clear();
+                    self.path_matches.clear();
+                    self.path_selection = 0;
+                    PathPickerAction::Insert(value)
+                } else {
+                    PathPickerAction::Ignored
+                }
+            }
+            Key::Esc => {
+                self.path_query.clear();
+                self.path_matches.clear();
+                self.path_selection = 0;
+                PathPickerAction::Dismiss
+            }
+            _ => PathPickerAction::Ignored,
+        }
     }
 
     pub fn load_prompt_history<I, S>(&mut self, entries: I)
@@ -1892,7 +2189,8 @@ impl App {
                 + 1
                 + usize::from(self.queue_height())
                 + usize::from(self.permission_height())
-                + usize::from(self.help_height()),
+                + usize::from(self.help_height())
+                + usize::from(self.path_picker_height()),
         )
     }
 
@@ -1984,6 +2282,7 @@ impl App {
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     app.sync_prompt_editor();
+    app.poll_path_index();
     let area = frame.area();
     if app.store_visible {
         if app.store_editing_directory {
@@ -2020,11 +2319,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let queue_height = usize::from(app.queue_height()).min(optional_height);
     optional_height = optional_height.saturating_sub(queue_height);
     let help_height = usize::from(app.help_height()).min(optional_height);
+    optional_height = optional_height.saturating_sub(help_height);
+    let path_picker_height = usize::from(app.path_picker_height()).min(optional_height);
     let available_for_prompt = total_height
         .saturating_sub(status_height)
         .saturating_sub(permission_height)
         .saturating_sub(queue_height)
-        .saturating_sub(help_height);
+        .saturating_sub(help_height)
+        .saturating_sub(path_picker_height);
     let content_height = usize::from(available_for_prompt > minimum_prompt_height);
     let preferred_prompt_height = usize::from(app.prompt_editor.preferred_height(area.width));
     let preferred_prompt_height = if app.density == Density::Compact {
@@ -2040,6 +2342,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Constraint::Length(queue_height as u16),
         Constraint::Length(permission_height as u16),
         Constraint::Length(help_height as u16),
+        Constraint::Length(path_picker_height as u16),
         Constraint::Length(prompt_height as u16),
     ])
     .split(area);
@@ -2150,7 +2453,56 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.keyboard_help_visible() {
         render_keyboard_help(frame.buffer_mut(), rows[4]);
     }
-    app.prompt_editor.render(frame, rows[5]);
+    if app.path_picker_visible() {
+        render_path_picker(frame.buffer_mut(), rows[5], app);
+    }
+    app.prompt_editor.render(frame, rows[6]);
+}
+
+fn render_path_picker(buffer: &mut Buffer, area: Rect, app: &App) {
+    if area.width == 0 || area.height == 0 || !app.path_picker_visible() {
+        return;
+    }
+    let visible = app.path_matches().iter().take(5);
+    let mut lines = Vec::with_capacity(7);
+    lines.push(Line::styled(
+        format!(
+            " files · {} matches · ↑/↓ choose · Enter insert",
+            app.path_matches().len()
+        ),
+        Style::default().fg(Color::Gray),
+    ));
+    for (index, candidate) in visible.enumerate() {
+        let selected = index == app.path_selection();
+        let marker = if selected { "▶" } else { " " };
+        let suffix = if candidate.directory { "/" } else { "" };
+        let style = if selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::LightCyan)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {marker} "), style),
+            Span::styled(
+                compact_label(
+                    &format!("{}{}", candidate.path, suffix),
+                    area.width.saturating_sub(6) as usize,
+                ),
+                style,
+            ),
+        ]));
+    }
+    Paragraph::new(lines)
+        .style(Style::default().bg(PANEL_BG))
+        .block(
+            Block::default()
+                .borders(Borders::TOP | Borders::BOTTOM)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .render(area, buffer);
 }
 
 /// Render a useful two- or three-row fallback in a very small pane. Keeping
@@ -2434,6 +2786,11 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
             true,
         ),
         ("Sounds", if app.sounds { "On" } else { "Off" }, true),
+        (
+            "Blink title",
+            if app.blink_title { "On" } else { "Off" },
+            true,
+        ),
         ("Renderer", "Inline · tmux safe", false),
         ("Roster", "Enter toggles agents", false),
     ];
@@ -2516,6 +2873,7 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
                 "Density" => "Density",
                 "Scrollbar" => "Scroll",
                 "Sounds" => "Sound",
+                "Blink title" => "Blink",
                 "Collaboration" => "Collab",
                 "Renderer" => "Render",
                 "Roster" => "Roster",
@@ -3167,9 +3525,10 @@ mod tests {
     use tui_textarea::{Input, Key};
 
     use super::{
-        App, ConfigAction, ConfigKey, LocalCommand, PermissionAction, PermissionKey, PromptAction,
-        PromptEditor, StoreAction, StoreAgent, StoreKey, agent_header_color, agent_slot_color,
-        file_reference_spans, markdown_spans, markdown_style, render, row_style,
+        App, ConfigAction, ConfigKey, LocalCommand, PathPickerAction, PermissionAction,
+        PermissionKey, PromptAction, PromptEditor, StoreAction, StoreAgent, StoreKey,
+        agent_header_color, agent_slot_color, file_reference_spans, markdown_spans, markdown_style,
+        render, row_style,
     };
 
     fn key(key: Key) -> Input {
@@ -3545,6 +3904,80 @@ mod tests {
     }
 
     #[test]
+    fn async_path_picker_ranks_and_inserts_a_workspace_file() {
+        let root = std::env::temp_dir().join(format!(
+            "codeswarm-tui-picker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("workspace");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").expect("file");
+
+        let mut app = App::default();
+        app.set_workspace_root(root.clone());
+        for character in "@src/m".chars() {
+            app.handle_prompt_input(key(Key::Char(character)));
+        }
+        for _ in 0..100 {
+            app.poll_path_index();
+            if app.path_picker_visible() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(app.path_picker_visible());
+        assert_eq!(app.path_matches()[app.path_selection()].path, "src/main.rs");
+        assert!(matches!(
+            app.handle_path_picker_key(Key::Enter),
+            PathPickerAction::Insert(value) if value == "@src/main.rs "
+        ));
+        assert_eq!(app.prompt, "@src/main.rs ");
+        assert!(!app.path_picker_visible());
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn quoted_path_picker_keeps_spaces_inside_the_current_token() {
+        let root = std::env::temp_dir().join(format!(
+            "codeswarm-tui-quoted-picker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("notes")).expect("workspace");
+        std::fs::write(root.join("notes/project plan.md"), "plan").expect("file");
+        let mut app = App::default();
+        app.set_workspace_root(root.clone());
+        for character in "@\"notes/pro".chars() {
+            app.handle_prompt_input(key(Key::Char(character)));
+        }
+        for _ in 0..100 {
+            app.poll_path_index();
+            if app.path_picker_visible() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(app.path_picker_visible());
+        assert!(
+            app.path_matches()
+                .iter()
+                .any(|candidate| { candidate.path == "notes/project plan.md" })
+        );
+        assert!(matches!(
+            app.handle_path_picker_key(Key::Enter),
+            PathPickerAction::Insert(value) if value == "@\"notes/project plan.md\" "
+        ));
+        assert_eq!(app.prompt, "@\"notes/project plan.md\" ");
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
     fn file_references_are_accented_with_line_suffix_attached() {
         let spans = file_reference_spans(
             Style::default().fg(Color::White),
@@ -3895,7 +4328,7 @@ mod tests {
             },
         ]);
         app.handle_local_command("/config");
-        for _ in 0..14 {
+        for _ in 0..15 {
             app.handle_config_key(ConfigKey::Down);
         }
         assert_eq!(
@@ -3917,6 +4350,51 @@ mod tests {
         );
         assert_eq!(app.handle_config_key(ConfigKey::Save), ConfigAction::Close);
         assert!(!app.config_visible());
+    }
+
+    #[test]
+    fn workspace_path_picker_indexes_off_thread_and_inserts_selected_path() {
+        let root = std::env::temp_dir().join(format!(
+            "codeswarm-tui-path-picker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("workspace");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("source");
+
+        let mut app = App::default();
+        app.set_workspace_root(&root);
+        for input_key in [
+            Key::Char('@'),
+            Key::Char('s'),
+            Key::Char('r'),
+            Key::Char('c'),
+        ] {
+            app.handle_prompt_input(key(input_key));
+        }
+        for _ in 0..100 {
+            app.poll_path_index();
+            if app.path_picker_visible() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(app.path_picker_visible());
+        assert!(
+            app.path_matches()
+                .iter()
+                .any(|candidate| candidate.path == "src")
+        );
+        assert!(matches!(
+            app.handle_path_picker_key(Key::Down),
+            PathPickerAction::Changed | PathPickerAction::Ignored
+        ));
+        let _ = app.handle_path_picker_key(Key::Enter);
+        assert!(app.prompt.contains("@src"));
+        std::fs::remove_dir_all(root).expect("cleanup workspace");
     }
 
     #[test]
@@ -3962,6 +4440,44 @@ mod tests {
 
         app.set_notification_policy("invalid");
         assert!(!app.should_notify_system());
+    }
+
+    #[test]
+    fn terminal_title_alerts_are_reference_counted_and_sanitized() {
+        let mut app = App::default();
+        app.set_header("agent\nwith\tescape", "idle");
+        assert_eq!(app.terminal_title(), "✈ agentwithescape · CodeSwarm");
+        assert!(!app.terminal_alert_active());
+
+        app.terminal_alert(true);
+        app.terminal_alert(true);
+        assert!(app.terminal_alert_active());
+        app.toggle_terminal_title_blink();
+        assert_eq!(app.terminal_title(), "👉 agentwithescape · CodeSwarm");
+        app.terminal_alert(false);
+        assert!(app.terminal_alert_active());
+        app.terminal_alert(false);
+        assert!(!app.terminal_alert_active());
+        assert!(!app.terminal_title_blink());
+        assert_eq!(app.terminal_title(), "✈ agentwithescape · CodeSwarm");
+    }
+
+    #[test]
+    fn blink_title_is_a_persistent_config_toggle() {
+        let mut app = App::default();
+        assert!(app.blink_title_enabled());
+        app.handle_local_command("/config");
+        for _ in 0..11 {
+            app.handle_config_key(ConfigKey::Down);
+        }
+        assert_eq!(
+            app.handle_config_key(ConfigKey::Confirm),
+            ConfigAction::Changed
+        );
+        assert!(!app.blink_title_enabled());
+        app.terminal_alert(true);
+        app.toggle_terminal_title_blink();
+        assert!(!app.terminal_title_blink());
     }
 
     #[test]

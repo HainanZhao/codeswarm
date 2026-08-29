@@ -100,8 +100,9 @@ The notification policy and sound toggle are independent. Notifications can be
 set to `Never`, `When unfocused`, or `Always`; the default is `When unfocused`.
 Completion and permission-request notifications are emitted according to that
 policy, while the terminal bell is additionally controlled by the sound
-toggle. Terminals that do not report focus changes keep the app in the safe
-focused state.
+toggle. The panel also controls terminal-title blinking for unattended
+permission prompts. Terminals that do not report focus changes keep the app in
+the safe focused state.
 
 ## Performance model
 

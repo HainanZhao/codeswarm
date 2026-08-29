@@ -187,8 +187,10 @@ Still required before cutover:
   membership; Enter toggles, Alt+↑/↓ reorders, and Ctrl+S persists it.
 - [x] Reconcile idle `/config` catalog edits against the running session while
   preserving ad-hoc adapters and coordinator rollback semantics.
-- [ ] Cover deferred new-owner activation and full catalog/session metadata
-  persistence for every live reconfiguration branch.
+- [x] Cover deferred new-owner activation with a Ready-gated promotion and
+  rollback cleanup when the replacement or owner transfer fails.
+- [ ] Complete full catalog/session metadata persistence for every live
+  reconfiguration branch.
 - [ ] Complete real-agent dogfooding, preview release/rollback, and staged
   default cutover.
 
