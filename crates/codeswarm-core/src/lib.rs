@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub mod collaboration;
+pub mod details;
 pub mod launcher;
 pub mod persistence;
 pub mod policy;
@@ -56,6 +57,14 @@ pub struct PermissionRequest {
     pub id: String,
     pub title: String,
     pub options: Vec<String>,
+}
+
+/// The normalized answer to an adapter permission request. Native adapters
+/// may reject this explicitly when their protocol has no permission control.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum PermissionAnswer {
+    Selected { option_id: String },
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
