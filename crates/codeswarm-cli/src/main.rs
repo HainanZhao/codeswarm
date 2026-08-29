@@ -309,6 +309,11 @@ fn run_terminal(
                 KeyCode::End => {
                     app.follow_tail(size.width as usize, size.height.saturating_sub(4) as usize)
                 }
+                KeyCode::Tab => {
+                    if app.toggle_focused_detail().is_some() {
+                        app.status = "detail toggled".into();
+                    }
+                }
                 KeyCode::Enter if !app.prompt.trim().is_empty() => {
                     if let Some(controls) = &controls {
                         let prompt = std::mem::take(&mut app.prompt);

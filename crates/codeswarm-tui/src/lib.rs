@@ -27,6 +27,7 @@ pub struct App {
     pub active_agent: String,
     pub status: String,
     streaming_blocks: BTreeMap<usize, u64>,
+    focused_detail: Option<u64>,
 }
 
 impl Default for App {
@@ -39,6 +40,7 @@ impl Default for App {
             active_agent: "Initializing".into(),
             status: "idle".into(),
             streaming_blocks: BTreeMap::new(),
+            focused_detail: None,
         }
     }
 }
@@ -72,11 +74,12 @@ impl App {
                 self.status = "streaming".into();
             }
             AgentEvent::Thought { slot, text } => {
-                self.transcript.append(
+                let id = self.transcript.append(
                     codeswarm_transcript::BlockKind::Thought,
                     format!("Agent {slot}: {text}"),
                     true,
                 );
+                self.focused_detail = Some(id);
             }
             AgentEvent::Tool { slot, update } => {
                 let state = match update.status {
@@ -85,11 +88,12 @@ impl App {
                     ToolStatus::Completed => "completed",
                     ToolStatus::Failed => "failed",
                 };
-                self.transcript.append(
+                let id = self.transcript.append(
                     codeswarm_transcript::BlockKind::Tool,
                     format!("Agent {slot}: {} · {state}", update.title),
                     true,
                 );
+                self.focused_detail = Some(id);
             }
             AgentEvent::Permission { slot, request } => {
                 self.active_agent = format!("Agent {slot}");
@@ -102,8 +106,11 @@ impl App {
                     TerminalEvent::Exited { code, .. } => format!("Agent {slot}: exited {code}"),
                     TerminalEvent::Released { .. } => format!("Agent {slot}: terminal released"),
                 };
-                self.transcript
-                    .append(codeswarm_transcript::BlockKind::Tool, text, true);
+                self.focused_detail = Some(self.transcript.append(
+                    codeswarm_transcript::BlockKind::Tool,
+                    text,
+                    true,
+                ));
             }
             AgentEvent::TurnComplete { slot } => {
                 self.streaming_blocks.remove(slot);
@@ -140,6 +147,11 @@ impl App {
             .row_count(width.saturating_sub(2))
             .saturating_sub(height);
         self.follow_tail = true;
+    }
+
+    pub fn toggle_focused_detail(&mut self) -> Option<bool> {
+        self.focused_detail
+            .and_then(|id| self.transcript.toggle_collapsed(id))
     }
 }
 
@@ -243,5 +255,22 @@ mod tests {
             text: "next turn".into(),
         });
         assert_eq!(app.transcript.len(), 2);
+    }
+
+    #[test]
+    fn tool_details_are_lazy_until_explicitly_expanded() {
+        let mut app = App::default();
+        app.apply_event(&codeswarm_core::AgentEvent::Tool {
+            slot: 0,
+            update: codeswarm_core::ToolUpdate {
+                id: "tool-1".into(),
+                title: "Run tests".into(),
+                status: codeswarm_core::ToolStatus::Completed,
+                detail: Some("large output".into()),
+            },
+        });
+        assert_eq!(app.transcript.row_count(80), 1);
+        assert_eq!(app.toggle_focused_detail(), Some(false));
+        assert!(app.transcript.row_count(80) >= 1);
     }
 }

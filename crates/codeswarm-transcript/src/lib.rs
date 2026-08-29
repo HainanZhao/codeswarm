@@ -83,6 +83,13 @@ impl Transcript {
         true
     }
 
+    pub fn toggle_collapsed(&mut self, id: u64) -> Option<bool> {
+        let collapsed = self.blocks.iter().find(|block| block.id == id)?.collapsed;
+        let next = !collapsed;
+        self.set_collapsed(id, next);
+        Some(next)
+    }
+
     /// Extend an in-progress block without changing its identity. Stream
     /// renderers use this to turn thousands of token chunks into one logical
     /// response rather than thousands of transcript objects.
