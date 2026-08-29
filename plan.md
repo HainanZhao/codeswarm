@@ -81,6 +81,8 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   and selectable option labels.
 - [x] Added lazy collapsed tool/thought/terminal details with explicit
   keyboard expansion, keeping expensive detail off the scroll path.
+- [x] Core reducer tracks active-turn boundaries across text, thought, tool,
+  permission, and terminal events for deterministic relay handoff.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
   \`make rust-tmux\`.
 
