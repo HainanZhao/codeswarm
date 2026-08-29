@@ -9,6 +9,21 @@ use crate::RosterSlot;
 use crate::collaboration::CollaborationContext;
 
 pub const MAX_QUEUED_PROMPTS: usize = 100;
+pub const STOP_TOKEN: &str = "[CODESWARM:STOP]";
+pub const DEFAULT_STOP_ACKNOWLEDGMENT: &str = "👍";
+
+pub fn strip_stop_token(response: &str) -> (String, bool) {
+    let trimmed = response.trim_end();
+    let requested = trimmed.ends_with(STOP_TOKEN);
+    let visible = if requested {
+        trimmed[..trimmed.len() - STOP_TOKEN.len()]
+            .trim_end()
+            .to_owned()
+    } else {
+        response.to_owned()
+    };
+    (visible, requested)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QueuedKind {
@@ -243,7 +258,7 @@ impl Relay {
 
 #[cfg(test)]
 mod tests {
-    use super::{Relay, RelayDecision};
+    use super::{Relay, RelayDecision, STOP_TOKEN, strip_stop_token};
 
     #[test]
     fn relay_moves_around_the_ring_without_self_review() {
@@ -308,5 +323,15 @@ mod tests {
         assert_eq!(relay.shared_task(), Some("refactor"));
         relay.add_agent();
         assert_eq!(relay.active_slots().count(), 3);
+    }
+
+    #[test]
+    fn stop_token_is_stripped_only_from_the_response_suffix() {
+        let (visible, requested) = strip_stop_token(&format!("looks good\n{STOP_TOKEN}"));
+        assert_eq!(visible, "looks good");
+        assert!(requested);
+        let (visible, requested) = strip_stop_token("ordinary response");
+        assert_eq!(visible, "ordinary response");
+        assert!(!requested);
     }
 }

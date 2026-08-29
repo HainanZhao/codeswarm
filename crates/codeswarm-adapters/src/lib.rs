@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use codeswarm_core::{
     AgentCapabilities, AgentEvent, Effect, EventLog, Mode, PermissionAnswer, PermissionRequest,
     RosterSlot, SessionState, TerminalEvent, ToolStatus, ToolUpdate, reduce,
-    relay::{Relay, RelayDecision},
+    relay::{DEFAULT_STOP_ACKNOWLEDGMENT, Relay, RelayDecision, strip_stop_token},
 };
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -319,12 +319,18 @@ impl RelayHost {
                 _ => {}
             }
         }
+        let (response, requested_stop) = strip_stop_token(&response);
+        let accepted_stop = requested_stop && *can_stop;
+        let response = if accepted_stop && response.is_empty() {
+            DEFAULT_STOP_ACKNOWLEDGMENT.to_owned()
+        } else {
+            response
+        };
         if !*direct && !response.is_empty() {
             self.relay.record_public(format!("Agent {slot}"), response);
         }
         self.relay.mark_context_seen(*slot);
-        self.relay.finish(*slot, *direct, false);
-        let _ = can_stop;
+        self.relay.finish(*slot, *direct, accepted_stop);
         Ok(decision)
     }
 }
