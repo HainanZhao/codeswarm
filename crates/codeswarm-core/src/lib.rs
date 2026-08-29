@@ -18,6 +18,7 @@ pub mod launcher;
 pub mod persistence;
 pub mod policy;
 pub mod relay;
+pub mod trace;
 
 /// Stable roster position; slot zero is always the owner.
 pub type RosterSlot = usize;
