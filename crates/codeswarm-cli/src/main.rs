@@ -1285,6 +1285,8 @@ fn run_terminal(
                             && app.notifications_enabled()
                         {
                             notify_turn_complete(&app.active_agent);
+                            let _ = stdout().write_all(b"\x07");
+                            let _ = stdout().flush();
                         }
                         if matches!(&event, AgentEvent::TurnComplete { .. })
                             && let Some(queued) = app.next_queued_prompt().cloned()
