@@ -90,6 +90,11 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   dispatch-history tests.
 - [x] Added saved-roster launcher decisions that filter stale identities,
   preserve order, and open the agent store when no saved roster resolves.
+- [x] Added versioned, non-destructive event-log and Python session-metadata
+  migration/import with malformed and future-version rejection.
+- [x] Added repeated mixed roster CLI parsing with native/ACP startup,
+  selected-first routing, max-round control, pause/resume, direct prompts, and
+  live normalized event streaming.
 - [x] Integrated resize settling and latest-state frame recovery into a
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
