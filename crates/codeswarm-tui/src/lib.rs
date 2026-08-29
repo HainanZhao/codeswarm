@@ -2430,6 +2430,12 @@ fn render_transcript(
     app: &App,
     diff_split: bool,
 ) {
+    // Keep the initial workspace quiet. The prompt and status ribbon already
+    // explain how to begin; rendering an empty bordered panel only consumes
+    // space and reads like a stale placeholder in small tmux panes.
+    if rows.is_empty() {
+        return;
+    }
     if diff_split
         && rows
             .iter()
@@ -3013,6 +3019,7 @@ mod tests {
             .collect::<String>();
         assert!(!rendered.contains("No messages yet"));
         assert!(!rendered.contains("Type a prompt below"));
+        assert!(!rendered.contains("Conversation"));
     }
 
     #[test]
