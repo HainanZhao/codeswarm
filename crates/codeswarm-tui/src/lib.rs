@@ -1099,11 +1099,24 @@ impl App {
                     ToolStatus::Completed => "completed",
                     ToolStatus::Failed => "failed",
                 };
-                let id = self.transcript.append(
-                    codeswarm_transcript::BlockKind::Tool,
-                    format!("{}: {} · {state}", self.agent_name(*slot), update.title),
-                    true,
+                let kind = update
+                    .detail
+                    .as_deref()
+                    .filter(|detail| looks_like_unified_diff(detail))
+                    .map_or(codeswarm_transcript::BlockKind::Tool, |_| {
+                        codeswarm_transcript::BlockKind::Diff
+                    });
+                let source = update.detail.as_deref().map_or_else(
+                    || format!("{}: {} · {state}", self.agent_name(*slot), update.title),
+                    |detail| {
+                        format!(
+                            "{}: {} · {state}\n{detail}",
+                            self.agent_name(*slot),
+                            update.title
+                        )
+                    },
                 );
+                let id = self.transcript.append(kind, source, self.collapse_details);
                 self.focused_detail = Some(id);
             }
             AgentEvent::Permission { slot, request } => {
@@ -2081,6 +2094,16 @@ fn row_style(kind: codeswarm_transcript::BlockKind, text: &str) -> Style {
     }
 }
 
+fn looks_like_unified_diff(text: &str) -> bool {
+    let mut has_hunk = false;
+    let mut has_file_header = false;
+    for line in text.lines() {
+        has_hunk |= line.starts_with("@@");
+        has_file_header |= line.starts_with("--- ") || line.starts_with("+++ ");
+    }
+    has_hunk && has_file_header
+}
+
 #[cfg(test)]
 mod tests {
     use codeswarm_transcript::BlockKind;
@@ -2875,6 +2898,26 @@ mod tests {
         assert_eq!(app.transcript.row_count(80), 1);
         assert_eq!(app.toggle_focused_detail(), Some(false));
         assert!(app.transcript.row_count(80) >= 1);
+    }
+
+    #[test]
+    fn tool_diff_payload_is_retained_and_classified_lazily() {
+        let mut app = App::default();
+        app.apply_event(&codeswarm_core::AgentEvent::Tool {
+            slot: 0,
+            update: codeswarm_core::ToolUpdate {
+                id: "patch".into(),
+                title: "Apply patch".into(),
+                status: codeswarm_core::ToolStatus::Completed,
+                detail: Some("--- a/file.rs\n+++ b/file.rs\n@@ -1 +1 @@\n-old\n+new".into()),
+            },
+        });
+        let rows = app.transcript.viewport(80, 0, 4, 0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, BlockKind::Diff);
+        assert!(rows[0].text.contains("Diff"));
+        assert_eq!(app.toggle_focused_detail(), Some(false));
+        assert!(app.transcript.row_count(80) > 1);
     }
 
     #[test]
