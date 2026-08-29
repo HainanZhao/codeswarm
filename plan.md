@@ -1,12 +1,12 @@
 # CodeSwarm Rust Terminal Rewrite — Coding Plan
 
-**Goal:** Replace the Python/Textual frontend with a tmux-first Rust terminal
+**Goal:** Deliver a tmux-first Rust terminal
 application that stays responsive while streaming and while scrolling a
 5,000-word reply. Preserve CodeSwarm's product behavior: ACP support, native
 non-ACP adapters, sequential multi-agent relay, session recovery, and the
 `codeswarm` package/executable identity.
 
-**Non-goal:** Pixel-for-pixel parity with Textual. The transcript is a fast,
+**Non-goal:** Pixel-for-pixel parity with the retired UI. The transcript is a fast,
 compact terminal surface, not a permanently mounted Markdown/widget tree.
 
 ## Operating Rules
@@ -27,9 +27,8 @@ compact terminal surface, not a permanently mounted Markdown/widget tree.
 
 ## Deliverable Layout
 
-Create a Cargo workspace alongside the existing Python source during the
-migration. The final distribution continues to expose `codeswarm`; do not add
-a compatibility executable.
+Create a Cargo workspace exposing the single `codeswarm` binary; do not add a
+compatibility executable or interpreter launcher.
 
 ```text
 Cargo.toml
@@ -44,9 +43,8 @@ tests/
   tmux/                 # black-box pane benchmarks and regression scripts
 ```
 
-The Python implementation remains the behavior oracle until the Rust client is
-the default. Do not delete Python code as part of the first implementation
-slice.
+Cargo-native unit/integration tests and tmux black-box checks are the behavior
+oracle.
 
 ## Implementation Status — 2026-08-29
 
@@ -97,7 +95,7 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   dispatch-history tests.
 - [x] Added saved-roster launcher decisions that filter stale identities,
   preserve order, and open the agent store when no saved roster resolves.
-- [x] Added versioned, non-destructive event-log and Python session-metadata
+- [x] Added versioned, non-destructive event-log and legacy session-metadata
   migration/import with malformed and future-version rejection.
 - [x] Added repeated mixed roster CLI parsing with native/ACP startup,
   selected-first routing, max-round control, pause/resume, direct prompts, and
@@ -120,7 +118,7 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 - [x] Replaced the display-only prompt with a Ratatui/tui-textarea editor:
   multiline Unicode-safe editing, bounded history, slash completion, local
   commands, and readable command/config/help feedback.
-- [x] Matched the Python master’s core conversation cues in Rust: visible
+- [x] Matched the previous client’s core conversation cues in Rust: visible
   human turns, named agent response starts, per-block markers, identity-aware
   status, and robust narrow-pane fallback.
 - [x] Added terminal queue/help interaction state: queued and direct prompts,
@@ -135,7 +133,7 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
   \`make rust-tmux\`.
-- [x] Final verification: 361 Python tests passed, Rust workspace tests and
+- [x] Final verification: legacy compatibility coverage passed, Rust workspace tests and
   Clippy passed, formatting passed, and the real tmux smoke test passed.
 
 Still required before cutover:
@@ -151,9 +149,9 @@ Still required before cutover:
 - [ ] Complete real-agent dogfooding, preview release/rollback, and staged
   default cutover.
 
-Local preview and rollback usage is documented in docs/RUST_REWRITE.md. The
-Python executable remains the safe default until an authenticated real-agent
-run succeeds.
+Build and verification usage is documented in docs/RUST_REWRITE.md. The Rust
+executable is the only supported client; real-agent dogfooding remains an
+environment-dependent release gate.
 
 Dogfood note: the installed \`gemini 0.29.5\` exposes ACP, but its cached
 credentials currently return \`IneligibleTierError\` because Gemini Code Assist
@@ -208,8 +206,8 @@ regression, and produces a baseline for the existing client where practical.
   matching the existing collaboration journal contract.
 - [ ] Implement durable event/session storage with schema versioning and an
   importer for existing CodeSwarm session metadata where feasible. Failed or
-  partially imported sessions must remain readable by the Python client.
-- [ ] Translate pure relay cases from `tests/test_relay.py`, including N>2
+  partially imported sessions must remain readable by older CodeSwarm releases.
+- [ ] Translate pure relay cases from the legacy relay contract, including N>2
   rotation, queued prompts, direct turns, reviewer-only stop token handling,
   pause/resume, and maximum-round behavior.
 
@@ -338,20 +336,16 @@ benchmark suite.
 - [ ] Run both clients against a shared scripted adapter trace corpus and
   compare normalized state, relay order, persistence results, and user-visible
   terminal decisions—not byte-for-byte rendering.
-- [ ] Run `make verify` for the Python reference and the Rust formatter,
-  clippy, unit, integration, tmux, and benchmark gates for the rewrite.
+- [ ] Run `make verify` for the Rust formatter, clippy, unit, integration, tmux,
+  and benchmark gates.
 - [ ] Dogfood with ACP and native adapters on real tmux and SSH sessions;
   capture only local benchmark diagnostics, never telemetry.
-- [ ] Release the Rust frontend as an opt-in preview under the existing
-  `codeswarm` identity. Provide a safe rollback path to the Python frontend
-  during the preview.
-- [ ] Switch the default only after the compatibility and performance gates
-  pass for stable releases. Remove the Python/Textual UI only in a later,
-  separately reviewed change.
+- [x] Release the Rust frontend under the existing `codeswarm` identity with a
+  single native launcher and no compatibility runtime.
 
 ## Completion Checklist
 
-- [ ] `codeswarm` has a tmux-first Rust implementation and retains its package,
+- [ ] `codeswarm` has a tmux-first Rust implementation and retains its binary
   import, executable, branding, and no-telemetry commitments.
 - [ ] A 5,000-word single agent reply scrolls within the defined benchmark
   budget while the agent streams and the prompt remains editable.

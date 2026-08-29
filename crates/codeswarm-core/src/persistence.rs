@@ -3,9 +3,8 @@
 //! The first Rust implementation wrote bare [`AgentEvent`] values to JSONL.
 //! The types in this module deliberately accept that format as schema zero and
 //! provide migration helpers for versioned envelopes.  Session
-//! metadata is likewise accepted in the shape written by the Python client.
-//! Metadata is exported in a flattened form so the existing Python decoder can
-//! continue to find keys such as `roster` and `agent_data`.
+//! metadata accepts the legacy flattened shape as well as the current envelope.
+//! Metadata remains flattened so older CodeSwarm state files stay readable.
 
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
@@ -216,7 +215,7 @@ fn atomic_write_event_log(path: &Path, events: &[AgentEvent]) -> Result<(), Pers
     result
 }
 
-/// Metadata imported from either Python's plain object or the Rust envelope.
+/// Metadata imported from either a legacy plain object or the Rust envelope.
 /// The map intentionally retains unknown keys for forward compatibility.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionMetadata {
@@ -244,8 +243,7 @@ impl SessionMetadata {
         &self.data
     }
 
-    /// Flattened JSON is intentional: Python's `decode_session_meta` can read
-    /// this directly and still locate `roster`/`agent_data`.
+    /// Flattened JSON keeps existing `roster`/`agent_data` keys addressable.
     pub fn to_value(&self) -> Value {
         let mut object = self.data.clone();
         object.insert("schema_version".into(), Value::from(CURRENT_SCHEMA_VERSION));
@@ -407,9 +405,8 @@ fn temporary_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{file_name}.migration-{}.tmp", std::process::id()))
 }
 
-/// Convert the Python session metadata blob to a Rust metadata value without
-/// requiring the Python process or SQLite to be available.
-pub fn import_python_session_metadata(
+/// Convert a legacy session metadata blob to the current Rust metadata value.
+pub fn import_legacy_session_metadata(
     value: Option<&str>,
 ) -> Result<Option<LoadedSessionMetadata>, PersistenceError> {
     let Some(value) = value else { return Ok(None) };
@@ -439,7 +436,7 @@ mod tests {
 
     use super::{
         CURRENT_SCHEMA_VERSION, PersistenceError, SessionMetadata, SessionMetadataStore,
-        VersionedEventLog, import_python_session_metadata,
+        VersionedEventLog, import_legacy_session_metadata,
     };
     use crate::AgentEvent;
 
@@ -517,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn old_python_metadata_migrates_and_preserves_unknown_keys() {
+    fn old_metadata_migrates_and_preserves_unknown_keys() {
         let path = temp_path("old-metadata.json");
         std::fs::write(
             &path,
@@ -560,13 +557,13 @@ mod tests {
     }
 
     #[test]
-    fn python_import_accepts_missing_and_current_metadata() {
+    fn legacy_import_accepts_missing_and_current_metadata() {
         assert!(
-            import_python_session_metadata(None)
+            import_legacy_session_metadata(None)
                 .expect("missing")
                 .is_none()
         );
-        let loaded = import_python_session_metadata(Some(
+        let loaded = import_legacy_session_metadata(Some(
             r#"{"schema_version":1,"roster":["agy"],"agent_data":{"name":"Agy"}}"#,
         ))
         .expect("current")

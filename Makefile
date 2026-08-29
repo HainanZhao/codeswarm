@@ -1,65 +1,23 @@
+.PHONY: run test verify rust-test rust-tmux diff-check
 
-run := .venv/bin/codeswarm
-python := PYTHONPATH=src .venv/bin/python
-
-.PHONY: run
 run:
-	$(run)
+	cargo run -p codeswarm-cli -- $(ARGS)
 
-.PHONY: test
+# Cargo is the canonical test runner for this Rust-only repository.
 test:
-	$(python) -m unittest discover -s tests -v
+	cargo test --workspace
 
-.PHONY: compile
-compile:
-	$(python) -m compileall -q src tests
-
-.PHONY: lock
-lock:
-	uv lock --check --python .venv/bin/python
-
-.PHONY: typecheck
-typecheck:
-	.venv/bin/mypy src/codeswarm/acp/relay.py src/codeswarm/session.py src/codeswarm/mode_policy.py src/codeswarm/settings.py src/codeswarm/settings_schema.py src/codeswarm/agents.py --follow-imports=skip --ignore-missing-imports
-
-.PHONY: package
-package:
-	$(python) scripts/verify_package.py
-
-.PHONY: verify
-verify: diff-check package test compile lock typecheck
-
-.PHONY: rust-test
 rust-test:
-	cargo fmt --check
+	cargo fmt --all -- --check
 	cargo test --workspace
 	cargo clippy --workspace --all-targets -- -D warnings
 
-.PHONY: rust-tmux
 rust-tmux:
 	bash tests/tmux/smoke.sh
+	bash tests/tmux/config.sh
+	bash tests/tmux/performance.sh
 
-.PHONY: diff-check
 diff-check:
 	git diff --check HEAD
 
-.PHONY: gemini-acp
-gemini-acp:
-	$(run) acp "gemini --experimental-acp" --project-dir ~/sandbox --title "Google Gemini"
-
-.PHONY: claude-acp
-claude-acp:
-	$(run) acp "claude-code-acp" --project-dir ~/sandbox --title "Claude"
-
-
-.PHONY: codex-acp
-codex-acp:
-	$(run) acp "codex-acp"  --project-dir ~/sandbox --title="OpenAI Codex"
-
-.PHONY: replay
-replay:
-	ACP_INITIALIZE=0 $(run) acp "$(run) replay $(realpath replay.jsonl)" --project-dir ~/sandbox
-
-.PHONY: echo
-echo:
-	$(run) acp "uv run echo_client.py"
+verify: diff-check rust-test rust-tmux

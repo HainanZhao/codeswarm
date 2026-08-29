@@ -3,8 +3,8 @@
 ## Project identity
 
 - CodeSwarm is the current project name and the only supported package identity.
-- The published Python distribution, import package, and executable are all
-  `codeswarm`. There is no compatibility package or executable.
+- The published Rust binary and Cargo workspace identity are `codeswarm`. There
+  is no compatibility launcher or alternate runtime.
 - User-facing branding uses CodeSwarm and the `✈` symbol.
 - No telemetry is collected. The upstream sponsor tile and testimonial/about
   UI were removed; `©` attribution to Will McGugan remains in the license.
@@ -17,7 +17,7 @@
   user selection becomes the new desired roster-wide policy; `Mixed` is not a
   user-facing mode.
 - An unlimited-size roster of ACP agents relay turns sequentially in a ring
-  (`src/codeswarm/acp/relay.py`, `RelayConversation`), never concurrently — a relay
+  (`crates/codeswarm-core/src/relay.rs`, `Relay`), never concurrently — a relay
   has a causal dependency on the previous response. Solo sessions (roster size
   1) never construct a relay; `Conversation._relay_active` gates every relay
   code path so the common single-agent case is untouched.
@@ -77,11 +77,11 @@
 
 ## Terminal notifications
 
-- Before the conversation prompt is available, Textual Toast notifications
-  may be used for setup, store, configuration, and modal-screen feedback.
+- Before the conversation prompt is available, setup, store, configuration,
+  and modal feedback may use the same Ratatui surface.
 - Once the conversation prompt is shown, all in-terminal notifications use
-  CodeSwarm's single-line, full-width Flash ribbon. Do not show Textual Toasts
-  over the conversation UI or introduce another notification style there.
+  CodeSwarm's single-line, full-width status ribbon. Do not introduce another
+  notification style over the conversation UI.
 - Optional operating-system notifications sent through `system_notify()` are
   separate from this in-terminal presentation rule and remain supported.
 
@@ -93,13 +93,13 @@ Run the repository quality gate before release:
 make verify
 ```
 
-For Textual, ACP, and CLI changes, add a regression test at the integration
-boundary that failed: use `CodeSwarmApp.run_test` for reactive UI flows and
-Click's `CliRunner` for entry points. Test invalid and replacement external
-state as well as the nominal state; adapters may omit, reorder, or replace
-values between messages.
+For TUI, ACP, and CLI changes, add a Cargo-native regression test at the
+integration boundary that failed. Use Ratatui's `TestBackend` for rendering,
+Rust unit/integration tests for contracts, and the scripts under `tests/tmux`
+for real terminal behavior. Test invalid and replacement external state as
+well as the nominal state; adapters may omit, reorder, or replace values
+between messages.
 
-`tests/test_relay.py` is the regression gate for the relay ring. Preserve its
-two-agent alternation behavior except when intentionally changing a documented
-relay contract, such as reviewer-only stopping. `RelayConversationRosterTests`
-covers N>2 semantics specifically.
+`cargo test --workspace` is the regression gate for the relay ring. Preserve
+two-agent alternation except when intentionally changing a documented relay
+contract, such as reviewer-only stopping; roster tests cover N>2 semantics.

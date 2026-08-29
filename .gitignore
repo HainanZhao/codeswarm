@@ -1,22 +1,14 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
+# Rust build artifacts
 target/
-wheels/
-*.egg-info
-__pycache__
+dist/
 
-# Virtual environments
-.venv
+# Local tool caches
+__pycache__/
+.venv/
+
 .DS_Store
 .vscode
 .zed
-.mypy_cache
-.coverage
-coverage.xml
-htmlcov/
 *.log
 
 agent.jsonl

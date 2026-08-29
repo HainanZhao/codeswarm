@@ -1,36 +1,32 @@
-# Guide to Contributing
+# Contributing to CodeSwarm
 
-Thank you for your interest in improving CodeSwarm!
-
-If you are thinking of fixing a bug or contributing a feature, please open a Discussion first.
-You will be asked for a link to the discussion when you contribute a PR.
-
-TODO: add technical help
+CodeSwarm is a Rust workspace. Cargo is the canonical build, test, lint, and
+package tool; no interpreter or generated dependency environment is required.
 
 ## Verification
 
-Run `make verify` before opening a pull request. It runs the full unit and
-headless-Textual smoke suite, compiles every source file, and checks that the
-lock file is current. UI and ACP changes need a regression test that exercises
-the real `CodeSwarmApp` with `run_test`; isolated handler tests alone are not
-sufficient for reactive state changes.
+Run the complete gate before opening a pull request:
 
-### Textual layout and virtualization tests
+```bash
+make verify
+```
 
-Textual lays out widgets asynchronously. A transcript must not be virtualized
-until its initially mounted message blocks have non-zero layout heights;
-otherwise spacer rows are based on provisional measurements and the scroll
-range can change when an older message is remounted. The virtualizer also
-keeps its current guard window mounted during small scrolls, so late Markdown
-measurement does not trigger an unnecessary widget-tree rebuild.
+This runs `cargo fmt`, all workspace tests, Clippy with warnings denied, and
+the real tmux smoke/config/performance harnesses.
 
-When adding or changing transcript tests:
+For UI, adapter, or CLI changes, add a regression at the integration boundary
+that failed. Use Ratatui's `TestBackend` for deterministic rendering and the
+tmux scripts for terminal-mode, resize, and latency behavior. Keep transcript
+tests focused on logical blocks and bounded viewport work rather than exact
+terminal cell counts.
 
-- wait with a bounded timeout for an observable readiness condition, such as
-  completed Markdown rendering or an active virtual window, before asserting
-  mounted windows or scroll ranges; arbitrary sleeps are machine-dependent;
-- use `CodeSwarmApp.run_test` at a fixed terminal size;
-- assert logical message retention and bounded mounting, rather than relying
-  on a specific platform's exact row count;
-- run the virtualization regressions repeatedly when investigating CI-only
-  failures, then run `make verify` before pushing.
+## Performance rules
+
+The common path must remain tmux-safe and non-blocking:
+
+- stream chunks into existing logical blocks instead of creating one row per
+  token;
+- render only a cached viewport slice;
+- keep tool, thought, terminal, and diff details collapsed until focused;
+- coalesce resize and repaint requests;
+- avoid blocking adapter or filesystem work in the draw/input loop.

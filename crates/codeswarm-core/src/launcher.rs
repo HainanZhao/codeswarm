@@ -80,8 +80,8 @@ pub fn read_saved_roster(path: impl AsRef<Path>) -> Vec<String> {
 
 /// Resolve a saved roster against the currently known canonical identities.
 ///
-/// Resolution is case-insensitive, matching the Python launcher behavior, but
-/// returns the catalog's spelling.  Persisted order is retained, including
+/// Resolution is case-insensitive and returns the catalog's spelling.
+/// Persisted order is retained, including
 /// repeated identities; the launcher does not silently reorder a user's
 /// roster.  Unknown or removed identities are filtered out.
 pub fn resolve_saved_roster(settings_json: &str, available_identities: &[String]) -> Vec<String> {

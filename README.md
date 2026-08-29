@@ -1,38 +1,20 @@
 # ✈ CodeSwarm
 
-CodeSwarm is a focused terminal workspace for collaborating with one or more
-[Agent Client Protocol](https://agentclientprotocol.com/) (ACP) coding agents.
-Build a roster of Claude Code, Codex, Gemini CLI, or another ACP-compatible
-agent and let them work through a task sequentially in one shared conversation.
-
-## Highlights
-
-- Run one coding agent or an unlimited roster from the same terminal UI.
-- Relay multi-agent turns in order, so every response can build on the last.
-- Select the first recipient for the next relay message directly from the
-  roster beside the prompt.
-- Queue follow-up messages safely while an agent is working.
-- Use a compact fighter-HUD interface designed for terminal workflows.
-- Keep work local: CodeSwarm collects no telemetry.
+CodeSwarm is a fast terminal workspace for one or more coding agents. It is a
+Rust application built around Ratatui, with ACP and native adapter support,
+sequential relay turns, lazy transcript details, and a tmux/SSH-first inline
+interface. It collects no telemetry.
 
 ## Install
 
-The recommended installation uses `uv`, which downloads Python 3.14
-automatically when it is not already available:
+Build the release binary with Cargo:
 
 ```bash
-uv tool install --python 3.14 codeswarm
+cargo build --release -p codeswarm-cli
+install -Dm755 target/release/codeswarm ~/.local/bin/codeswarm
 ```
 
-If a supported Python (3.14 or later) is already selected as `python`, install
-CodeSwarm with `pip` instead. Replace `python` with that interpreter's command
-if your system uses a different name:
-
-```bash
-python -m pip install codeswarm
-```
-
-CodeSwarm supports macOS and Linux.
+CodeSwarm supports macOS and Linux with a recent stable Rust toolchain.
 
 ## Run
 
@@ -40,69 +22,50 @@ CodeSwarm supports macOS and Linux.
 codeswarm
 ```
 
-On first launch, choose the agents for your roster. Later launches restore that
-roster. To select a project directory, pass it to the command:
+The first launch opens agent selection. A saved roster is restored on later
+launches. For a deterministic preview or smoke test:
 
 ```bash
-codeswarm ~/projects/example
+codeswarm --demo
+codeswarm --agy "describe the repository"
+codeswarm --acp "codex-acp" "review the current changes"
 ```
 
-Launch a specific roster directly when needed:
+Launch a mixed roster with repeated `--roster` arguments:
 
 ```bash
-codeswarm run -a claude -a codex -a gemini ~/projects/example
+codeswarm --roster "acp:codex-acp" --roster "agy:agy" "review the patch"
 ```
 
-Agents take turns sequentially. Click an agent beside the prompt to choose who
-receives the next message. Press `Ctrl+C` to cancel work or quit; use
-`Ctrl+Shift+P` to pause or resume a multi-agent relay.
+Adapters are intentionally not forced through ACP. Native adapters and custom
+ACP commands can coexist in one roster.
 
-New sessions default to **Auto pilot**, which allows agent tool requests
-without asking for confirmation. CodeSwarm translates that policy to each
-agent's native permission mode and keeps the roster synchronized. You can
-change the policy from the mode selector beside the prompt.
+## Commands
 
-## Essential controls
+Inside the conversation prompt:
 
-| Action | Control |
-| --- | --- |
-| Attach a project file | Type `@` followed by its path. `@` does not tag agents. |
-| Choose the next recipient | Click an agent beside the prompt. |
-| Pause or resume a relay | `Ctrl+Shift+P` or `/pause` |
-| Cancel active work | Press `Ctrl+C` once. |
-| Quit | Press `Ctrl+C` while idle, or twice within three seconds while work is active. |
-| Set the relay safety limit | Start with `--max-rounds N` (default: 100 automated turns). |
+- `/help` shows keyboard and command help.
+- `/config` opens the lightweight inline settings panel.
+- `/export` writes the retained conversation to Markdown.
+- `/mode` and `/mode chat` select or show the current mode state.
+- `/collab roster|manual|pair` selects collaboration routing.
+- `/pause` and `/resume` control a relay.
+- `/clear` clears the local transcript; `/close` exits the session.
 
-Messages submitted while an agent is working wait in a bounded holding area
-and are delivered in order before the relay advances. See the
-[user manual](https://github.com/HainanZhao/codeswarm/blob/main/docs/USER_MANUAL.md)
-for the complete launch flow, commands,
-permissions, and troubleshooting guide.
-
-## ACP agents
-
-CodeSwarm bundles catalog entries for Claude Code, Codex, and Gemini CLI. To use
-another ACP-compatible command:
-
-```bash
-codeswarm acp "node /path/to/agent-acp.js" ~/projects/example
-```
-
-The external agent and its ACP adapter must already be installed and
-authenticated. CodeSwarm starts the adapter but does not bundle provider CLIs or
-manage their accounts.
-
-## Privacy
-
-CodeSwarm does not collect telemetry. Agent prompts, responses, tool calls, and
-terminal activity remain subject to the policies of the agent and provider you
-choose.
+The interface keeps streamed output coalesced and transcript rows cached, so a
+5,000-word response remains interactive in tmux. Run the performance harness
+with `bash tests/tmux/performance.sh`.
 
 ## Development
+
+Cargo is the canonical build and test tool:
 
 ```bash
 make verify
 ```
+
+This runs formatting, workspace tests, Clippy, and the tmux smoke/config/
+performance harnesses.
 
 ## License
 
