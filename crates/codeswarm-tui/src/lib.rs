@@ -81,6 +81,7 @@ pub enum LocalCommand {
     Collaboration,
     Export,
     Agents,
+    Reload,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -519,6 +520,7 @@ pub struct App {
     prompt_editor: PromptEditor,
     agent_names: BTreeMap<usize, String>,
     agent_states: BTreeMap<usize, String>,
+    failed_agent: Option<usize>,
     queued_prompts: VecDeque<QueuedPrompt>,
     next_queue_id: u64,
     selected_queue: Option<usize>,
@@ -550,6 +552,7 @@ impl Default for App {
             prompt_editor: PromptEditor::default(),
             agent_names: BTreeMap::new(),
             agent_states: BTreeMap::new(),
+            failed_agent: None,
             queued_prompts: VecDeque::new(),
             next_queue_id: 0,
             selected_queue: None,
@@ -617,6 +620,7 @@ impl App {
             }
             "/export" => LocalCommand::Export,
             "/agents" => LocalCommand::Agents,
+            "/reload" => LocalCommand::Reload,
             "/help" => {
                 self.keyboard_help = true;
                 self.status = "keyboard help shown".into();
@@ -881,6 +885,16 @@ impl App {
         compact_label(&summary, 80)
     }
 
+    pub fn failed_agent(&self) -> Option<usize> {
+        self.failed_agent
+    }
+
+    pub fn mark_agent_reloaded(&mut self, slot: usize) {
+        self.failed_agent = None;
+        self.agent_states.insert(slot, "starting".into());
+        self.status = "reloading agent".into();
+    }
+
     pub fn set_header(&mut self, active_agent: impl Into<String>, status: impl Into<String>) {
         self.active_agent = active_agent.into();
         self.status = status.into();
@@ -929,6 +943,9 @@ impl App {
             AgentEvent::Ready { slot, .. } => {
                 self.active_agent = self.agent_name(*slot);
                 self.agent_states.insert(*slot, "ready".into());
+                if self.failed_agent == Some(*slot) {
+                    self.failed_agent = None;
+                }
                 self.status = "ready".into();
             }
             AgentEvent::ModesReplaced {
@@ -1058,6 +1075,7 @@ impl App {
                 }
                 self.active_agent = self.agent_name(*slot);
                 self.agent_states.insert(*slot, "error".into());
+                self.failed_agent = Some(*slot);
                 self.status = if *started {
                     format!("crashed: {detail}")
                 } else {
@@ -1553,7 +1571,7 @@ fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
 fn render_keyboard_help(buffer: &mut Buffer, area: Rect) {
     let lines = [
         " keys: ↑/↓ scroll · End follow tail · Tab details · Ctrl+K cancel queue · ? hide help",
-        " commands: /help  /config  /agents  /export  /mode  /collab",
+        " commands: /help  /config  /agents  /export  /mode  /collab  /reload",
         " /mode chat · /collab roster|manual|pair · /pause · /resume",
         " /clear clears the local transcript · /close exits the session",
         " Ctrl+Enter sends to the selected agent · Ctrl+C cancels active work",

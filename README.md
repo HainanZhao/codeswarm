@@ -78,6 +78,7 @@ Inside the conversation prompt:
 - `/mode` and `/mode chat` select or show the current mode state.
 - `/collab roster|manual|pair` selects collaboration routing.
 - `/pause` and `/resume` control a relay.
+- `/reload` retries the most recently crashed agent in its roster slot.
 - `/clear` clears the local transcript; `/close` exits the session.
 
 The interface keeps streamed output coalesced and transcript rows cached, so a

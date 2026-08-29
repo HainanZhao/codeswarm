@@ -19,7 +19,7 @@ matrix records behavior, not widget-level implementation details.
 | Reviewer stop token | Implemented | Prompt guidance, filtering, and batch termination tests. |
 | Pause/resume/cancel/queue | Implemented | CLI controls and relay cancellation. |
 | Mode policy synchronization | Partial | Semantic local mode and adapter forwarding exist; shared native catalog negotiation still needs completion. |
-| Crash tombstone/reload UX | Partial | Core reducer tombstones; live reload/drop flow still needs a dedicated UI action. |
+| Crash tombstone/reload UX | Partial | Core tombstones and `/reload` retries a failed slot; an explicit reload/drop prompt is still needed for unattended failures. |
 | Project-directory selection | Partial | Rust supports `--project-dir PATH`; an in-store directory editor remains to be added. |
 | Local `!command` shell execution | Missing | The Rust CLI reports this as unsupported; add an async workspace-local shell runner before claiming parity. |
 | Persistent prompt/settings preferences | Partial | Roster, custom agents, follow-tail, and collapsed-details persist; density/theme/notification/tool/diff preferences do not. |

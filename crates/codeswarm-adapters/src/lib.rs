@@ -416,6 +416,17 @@ impl RelayHost {
         Ok(())
     }
 
+    pub async fn reload(&mut self, slot: RosterSlot) -> AdapterResult<()> {
+        let host = self
+            .hosts
+            .get_mut(slot)
+            .ok_or_else(|| AdapterError::Transport("reload target is missing".into()))?;
+        host.reload().await?;
+        self.relay
+            .reactivate(slot)
+            .map_err(|error| AdapterError::Transport(error.into()))
+    }
+
     pub fn relay(&self) -> &Relay {
         &self.relay
     }

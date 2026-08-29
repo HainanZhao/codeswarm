@@ -48,6 +48,7 @@ enum AdapterControl {
     Resume,
     SetStrategy(CollaborationStrategy),
     SetMode(String),
+    Reload(usize),
     Cancel,
     Stop,
 }
@@ -755,6 +756,11 @@ fn run_agy_task(
                             let _ = sender.send(Err(error));
                         }
                     }
+                    Some(AdapterControl::Reload(_)) => {
+                        if let Err(error) = adapter.reload().await {
+                            let _ = sender.send(Err(error));
+                        }
+                    }
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
                     | Some(AdapterControl::Pause)
@@ -850,6 +856,11 @@ fn run_acp_task(
                     }
                     Some(AdapterControl::SetMode(mode)) => {
                         if let Err(error) = adapter.set_mode(mode).await {
+                            let _ = sender.send(Err(error));
+                        }
+                    }
+                    Some(AdapterControl::Reload(_)) => {
+                        if let Err(error) = adapter.reload().await {
                             let _ = sender.send(Err(error));
                         }
                     }
@@ -1128,6 +1139,11 @@ fn run_relay_task(
                         let _ = sender.send(Err(error));
                     }
                 }
+                Some(AdapterControl::Reload(slot)) => {
+                    if let Err(error) = relay.reload(slot).await {
+                        let _ = sender.send(Err(error));
+                    }
+                }
                 Some(AdapterControl::Cancel) => {
                     let _ = sender.send(Err(AdapterError::Unsupported("no active relay turn")));
                 }
@@ -1148,7 +1164,7 @@ fn run_terminal(
     load_ui_preferences(app);
     app.set_prompt_completions([
         "/agents", "/cancel", "/clear", "/close", "/collab", "/config", "/exit", "/export",
-        "/help", "/mode", "/pause", "/quit", "/resume",
+        "/help", "/mode", "/pause", "/quit", "/reload", "/resume",
     ]);
     let mut selected_slot = selected_slot;
     let event_log = event_log().ok();
@@ -1459,6 +1475,16 @@ fn run_terminal(
                                         let _ = controls.send(AdapterControl::Stop);
                                     }
                                     return run_store(terminal);
+                                }
+                                LocalCommand::Reload => {
+                                    if let Some(slot) = app.failed_agent()
+                                        && let Some(controls) = &controls
+                                    {
+                                        app.mark_agent_reloaded(slot);
+                                        let _ = controls.send(AdapterControl::Reload(slot));
+                                    } else {
+                                        app.status = "no crashed agent to reload".into();
+                                    }
                                 }
                                 LocalCommand::Export => match export_conversation(app) {
                                     Ok(path) => {

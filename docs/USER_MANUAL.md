@@ -60,6 +60,7 @@ terminal output, and UI history stay local to the producing agent.
 - `/collab` — focus collaboration settings;
   `/collab roster`, `/collab manual`, and `/collab pair` select a strategy.
 - `/pause` and `/resume` — pause or resume a multi-agent relay.
+- `/reload` — retry the most recently crashed adapter in place.
 - `/clear` — clear the local transcript.
 - `/cancel` — cancel the active turn when an adapter supports cancellation.
 - `/close`, `/quit`, and `/exit` — leave the session.

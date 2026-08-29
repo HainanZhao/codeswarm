@@ -137,6 +137,12 @@ impl Relay {
         Ok(())
     }
 
+    pub fn reactivate(&mut self, slot: RosterSlot) -> Result<(), &'static str> {
+        let active = self.active.get_mut(slot).ok_or("slot out of range")?;
+        *active = true;
+        Ok(())
+    }
+
     pub fn drop_agent(&mut self, slot: RosterSlot) -> Result<(), &'static str> {
         if slot == 0 {
             return Err("owner cannot be dropped");
