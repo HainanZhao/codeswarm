@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    io::stdout,
+    io::{Write, stdout},
     path::PathBuf,
     sync::mpsc::{self, Receiver, Sender},
     thread,
@@ -1212,6 +1212,7 @@ fn run_terminal(
     selected_slot: Option<usize>,
 ) -> std::io::Result<()> {
     load_ui_preferences(app);
+    app.load_prompt_history(load_prompt_history());
     app.set_prompt_completions([
         "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/exit", "/export",
         "/help", "/mode", "/pause", "/quit", "/reload", "/drop", "/resume",
@@ -1493,6 +1494,7 @@ fn run_terminal(
                 KeyCode::Enter => {
                     if let PromptAction::Submit(prompt) = app.handle_prompt_input(Input::from(key))
                     {
+                        append_prompt_history(&prompt);
                         if let Some(command) = prompt.trim().strip_prefix('!') {
                             let command = command.trim();
                             if command.is_empty() {
@@ -1751,6 +1753,53 @@ fn event_log() -> std::io::Result<BufferedEventLog> {
     let directory = root.join("codeswarm");
     std::fs::create_dir_all(&directory)?;
     EventLog::open(directory.join("rust-events.jsonl")).buffered()
+}
+
+fn prompt_history_path() -> Option<PathBuf> {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .map(|root| root.join("codeswarm").join("prompt-history.jsonl"))
+}
+
+fn load_prompt_history() -> Vec<String> {
+    let Some(path) = prompt_history_path() else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<String>(line).ok())
+        .filter(|prompt| !prompt.trim().is_empty())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .take(50)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+fn append_prompt_history(prompt: &str) {
+    let Some(path) = prompt_history_path() else {
+        return;
+    };
+    let Some(parent) = path.parent() else { return };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let Ok(encoded) = serde_json::to_string(prompt) else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(format!("{encoded}\n").as_bytes());
+    }
 }
 
 #[cfg(test)]

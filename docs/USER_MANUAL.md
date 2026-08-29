@@ -46,6 +46,7 @@ terminal output, and UI history stay local to the producing agent.
 
 - `Enter` submits a prompt; `Shift+Enter` inserts a newline.
 - `Up`/`Down` scroll the transcript; `End` follows the live tail.
+- On an empty single-line prompt, `Up`/`Down` browse the last 50 persisted prompts.
 - `Tab` completes a slash command; `F1` or `?` toggles help.
 - `Ctrl+Enter` sends to the selected roster agent.
 - `Ctrl+C` cancels active work; while idle it exits.

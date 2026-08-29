@@ -1009,6 +1009,16 @@ impl App {
         self.prompt_editor.set_completion_candidates(candidates);
     }
 
+    pub fn load_prompt_history<I, S>(&mut self, entries: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for entry in entries {
+            self.prompt_editor.remember(entry);
+        }
+    }
+
     /// Apply normalized adapter state without exposing protocol-specific
     /// objects to the renderer. Text chunks are coalesced into one transcript
     /// block per active agent turn.

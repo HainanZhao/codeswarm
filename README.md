@@ -90,6 +90,8 @@ The interface keeps streamed output coalesced and transcript rows cached, so a
 5,000-word response remains interactive in tmux. Run the performance harness
 with `bash tests/tmux/performance.sh`.
 
+Prompt history is persisted locally and capped at the last 50 entries.
+
 ## Development
 
 Cargo is the canonical build and test tool:
