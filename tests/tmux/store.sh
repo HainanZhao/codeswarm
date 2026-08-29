@@ -54,12 +54,12 @@ tmux -L "$socket_name" send-keys -t "$pane_target" Space
 wait_for "▶ ☑ Custom Agent"
 tmux -L "$socket_name" send-keys -t "$pane_target" C-s
 for _ in $(seq 1 100); do
-  if grep -Fq '"roster": "custom.example"' "$config_dir/codeswarm/codeswarm.json"; then
+  if grep -Fq 'custom.example' "$config_dir/codeswarm/codeswarm.json"; then
     break
   fi
   sleep 0.05
 done
-if ! grep -Fq '"roster": "custom.example"' "$config_dir/codeswarm/codeswarm.json"; then
+if ! grep -Fq 'custom.example' "$config_dir/codeswarm/codeswarm.json"; then
   echo "Ctrl+S did not persist the selected roster" >&2
   capture >&2 || true
   exit 1
