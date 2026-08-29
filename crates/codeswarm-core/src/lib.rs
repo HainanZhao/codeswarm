@@ -173,13 +173,17 @@ pub fn reduce(state: &mut SessionState, event: AgentEvent) -> Vec<Effect> {
             vec![Effect::Render]
         }
         AgentEvent::Text { slot, text } => {
+            state.active_slot = Some(slot);
             state.public_text.push((slot, text));
             vec![Effect::Render]
         }
-        AgentEvent::Thought { .. }
-        | AgentEvent::Tool { .. }
-        | AgentEvent::Permission { .. }
-        | AgentEvent::Terminal { .. } => vec![Effect::Render],
+        AgentEvent::Thought { slot, .. }
+        | AgentEvent::Tool { slot, .. }
+        | AgentEvent::Permission { slot, .. }
+        | AgentEvent::Terminal { slot, .. } => {
+            state.active_slot = Some(slot);
+            vec![Effect::Render]
+        }
         AgentEvent::TurnComplete { .. } => {
             state.active_slot = None;
             let next =
@@ -355,5 +359,20 @@ mod tests {
         }
         assert_eq!(replayed, expected);
         std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn activity_marks_turn_active_until_completion() {
+        let mut state = SessionState::new(1);
+        reduce(
+            &mut state,
+            AgentEvent::Text {
+                slot: 0,
+                text: "stream".into(),
+            },
+        );
+        assert_eq!(state.active_slot, Some(0));
+        reduce(&mut state, AgentEvent::TurnComplete { slot: 0 });
+        assert_eq!(state.active_slot, None);
     }
 }
