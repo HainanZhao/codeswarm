@@ -79,6 +79,8 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   while preserving the stable roster slot and event log.
 - [x] Normalized ACP permission requests, including stable tool IDs, titles,
   and selectable option labels.
+- [x] Added lazy collapsed tool/thought/terminal details with explicit
+  keyboard expansion, keeping expensive detail off the scroll path.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
   \`make rust-tmux\`.
 
