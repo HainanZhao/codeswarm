@@ -15,7 +15,9 @@ use async_trait::async_trait;
 use codeswarm_core::{
     AgentCapabilities, AgentEvent, Effect, EventLog, Mode, PermissionAnswer, PermissionRequest,
     RosterSlot, SessionState, TerminalEvent, ToolStatus, ToolUpdate, reduce,
-    relay::{DEFAULT_STOP_ACKNOWLEDGMENT, Relay, RelayDecision, strip_stop_token},
+    relay::{
+        CollaborationStrategy, DEFAULT_STOP_ACKNOWLEDGMENT, Relay, RelayDecision, strip_stop_token,
+    },
 };
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -279,6 +281,16 @@ impl RelayHost {
 
     pub fn resume(&mut self) {
         self.relay.resume();
+    }
+
+    /// Select how future non-direct turns are routed. Queued prompts and the
+    /// shared context remain intact when a user changes this setting.
+    pub fn set_strategy(&mut self, strategy: CollaborationStrategy) {
+        self.relay.set_strategy(strategy);
+    }
+
+    pub fn strategy(&self) -> CollaborationStrategy {
+        self.relay.strategy()
     }
 
     pub fn relay(&self) -> &Relay {

@@ -31,6 +31,21 @@ pub enum QueuedKind {
     Direct,
 }
 
+/// How a multi-agent session chooses its next non-direct recipient.
+///
+/// `Roster` is the normal sequential ring. `Pair` keeps the owner and the
+/// first selected reviewer in a tight review loop, which is useful when a
+/// larger saved roster is available but the user wants focused two-agent
+/// collaboration. `Manual` never advances on its own after the first turn;
+/// every subsequent turn must be explicitly targeted or queued by the user.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CollaborationStrategy {
+    #[default]
+    Roster,
+    Manual,
+    Pair,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueuedPrompt {
     pub slot: RosterSlot,
@@ -63,6 +78,8 @@ pub struct Relay {
     direct: VecDeque<QueuedPrompt>,
     previous_slot: Option<RosterSlot>,
     context: CollaborationContext,
+    strategy: CollaborationStrategy,
+    pair_partner: Option<RosterSlot>,
 }
 
 impl Relay {
@@ -80,6 +97,22 @@ impl Relay {
             direct: VecDeque::new(),
             previous_slot: None,
             context: CollaborationContext::new(roster_size),
+            strategy: CollaborationStrategy::Roster,
+            pair_partner: None,
+        }
+    }
+
+    pub fn strategy(&self) -> CollaborationStrategy {
+        self.strategy
+    }
+
+    /// Change routing for future turns. This does not discard queued work or
+    /// alter the public context journal; it only affects the next automatic
+    /// recipient. Pair selection is re-derived from the next `first` value.
+    pub fn set_strategy(&mut self, strategy: CollaborationStrategy) {
+        if self.strategy != strategy {
+            self.strategy = strategy;
+            self.pair_partner = None;
         }
     }
 
@@ -197,6 +230,16 @@ impl Relay {
         }
         let queued = Self::pop_active(&self.active, &mut self.direct)
             .or_else(|| Self::pop_active(&self.active, &mut self.steering));
+        // Manual mode is deliberately input-driven. A queued prompt (which
+        // includes a newly submitted human prompt) is still dispatched, but
+        // an unprompted call after a completed turn must not silently hand the
+        // conversation to another agent.
+        if self.strategy == CollaborationStrategy::Manual
+            && queued.is_none()
+            && self.previous_slot.is_some()
+        {
+            return RelayDecision::Complete;
+        }
         let (slot, prompt, direct) = match queued {
             Some(queued) => (
                 queued.slot,
@@ -204,10 +247,7 @@ impl Relay {
                 queued.kind == QueuedKind::Direct,
             ),
             None => {
-                let slot = self
-                    .next
-                    .filter(|slot| self.active[*slot])
-                    .unwrap_or_else(|| self.first_active_from(first));
+                let slot = self.next_automatic_slot(first);
                 (slot, initial_prompt.into(), false)
             }
         };
@@ -254,11 +294,45 @@ impl Relay {
             .find(|candidate| self.active[*candidate])
             .expect("callers require an active roster")
     }
+
+    fn next_automatic_slot(&mut self, first: RosterSlot) -> RosterSlot {
+        match self.strategy {
+            CollaborationStrategy::Roster | CollaborationStrategy::Manual => self
+                .next
+                .filter(|slot| self.active[*slot])
+                .unwrap_or_else(|| self.first_active_from(first)),
+            CollaborationStrategy::Pair => {
+                // Pair mode always includes the owner. The first selected
+                // non-owner becomes the reviewer; when the owner is selected
+                // first, choose the next active roster member.
+                let partner = if let Some(partner) = self.pair_partner {
+                    partner
+                } else {
+                    let partner = if first != 0 && self.active.get(first).copied().unwrap_or(false)
+                    {
+                        first
+                    } else {
+                        self.first_active_from(1)
+                    };
+                    self.pair_partner = Some(partner);
+                    partner
+                };
+                match self.previous_slot {
+                    Some(previous) if previous == 0 && self.active[partner] => partner,
+                    Some(previous) if previous == partner && self.active[0] => 0,
+                    Some(previous) if previous == 0 || previous == partner => {
+                        self.first_active_from(0)
+                    }
+                    _ => self.first_active_from(first),
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Relay, RelayDecision, STOP_TOKEN, strip_stop_token};
+    use super::{CollaborationStrategy, Relay, RelayDecision, STOP_TOKEN, strip_stop_token};
 
     #[test]
     fn relay_moves_around_the_ring_without_self_review() {
@@ -333,5 +407,44 @@ mod tests {
         let (visible, requested) = strip_stop_token("ordinary response");
         assert_eq!(visible, "ordinary response");
         assert!(!requested);
+    }
+
+    #[test]
+    fn manual_strategy_requires_an_explicit_follow_up_prompt() {
+        let mut relay = Relay::new(3, 10);
+        relay.set_strategy(CollaborationStrategy::Manual);
+        assert!(matches!(
+            relay.begin("task", 0),
+            RelayDecision::Dispatch { slot: 0, .. }
+        ));
+        relay.finish(0, false, false);
+        assert_eq!(
+            relay.begin("would auto advance", 0),
+            RelayDecision::Complete
+        );
+        assert!(relay.enqueue_human("review", Some(2)));
+        assert!(
+            matches!(relay.begin("", 0), RelayDecision::Dispatch { slot: 2, prompt, .. } if prompt == "review")
+        );
+    }
+
+    #[test]
+    fn pair_strategy_alternates_owner_and_selected_reviewer() {
+        let mut relay = Relay::new(4, 10);
+        relay.set_strategy(CollaborationStrategy::Pair);
+        assert!(matches!(
+            relay.begin("task", 2),
+            RelayDecision::Dispatch { slot: 2, .. }
+        ));
+        relay.finish(2, false, false);
+        assert!(matches!(
+            relay.begin("review", 2),
+            RelayDecision::Dispatch { slot: 0, .. }
+        ));
+        relay.finish(0, false, false);
+        assert!(matches!(
+            relay.begin("next", 2),
+            RelayDecision::Dispatch { slot: 2, .. }
+        ));
     }
 }
