@@ -81,9 +81,10 @@ bounded to preserve tmux responsiveness.
 
 Unknown slash commands are reported locally and are never sent to an agent.
 
-The configuration panel includes an optional notification toggle. On Linux it
-uses `notify-send`; on macOS it uses `osascript` when the corresponding system
-tool is available.
+The configuration panel includes compact/comfortable density, normal/hidden
+scrollbar, thought visibility, tool-detail expansion, diff view, and an
+optional notification toggle. On Linux notifications use `notify-send`; on
+macOS they use `osascript` when the corresponding system tool is available.
 
 ## Performance model
 

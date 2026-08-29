@@ -721,6 +721,13 @@ fn load_ui_preferences(app: &mut App) {
     {
         app.set_density(density);
     }
+    if let Some(scrollbar) = value
+        .get("ui")
+        .and_then(|ui| ui.get("scrollbar"))
+        .and_then(serde_json::Value::as_str)
+    {
+        app.set_scrollbar_visible(!scrollbar.eq_ignore_ascii_case("hidden"));
+    }
     if let Some(split) = value
         .get("diff")
         .and_then(|diff| diff.get("view"))
@@ -744,6 +751,14 @@ fn save_ui_preferences(app: &App) -> std::io::Result<()> {
             }
             ui["follow_output"] = serde_json::Value::Bool(app.follow_tail);
             ui["density"] = serde_json::Value::String(app.density().into());
+            ui["scrollbar"] = serde_json::Value::String(
+                if app.scrollbar_visible() {
+                    "normal"
+                } else {
+                    "hidden"
+                }
+                .into(),
+            );
         }
         let transcript = settings
             .entry("transcript")

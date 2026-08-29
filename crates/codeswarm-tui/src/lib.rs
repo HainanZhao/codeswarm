@@ -587,6 +587,7 @@ pub struct App {
     expand_tools: bool,
     density: Density,
     tool_expand_policy: ToolExpandPolicy,
+    show_scrollbar: bool,
     diff_split: bool,
     store_visible: bool,
     store_selected: usize,
@@ -628,6 +629,7 @@ impl Default for App {
             expand_tools: false,
             density: Density::Comfortable,
             tool_expand_policy: ToolExpandPolicy::Fail,
+            show_scrollbar: true,
             diff_split: false,
             store_visible: false,
             store_selected: 0,
@@ -905,7 +907,7 @@ impl App {
                 ConfigAction::Changed
             }
             ConfigKey::Down => {
-                self.config_selected = self.config_selected.saturating_add(1).min(10);
+                self.config_selected = self.config_selected.saturating_add(1).min(11);
                 ConfigAction::Changed
             }
             ConfigKey::Confirm => {
@@ -958,7 +960,8 @@ impl App {
                             Density::Compact => Density::Comfortable,
                         };
                     }
-                    9..=10 => {}
+                    9 => self.show_scrollbar = !self.show_scrollbar,
+                    10..=11 => {}
                     _ => return ConfigAction::Ignored,
                 }
                 self.status = "configuration updated".into();
@@ -1019,6 +1022,14 @@ impl App {
 
     pub fn set_density(&mut self, density: &str) {
         self.density = Density::from_setting(density);
+    }
+
+    pub fn scrollbar_visible(&self) -> bool {
+        self.show_scrollbar
+    }
+
+    pub fn set_scrollbar_visible(&mut self, visible: bool) {
+        self.show_scrollbar = visible;
     }
 
     pub fn diff_split(&self) -> bool {
@@ -1636,7 +1647,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Constraint::Length(prompt_height as u16),
     ])
     .split(area);
-    let content_width = rows[0].width.saturating_sub(2) as usize;
+    let content_width = rows[0]
+        .width
+        .saturating_sub(2 + u16::from(app.show_scrollbar)) as usize;
     let content_height = usize::from(rows[0].height.saturating_sub(1));
     if app.follow_tail {
         app.follow_tail(rows[0].width as usize, content_height);
@@ -1645,6 +1658,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .transcript
         .viewport(content_width, app.scroll_y, content_height, 0);
     render_transcript(frame.buffer_mut(), rows[0], visible, app, app.diff_split);
+    if app.show_scrollbar {
+        render_scrollbar(
+            frame.buffer_mut(),
+            rows[0],
+            app.scroll_y,
+            content_height,
+            &mut app.transcript,
+            content_width,
+        );
+    }
 
     let follow_label = if app.follow_tail {
         "FOLLOWING"
@@ -1796,6 +1819,54 @@ fn render_compact(frame: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new(prompt)
             .style(Style::default().fg(Color::White).bg(PANEL_BG))
             .render(prompt_area, frame.buffer_mut());
+    }
+}
+
+fn render_scrollbar(
+    buffer: &mut Buffer,
+    area: Rect,
+    scroll_y: usize,
+    viewport_height: usize,
+    transcript: &mut Transcript,
+    content_width: usize,
+) {
+    if area.width == 0 || viewport_height == 0 {
+        return;
+    }
+    let track_height = area.height.saturating_sub(2) as usize;
+    if track_height == 0 {
+        return;
+    }
+    let total = transcript.row_count(content_width);
+    let thumb_height = (track_height.saturating_mul(track_height) / total.max(1))
+        .max(1)
+        .min(track_height);
+    let max_scroll = total.saturating_sub(viewport_height);
+    let thumb_offset = if max_scroll == 0 {
+        0
+    } else {
+        (track_height.saturating_sub(thumb_height))
+            .saturating_mul(scroll_y)
+            .checked_div(max_scroll)
+            .unwrap_or(0)
+    };
+    let x = area.right().saturating_sub(1);
+    for offset in 0..track_height {
+        let symbol = if offset >= thumb_offset && offset < thumb_offset + thumb_height {
+            "█"
+        } else {
+            "│"
+        };
+        let style = if symbol == "█" {
+            Style::default().fg(Color::DarkGray).bg(TRANSCRIPT_BG)
+        } else {
+            Style::default()
+                .fg(Color::Rgb(45, 55, 68))
+                .bg(TRANSCRIPT_BG)
+        };
+        buffer[(x, area.y.saturating_add(1 + offset as u16))]
+            .set_symbol(symbol)
+            .set_style(style);
     }
 }
 
@@ -1961,6 +2032,15 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
             },
             true,
         ),
+        (
+            "Scrollbar",
+            if app.show_scrollbar {
+                "Normal"
+            } else {
+                "Hidden"
+            },
+            true,
+        ),
         ("Renderer", "Inline · tmux safe", false),
         ("Agent store", "Run /agents", false),
     ];
@@ -1997,6 +2077,7 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
                 "Thoughts" => "Thoughts",
                 "Tool details" => "Tools",
                 "Density" => "Density",
+                "Scrollbar" => "Scroll",
                 "Collaboration" => "Collab",
                 "Renderer" => "Render",
                 "Agent store" => "Agents",
@@ -3055,6 +3136,21 @@ mod tests {
             },
         });
         assert!(app.transcript.row_count(80) > 1);
+    }
+
+    #[test]
+    fn scrollbar_preference_toggles_the_cached_indicator() {
+        let mut app = App::default();
+        app.handle_local_command("/config");
+        for _ in 0..9 {
+            app.handle_config_key(ConfigKey::Down);
+        }
+        assert!(app.scrollbar_visible());
+        assert_eq!(
+            app.handle_config_key(ConfigKey::Confirm),
+            ConfigAction::Changed
+        );
+        assert!(!app.scrollbar_visible());
     }
 
     #[test]
