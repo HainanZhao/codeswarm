@@ -25,7 +25,8 @@ use codeswarm_tui::{
 };
 use crossterm::{
     event::{
-        self, DisableFocusChange, EnableFocusChange, Event, KeyCode, KeyEventKind, KeyModifiers,
+        self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+        Event, KeyCode, KeyEventKind, KeyModifiers,
     },
     execute,
     terminal::{
@@ -198,7 +199,7 @@ fn main() -> std::io::Result<()> {
     // report focus changes. The renderer remains correct when a terminal does
     // not answer: App defaults to focused, so OS notifications are never
     // emitted based on an unknown focus state.
-    execute!(output, EnableFocusChange)?;
+    execute!(output, EnableFocusChange, EnableMouseCapture)?;
     if alternate_screen {
         execute!(output, EnterAlternateScreen)?;
     }
@@ -225,7 +226,11 @@ fn main() -> std::io::Result<()> {
     // inline viewport exits back to the user's shell.
     execute!(terminal.backend_mut(), SetTitle("CodeSwarm"))?;
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableFocusChange)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableFocusChange,
+        DisableMouseCapture
+    )?;
     if alternate_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     }
@@ -1907,6 +1912,10 @@ fn run_terminal(
             }
             Event::FocusLost => {
                 app.set_terminal_focused(false);
+                continue;
+            }
+            Event::Mouse(_) if app.path_picker_visible() => {
+                app.dismiss_path_picker();
                 continue;
             }
             Event::Key(key) => {

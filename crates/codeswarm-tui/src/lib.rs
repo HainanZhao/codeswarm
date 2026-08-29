@@ -1818,6 +1818,12 @@ impl App {
         &self.path_matches
     }
 
+    pub fn dismiss_path_picker(&mut self) {
+        self.path_query.clear();
+        self.path_matches.clear();
+        self.path_selection = 0;
+    }
+
     pub fn path_selection(&self) -> usize {
         self.path_selection
     }
@@ -1876,9 +1882,7 @@ impl App {
                 }
             }
             Key::Esc => {
-                self.path_query.clear();
-                self.path_matches.clear();
-                self.path_selection = 0;
+                self.dismiss_path_picker();
                 PathPickerAction::Dismiss
             }
             _ => PathPickerAction::Ignored,
