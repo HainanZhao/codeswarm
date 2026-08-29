@@ -13,6 +13,7 @@ use codeswarm_adapters::{
 use codeswarm_core::PermissionAnswer;
 use codeswarm_core::agents::{AdapterKind, AgentDefinition, catalog_from_settings};
 use codeswarm_core::launcher::{LaunchDecision, launch_decision};
+use codeswarm_core::relay::RelayDecision;
 use codeswarm_core::{AgentEvent, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{
@@ -721,7 +722,7 @@ async fn run_relay_turn_with_controls(
     sender: &Sender<AdapterResult<AgentEvent>>,
     task: String,
     first_slot: usize,
-) -> (bool, Vec<AdapterControl>) {
+) -> (bool, Vec<AdapterControl>, Option<RelayDecision>) {
     let cancellation = relay.cancellation();
     let turn = relay.run_turn(task, first_slot);
     tokio::pin!(turn);
@@ -740,10 +741,43 @@ async fn run_relay_turn_with_controls(
             },
         }
     };
-    if let Err(error) = result {
-        let _ = sender.send(Err(error));
+    match result {
+        Ok(decision) => (stopping, deferred, Some(decision)),
+        Err(error) => {
+            let _ = sender.send(Err(error));
+            (stopping, deferred, None)
+        }
     }
-    (stopping, deferred)
+}
+
+/// Drain the causal relay ring for one human task.
+///
+/// `RelayHost::run_turn` deliberately performs one adapter turn at a time;
+/// this wrapper is the CLI's handoff loop that invokes it again for the next
+/// roster slot. Controls received while a turn is active are returned to the
+/// outer command loop so pause, queue, direct, and stop semantics remain
+/// ordered at the turn boundary.
+async fn run_relay_sequence_with_controls(
+    relay: &mut RelayHost,
+    controls: &mut tokio::sync::mpsc::UnboundedReceiver<AdapterControl>,
+    sender: &Sender<AdapterResult<AgentEvent>>,
+    task: String,
+    first_slot: usize,
+) -> (bool, Vec<AdapterControl>) {
+    let mut task = task;
+    loop {
+        let (stopping, deferred, decision) =
+            run_relay_turn_with_controls(relay, controls, sender, task, first_slot).await;
+        if stopping || !deferred.is_empty() {
+            return (stopping, deferred);
+        }
+        if !matches!(decision, Some(RelayDecision::Dispatch { .. })) {
+            return (false, deferred);
+        }
+        // The first invocation carries the human task. Subsequent invocations
+        // let Relay choose its next slot and use the prior response/context.
+        task = String::new();
+    }
 }
 
 fn run_relay_task(
@@ -799,7 +833,7 @@ fn run_relay_task(
         }
         let mut pending_commands = VecDeque::new();
         if let Some(prompt) = prompt {
-            let (stopping, deferred) = run_relay_turn_with_controls(
+            let (stopping, deferred) = run_relay_sequence_with_controls(
                 &mut relay,
                 &mut controls,
                 &sender,
@@ -827,7 +861,7 @@ fn run_relay_task(
                         )));
                         continue;
                     }
-                    let (stopping, deferred) = run_relay_turn_with_controls(
+                    let (stopping, deferred) = run_relay_sequence_with_controls(
                         &mut relay,
                         &mut controls,
                         &sender,
@@ -847,7 +881,7 @@ fn run_relay_task(
                         )));
                         continue;
                     }
-                    let (stopping, deferred) = run_relay_turn_with_controls(
+                    let (stopping, deferred) = run_relay_sequence_with_controls(
                         &mut relay,
                         &mut controls,
                         &sender,
@@ -874,7 +908,7 @@ fn run_relay_task(
                             continue;
                         }
                     }
-                    let (stopping, deferred) = run_relay_turn_with_controls(
+                    let (stopping, deferred) = run_relay_sequence_with_controls(
                         &mut relay,
                         &mut controls,
                         &sender,
@@ -1259,9 +1293,10 @@ fn event_log() -> std::io::Result<EventLog> {
 mod tests {
     use super::{
         AdapterControl, AgentSpec, Launch, bare_launch_from_settings, dispatch_permission_action,
-        dispatch_queued_prompt, parse_launch,
+        dispatch_queued_prompt, parse_launch, run_relay_sequence_with_controls,
     };
-    use codeswarm_core::PermissionAnswer;
+    use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
+    use codeswarm_core::{AgentCapabilities, AgentEvent, PermissionAnswer};
     use codeswarm_tui::{PermissionAction, QueuedPrompt};
 
     #[test]
@@ -1365,6 +1400,62 @@ mod tests {
                 answer: PermissionAnswer::Selected { option_id },
             }) if request_id == "request-7" && option_id == "allow-once"
         ));
+    }
+
+    #[tokio::test]
+    async fn roster_sequence_advances_through_each_agent_turn() {
+        let hosts = vec![
+            AdapterHost::new(
+                Box::new(ScriptedAdapter::new(
+                    0,
+                    AgentCapabilities::default(),
+                    [
+                        AgentEvent::Text {
+                            slot: 0,
+                            text: "first response".into(),
+                        },
+                        AgentEvent::TurnComplete { slot: 0 },
+                    ],
+                )),
+                None,
+            ),
+            AdapterHost::new(
+                Box::new(ScriptedAdapter::new(
+                    1,
+                    AgentCapabilities::default(),
+                    [
+                        AgentEvent::Text {
+                            slot: 1,
+                            text: "review response".into(),
+                        },
+                        AgentEvent::TurnComplete { slot: 1 },
+                    ],
+                )),
+                None,
+            ),
+        ];
+        let mut relay = RelayHost::new(hosts, 2).expect("two-agent relay");
+        relay.start().await.expect("scripted adapters start");
+        let (sender, _events) = std::sync::mpsc::channel::<AdapterResult<AgentEvent>>();
+        let (_control_sender, mut controls) = tokio::sync::mpsc::unbounded_channel();
+        let (_stopping, deferred) = run_relay_sequence_with_controls(
+            &mut relay,
+            &mut controls,
+            &sender,
+            "initial task".into(),
+            0,
+        )
+        .await;
+
+        assert!(deferred.is_empty());
+        assert_eq!(
+            relay
+                .dispatches()
+                .iter()
+                .map(|(slot, _)| *slot)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
     }
 
     #[test]
