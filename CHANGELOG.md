@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.43] - 2026-08-29
+
+### Fixed
+
+- Relay terminal outcomes now restore the roster to idle and preserve agent
+  token-limit, request-limit, and refusal notices in the transcript.
+- Bursty token streams are buffered without quadratic string copying before
+  they reach the renderer.
+
 ## [0.6.42] - 2026-08-29
 
 ### Fixed
