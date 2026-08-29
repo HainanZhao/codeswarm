@@ -628,7 +628,13 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         self._agent_started_at: float | None = None
         self._agent_elapsed: dict[int, int] = {}
         self._agent_status_timer: Timer | None = None
-        self._stream_pending: tuple[str, str, AgentBase | None] | None = None
+        # Keep fragments separate until the cadence flush. Providers commonly
+        # emit token-sized chunks in a single event-loop slice; repeatedly
+        # concatenating that burst turns one response into quadratic copying
+        # before Textual gets a chance to render it.
+        self._stream_pending: (
+            tuple[str, list[str], AgentBase | None] | None
+        ) = None
         self._stream_flush_worker_running = False
         self._stream_flush_task: asyncio.Task[None] | None = None
         self._collaboration_complete = False
@@ -1144,9 +1150,9 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
             await self.flush_agent_stream()
             pending = self._stream_pending
         if pending is None:
-            self._stream_pending = (kind, fragment, agent)
+            self._stream_pending = (kind, [fragment], agent)
         else:
-            self._stream_pending = (kind, pending[1] + fragment, agent)
+            pending[1].append(fragment)
         if not self._stream_flush_worker_running:
             self._stream_flush_worker_running = True
             self._stream_flush_task = asyncio.create_task(
@@ -1174,7 +1180,8 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
         self._stream_pending = None
         if pending is None:
             return
-        kind, fragment, agent = pending
+        kind, fragments, agent = pending
+        fragment = "".join(fragments)
         self.clear_agent_thinking()
         self.begin_agent_output(agent)
         if kind == "response":
@@ -2181,9 +2188,45 @@ class Conversation(ConversationACPHandlers, containers.Vertical):
                             classes="-stop-reason",
                         )
                     )
-                elif result.reason == "stop_token":
+                elif result.reason in {
+                    "max_tokens",
+                    "max_turn_requests",
+                    "refusal",
+                }:
+                    # Relay turns normally finish through ``agent_turn_over``
+                    # with ``end_turn`` so the prompt remains usable. Preserve
+                    # the adapter's terminal reason here instead of silently
+                    # losing a quota/refusal outcome from a non-owner peer.
+                    from codeswarm.widgets.markdown_note import MarkdownNote
+
+                    stopped_agent = self._active_relay_agent or self.agent
+                    agent = (
+                        self._agent_display_name(stopped_agent).title()
+                        if stopped_agent is not None
+                        else "Agent"
+                    )
+                    stop_messages = {
+                        "max_tokens": STOP_REASON_MAX_TOKENS,
+                        "max_turn_requests": STOP_REASON_MAX_TURN_REQUESTS,
+                        "refusal": STOP_REASON_REFUSAL,
+                    }
+                    await self.post(
+                        MarkdownNote(
+                            stop_messages[result.reason].replace("$AGENT", agent),
+                            classes="-stop-reason",
+                        )
+                    )
+                # A stopped relay has no worker left to update the roster.
+                # Finish its compact status here for every terminal outcome,
+                # not only for the reviewer stop token.  In particular, a
+                # peer exhausting its quota used to leave the roster looking
+                # as though it was still working even though the prompt was
+                # available again.  A pause is intentionally different: it
+                # retains its in-progress status and can be resumed.
+                if result.stopped and result.reason != "paused":
                     self._mark_collaboration_complete()
-                    await self._post_collaboration_summary()
+                    if result.reason != "nothing_queued":
+                        await self._post_collaboration_summary()
             except Exception as error:
                 await self._post_agent_communication_error(error)
             finally:

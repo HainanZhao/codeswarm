@@ -558,7 +558,7 @@ class RelayConversation:
                     context_agent = agent
                     continue
                 return RelayResult(round_number, True, "stop_token")
-            if stop_reason not in (None, "end_turn"):
+            if stop_reason is not None and stop_reason != "end_turn":
                 return RelayResult(round_number, True, stop_reason)
 
             context_agent = agent

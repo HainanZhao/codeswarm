@@ -566,6 +566,55 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_relay_token_limit_is_explained_in_the_transcript(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(120, 40)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                claude = _RosterAgent("Claude")
+                gemini = _RosterAgent("Gemini")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.com", name="Claude", short_name="claude"
+                        ),
+                        claude,  # type: ignore[arg-type]
+                    ),
+                    RosterEntry(
+                        AgentData(
+                            identity="geminicli.com", name="Gemini", short_name="gemini"
+                        ),
+                        gemini,  # type: ignore[arg-type]
+                    ),
+                ]
+                conversation.session.relay = RelayConversation(
+                    (claude, gemini)  # type: ignore[arg-type]
+                )
+                conversation.session.send_prompt = AsyncMock(
+                    return_value=RelayResult(1, True, "max_tokens")
+                )  # type: ignore[method-assign]
+                conversation._active_relay_agent = gemini  # type: ignore[assignment]
+
+                await conversation.send_prompt_to_agent.__wrapped__(
+                    conversation, "Continue"
+                )
+                await pilot.pause()
+
+                self.assertIn(
+                    "Maximum tokens reached",
+                    conversation.query(MarkdownNote).last().source,
+                )
+                self.assertTrue(conversation._collaboration_complete)
+                self.assertTrue(
+                    any(
+                        "Batch complete" in str(getattr(block, "content", ""))
+                        for block in conversation.contents.transcript_blocks
+                    )
+                )
+
+        asyncio.run(scenario())
+
     def test_stop_token_adds_per_agent_batch_elapsed_summary(self) -> None:
         async def scenario() -> None:
             async with CodeSwarmApp(setup_prompt=False).run_test(
