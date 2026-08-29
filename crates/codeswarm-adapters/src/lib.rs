@@ -11,7 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use codeswarm_core::{
     AgentCapabilities, AgentEvent, Effect, EventLog, Mode, PermissionAnswer, PermissionRequest,
-    RosterSlot, SessionState, ToolStatus, ToolUpdate, reduce,
+    RosterSlot, SessionState, TerminalEvent, ToolStatus, ToolUpdate, reduce,
     relay::{Relay, RelayDecision},
 };
 use serde_json::Value;
@@ -606,6 +606,12 @@ fn parse_agy_line(slot: RosterSlot, line: &str) -> AdapterResult<Option<AgentEve
     let value: Value =
         serde_json::from_str(line).map_err(|error| AdapterError::Protocol(error.to_string()))?;
     let event = value.get("event").and_then(Value::as_str);
+    if let Some(terminal) = parse_terminal_event(&value, event) {
+        return Ok(Some(AgentEvent::Terminal {
+            slot,
+            event: terminal,
+        }));
+    }
     match event {
         Some("step_update") => {
             let Some(update) = value.get("step_update") else {
@@ -1033,6 +1039,12 @@ fn parse_acp_notification(slot: RosterSlot, line: &str) -> AdapterResult<Option<
             update.get("options"),
         ));
     }
+    if let Some(terminal) = parse_terminal_event(update, kind) {
+        return Ok(Some(AgentEvent::Terminal {
+            slot,
+            event: terminal,
+        }));
+    }
     let text = update
         .get("content")
         .and_then(|content| content.get("text"))
@@ -1073,6 +1085,52 @@ fn parse_acp_notification(slot: RosterSlot, line: &str) -> AdapterResult<Option<
             }))
         }
         _ => Ok(None),
+    }
+}
+
+/// Normalize terminal lifecycle updates emitted by ACP-compatible bridges and
+/// native stream adapters. Protocols have used both snake_case update names
+/// and a nested `terminal` object, so accept either without leaking that
+/// shape beyond the adapter boundary.
+fn parse_terminal_event(value: &Value, kind: Option<&str>) -> Option<TerminalEvent> {
+    let nested = value.get("terminal").unwrap_or(value);
+    let kind = kind.or_else(|| value.get("event").and_then(Value::as_str))?;
+    let id = nested
+        .get("terminalId")
+        .or_else(|| nested.get("terminal_id"))
+        .or_else(|| nested.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("terminal")
+        .to_owned();
+    match kind {
+        "terminal_created" | "terminal_create" | "terminal_started" => {
+            let command = nested
+                .get("command")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            Some(TerminalEvent::Created { id, command })
+        }
+        "terminal_output" | "terminal_output_chunk" => {
+            let text = nested
+                .get("output")
+                .or_else(|| nested.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            Some(TerminalEvent::Output { id, text })
+        }
+        "terminal_exited" | "terminal_exit" => {
+            let code = nested
+                .get("exitCode")
+                .or_else(|| nested.get("exit_code"))
+                .or_else(|| nested.get("code"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0) as i32;
+            Some(TerminalEvent::Exited { id, code })
+        }
+        "terminal_released" | "terminal_release" => Some(TerminalEvent::Released { id }),
+        _ => None,
     }
 }
 
@@ -1123,6 +1181,7 @@ fn rpc_id_to_string(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use codeswarm_core::TerminalEvent;
     use codeswarm_core::{AgentCapabilities, AgentEvent, EventLog, PermissionAnswer, ToolStatus};
 
     use super::{
@@ -1199,6 +1258,52 @@ mod tests {
                 },
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn parses_terminal_lifecycle_from_acp_and_native_events() {
+        let created = parse_acp_notification(
+            0,
+            r#"{"method":"session/update","params":{"update":{"sessionUpdate":"terminal_created","terminalId":"term-1","command":"cargo test"}}}"#,
+        )
+        .expect("valid ACP terminal")
+        .expect("terminal event");
+        assert_eq!(
+            created,
+            AgentEvent::Terminal {
+                slot: 0,
+                event: TerminalEvent::Created {
+                    id: "term-1".into(),
+                    command: "cargo test".into(),
+                },
+            }
+        );
+        let output = parse_agy_line(
+            1,
+            r#"{"event":"terminal_output","terminalId":"term-1","output":"ok\n"}"#,
+        )
+        .expect("valid native terminal")
+        .expect("terminal event");
+        assert_eq!(
+            output,
+            AgentEvent::Terminal {
+                slot: 1,
+                event: TerminalEvent::Output {
+                    id: "term-1".into(),
+                    text: "ok\n".into(),
+                },
+            }
+        );
+        let released = parse_agy_line(1, r#"{"event":"terminal_released","terminalId":"term-1"}"#)
+            .expect("valid native release")
+            .expect("terminal event");
+        assert!(matches!(
+            released,
+            AgentEvent::Terminal {
+                event: TerminalEvent::Released { id },
+                ..
+            } if id == "term-1"
         ));
     }
 
