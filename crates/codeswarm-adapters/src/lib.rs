@@ -837,6 +837,12 @@ impl RelayHost {
     pub async fn start(&mut self) -> AdapterResult<()> {
         for index in 0..self.hosts.len() {
             if let Err(error) = self.hosts[index].start().await {
+                // The adapter that reported the failure may have allocated a
+                // child process or other resources before returning it. Give
+                // that adapter the same cleanup opportunity as the hosts
+                // that started earlier; this is the all-or-nothing startup
+                // contract exposed by the Python session coordinator.
+                let _ = self.hosts[index].stop().await;
                 for host in &mut self.hosts[..index] {
                     let _ = host.stop().await;
                 }
@@ -1561,6 +1567,7 @@ impl AgentAdapter for AgyAdapter {
             .arg("--output-format")
             .arg("stream-json")
             .current_dir(&self.cwd)
+            .env("CODESWARM_CWD", &self.cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some(session_id) = &self.session_id {
@@ -1610,6 +1617,7 @@ impl AgentAdapter for AgyAdapter {
             });
             let mut lines = BufReader::new(stdout).lines();
             let mut result: Option<Value> = None;
+            let mut streamed_response = false;
             while let Ok(Some(line)) = lines.next_line().await {
                 let value = match serde_json::from_str::<Value>(&line) {
                     Ok(value) => value,
@@ -1636,6 +1644,9 @@ impl AgentAdapter for AgyAdapter {
                 }
                 match parse_agy_value(slot, &value) {
                     Ok(Some(event)) => {
+                        if matches!(event, AgentEvent::Text { .. }) {
+                            streamed_response = true;
+                        }
                         if sender.send(Ok(event)).await.is_err() {
                             break;
                         }
@@ -1654,6 +1665,24 @@ impl AgentAdapter for AgyAdapter {
                     .and_then(Value::as_str)
                     == Some("SUCCESS");
             if succeeded {
+                // Some native stream-json wrappers emit only lifecycle events
+                // and put the complete answer in the final result object. The
+                // Python adapter surfaced that answer; do the same, while
+                // avoiding duplication when token chunks were already sent.
+                if !streamed_response
+                    && let Some(response) = result
+                        .as_ref()
+                        .and_then(|result| result.get("response"))
+                        .and_then(Value::as_str)
+                        .filter(|response| !response.is_empty())
+                {
+                    let _ = sender
+                        .send(Ok(AgentEvent::Text {
+                            slot,
+                            text: response.to_owned(),
+                        }))
+                        .await;
+                }
                 let _ = sender.send(Ok(AgentEvent::TurnComplete { slot })).await;
             } else {
                 let detail = result
@@ -1895,6 +1924,9 @@ impl AcpAdapter {
                     continue;
                 }
             };
+            if self.reject_empty_permission_request(&value).await? {
+                continue;
+            }
             if self.handle_client_request(&value).await? {
                 continue;
             }
@@ -1930,6 +1962,36 @@ impl AcpAdapter {
             .write_all(b"\n")
             .await
             .map_err(|error| AdapterError::Transport(error.to_string()))
+    }
+
+    /// ACP permission requests are JSON-RPC requests, not fire-and-forget
+    /// notifications. An empty option list is invalid and must be answered
+    /// with an error so the peer does not wait forever for a decision. This is
+    /// the same validation performed by the Python ACP server.
+    async fn reject_empty_permission_request(&mut self, value: &Value) -> AdapterResult<bool> {
+        if value.get("method").and_then(Value::as_str) != Some("session/request_permission")
+            || value.get("id").is_none()
+        {
+            return Ok(false);
+        }
+        let valid = value
+            .get("params")
+            .and_then(|params| params.get("options"))
+            .and_then(Value::as_array)
+            .is_some_and(|options| !options.is_empty());
+        if valid {
+            return Ok(false);
+        }
+        self.write_json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": value.get("id").cloned().unwrap_or(Value::Null),
+            "error": {
+                "code": -32602,
+                "message": "Permission request requires at least one option",
+            },
+        }))
+        .await?;
+        Ok(true)
     }
 
     fn workspace_path(&self, path: &str) -> Result<PathBuf, String> {
@@ -2607,7 +2669,10 @@ impl AgentAdapter for AcpAdapter {
         self.write_json(serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
-            "result": outcome,
+            // RequestPermissionResponse wraps the selected/cancelled
+            // discriminator in its `outcome` field. Keep this nested shape
+            // compatible with the Python ACP server and ACP schema.
+            "result": {"outcome": outcome},
         }))
         .await
     }
@@ -2675,6 +2740,11 @@ impl AgentAdapter for AcpAdapter {
                 Ok(value) => value,
                 Err(_) => continue,
             };
+            match self.reject_empty_permission_request(&value).await {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => return Some(Err(error)),
+            }
             match self.handle_client_request(&value).await {
                 Ok(true) => continue,
                 Ok(false) => {}
@@ -2861,7 +2931,7 @@ fn parse_permission_event(
         .and_then(Value::as_str)
         .unwrap_or("Agent requests permission")
         .to_owned();
-    let (options, option_ids) = options
+    let (options, option_ids): (Vec<String>, Vec<String>) = options
         .and_then(Value::as_array)
         .map(|options| {
             options
@@ -2883,6 +2953,9 @@ fn parse_permission_event(
                 .unzip()
         })
         .unwrap_or_default();
+    if options.is_empty() {
+        return None;
+    }
     Some(AgentEvent::Permission {
         slot,
         request: PermissionRequest {
@@ -3544,9 +3617,48 @@ mod tests {
         )
         .expect("valid JSON-RPC answer");
         assert_eq!(answer["id"], 9);
-        assert_eq!(answer["result"]["outcome"], "selected");
-        assert_eq!(answer["result"]["optionId"], "allow-once");
+        assert_eq!(answer["result"]["outcome"]["outcome"], "selected");
+        assert_eq!(answer["result"]["outcome"]["optionId"], "allow-once");
         std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn empty_acp_permission_options_are_not_exposed_as_a_blank_prompt() {
+        let event = parse_acp_notification(
+            0,
+            r#"{"jsonrpc":"2.0","id":17,"method":"session/request_permission","params":{"options":[]}}"#,
+        )
+        .expect("valid JSON-RPC request");
+        assert!(event.is_none());
+    }
+
+    #[tokio::test]
+    async fn native_stream_uses_success_result_response_when_chunks_are_missing() {
+        let script_path = unique_test_path("codeswarm-agy-result-response", "sh");
+        std::fs::write(
+            &script_path,
+            "#!/bin/sh\nprintf '%s\\n' '{\"event\":\"step_update\",\"step_update\":\"malformed\"}' '{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"Recovered.\"}}'\n",
+        )
+        .expect("write native test script");
+        let mut adapter = AgyAdapter::new(
+            0,
+            std::env::current_dir().expect("cwd"),
+            format!("sh {}", script_path.display()),
+        );
+        adapter.start().await.expect("start native adapter");
+        assert!(adapter.next_event().await.is_some());
+        assert!(adapter.next_event().await.is_some());
+        adapter.send_prompt("continue".into()).await.expect("prompt");
+        assert!(matches!(
+            adapter.next_event().await,
+            Some(Ok(AgentEvent::Text { text, .. })) if text == "Recovered."
+        ));
+        assert!(matches!(
+            adapter.next_event().await,
+            Some(Ok(AgentEvent::TurnComplete { .. }))
+        ));
+        adapter.stop().await.expect("stop native adapter");
+        std::fs::remove_file(script_path).expect("cleanup native script");
     }
 
     #[test]
