@@ -26,7 +26,7 @@ matrix records behavior, not widget-level implementation details.
 | Crash tombstone/reload UX | Implemented | Core tombstones failed slots and exposes `/reload` and `/drop` recovery actions. |
 | Project-directory selection | Implemented | Rust supports `--project-dir PATH`, positional paths, `/cd PATH`, and `Ctrl+D` in the agent store. |
 | Local `!command` shell execution | Implemented | Runs asynchronously in the workspace with bounded output and local transcript rendering. |
-| Persistent prompt/settings preferences | Partial | Roster, custom agents, Python-compatible prompt history, follow-tail, collapsed-details, notifications, and diff view persist; density/theme/tool preferences do not. |
+| Persistent prompt/settings preferences | Partial | Roster, custom agents, Python-compatible prompt history, follow-tail, collapsed-details, notifications, thoughts, tool-expansion, and diff view persist; density/theme/scrollbar/focus preferences do not. |
 | Rich Markdown/diff views | Partial | Tool payloads are retained for lazy expansion/export, unified patches support inline or side-by-side views with line colors, and basic Markdown headings/fences are styled; full Markdown layout remains intentionally unported. |
 | OS notifications/sounds | Partial | Optional `notify-send`/`osascript` plus terminal bell completion notifications are available from `/config`; focus-aware delivery and named sound assets are not yet ported. |
 | Session history browser | Not applicable | The previous client did not expose a separate session-history picker; Rust provides event replay and bounded prompt history. |
