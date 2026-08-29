@@ -219,6 +219,14 @@ class Contents(containers.VerticalGroup, can_focus=False):
                 changed = True
         return changed
 
+    def _has_unlaid_transcript_blocks(self) -> bool:
+        """Whether a mounted block still has no final layout height."""
+        return any(
+            block.outer_size.height <= 0
+            for block in self._transcript_blocks
+            if block in self.children
+        )
+
     def _block_positions(self) -> tuple[list[int], int]:
         """Return each block's virtual row and the complete transcript height."""
         if self._positions_cache is not None:
@@ -280,6 +288,15 @@ class Contents(containers.VerticalGroup, can_focus=False):
         starts, total_rows = self._block_positions()
         block_count = len(self._transcript_blocks)
         if not block_count:
+            return
+        # Detaching before the initial layout has measured every block makes
+        # the spacer heights depend on which blocks happen to be remounted.
+        # Wait for Textual's next layout pass so the virtual transcript has a
+        # stable height while the user scrolls through it.
+        if not self._virtualized and self._has_unlaid_transcript_blocks():
+            conversation = self.query_ancestor(Conversation)
+            conversation._require_virtual_window_update = True
+            self.call_after_refresh(conversation.check_virtual_window)
             return
         if not self._virtualized and total_rows <= TRANSCRIPT_WINDOW_ROWS:
             return
