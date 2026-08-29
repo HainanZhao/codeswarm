@@ -43,6 +43,7 @@ enum AdapterControl {
         slot: usize,
         prompt: String,
     },
+    Add(AgentSpec),
     Permission {
         slot: usize,
         request_id: String,
@@ -258,7 +259,7 @@ fn normalize_arguments(mut arguments: Vec<String>) -> Vec<String> {
 
 fn print_help() {
     println!(
-        "CodeSwarm — fast tmux-first terminal workspace\n\nUsage:\n  codeswarm [OPTIONS] [PROMPT]\n  codeswarm run [PATH] [OPTIONS] [PROMPT]\n  codeswarm acp COMMAND [PATH]\n\nOptions:\n  -a, --agent NAME                Select a catalog agent (repeatable)\n  --demo                         Run the local UI preview\n  --agy PROMPT                   Run the native Agy adapter\n  --acp PROGRAM [PROMPT]         Run an ACP adapter\n  --roster KIND:COMMAND          Add a native/ACP roster member (repeatable)\n  --first N                      Select the first roster slot (zero-based)\n  --first-agent N                Select the first named agent (one-based)\n  --max-rounds N                 Limit automated relay turns\n  --project-dir PATH             Use PATH as the workspace\n  --alt-screen                   Use the alternate terminal screen\n  -h, --help                     Show this help\n  -v, --version                  Show the version\n\nPrompt commands include /config, /agents, /mode, /collab, /pause, /resume,\n/reload, /drop, /diff, /export, /clear, /close, and !command."
+        "CodeSwarm — fast tmux-first terminal workspace\n\nUsage:\n  codeswarm [OPTIONS] [PROMPT]\n  codeswarm run [PATH] [OPTIONS] [PROMPT]\n  codeswarm acp COMMAND [PATH]\n\nOptions:\n  -a, --agent NAME                Select a catalog agent (repeatable)\n  --demo                         Run the local UI preview\n  --agy PROMPT                   Run the native Agy adapter\n  --acp PROGRAM [PROMPT]         Run an ACP adapter\n  --roster KIND:COMMAND          Add a native/ACP roster member (repeatable)\n  --first N                      Select the first roster slot (zero-based)\n  --first-agent N                Select the first named agent (one-based)\n  --max-rounds N                 Limit automated relay turns\n  --project-dir PATH             Use PATH as the workspace\n  --alt-screen                   Use the alternate terminal screen\n  -h, --help                     Show this help\n  -v, --version                  Show the version\n\nPrompt commands include /config, /agents, /add, /mode, /collab, /pause, /resume,\n/reload, /drop, /diff, /export, /clear, /close, and !command."
     );
 }
 
@@ -999,7 +1000,7 @@ fn run_agy_task(
                             let _ = sender.send(Err(error));
                         }
                     }
-                    Some(AdapterControl::Drop(_)) => {}
+                    Some(AdapterControl::Drop(_)) | Some(AdapterControl::Add(_)) => {}
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
                     | Some(AdapterControl::Pause)
@@ -1103,7 +1104,7 @@ fn run_acp_task(
                             let _ = sender.send(Err(error));
                         }
                     }
-                    Some(AdapterControl::Drop(_)) => {}
+                    Some(AdapterControl::Drop(_)) | Some(AdapterControl::Add(_)) => {}
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
                     | Some(AdapterControl::Pause)
@@ -1399,6 +1400,41 @@ fn run_relay_task(
                         let _ = sender.send(Err(error));
                     }
                 }
+                Some(AdapterControl::Add(spec)) => {
+                    let slot = relay.next_slot();
+                    let adapter = match spec.clone() {
+                        AgentSpec::Agy(command) => {
+                            Ok(Box::new(AgyAdapter::new(slot, cwd.clone(), command))
+                                as Box<dyn AgentAdapter>)
+                        }
+                        AgentSpec::Acp(command) => match parse_command_line(&command) {
+                            Ok((program, args)) => {
+                                Ok(Box::new(AcpAdapter::new(slot, cwd.clone(), program, args))
+                                    as Box<dyn AgentAdapter>)
+                            }
+                            Err(error) => {
+                                Err(AdapterError::Spawn(format!("invalid ACP command: {error}")))
+                            }
+                        },
+                    };
+                    match adapter {
+                        Ok(adapter) => {
+                            let name = match spec {
+                                AgentSpec::Agy(command) | AgentSpec::Acp(command) => {
+                                    display_agent_name(&command)
+                                }
+                            };
+                            if let Err(error) =
+                                relay.add_agent(AdapterHost::new(adapter, None), name).await
+                            {
+                                let _ = sender.send(Err(error));
+                            }
+                        }
+                        Err(error) => {
+                            let _ = sender.send(Err(error));
+                        }
+                    }
+                }
                 Some(AdapterControl::Cancel) => {
                     let _ = sender.send(Err(AdapterError::Unsupported("no active relay turn")));
                 }
@@ -1419,8 +1455,8 @@ fn run_terminal(
     load_ui_preferences(app);
     app.load_prompt_history(load_prompt_history());
     let mut completion_candidates = [
-        "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/diff", "/exit",
-        "/export", "/help", "/mode", "/pause", "/quit", "/reload", "/drop", "/resume",
+        "/add", "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/diff",
+        "/exit", "/export", "/help", "/mode", "/pause", "/quit", "/reload", "/drop", "/resume",
     ]
     .into_iter()
     .map(String::from)
@@ -1788,6 +1824,30 @@ fn run_terminal(
                                             ));
                                         }
                                     }
+                                    LocalCommand::Add(spec) => {
+                                        let Some(controls) = &controls else {
+                                            app.status = "add unavailable in solo session".into();
+                                            continue;
+                                        };
+                                        let Some(agent_spec) = parse_agent_spec(&spec) else {
+                                            app.status =
+                                                "usage: /add agy:COMMAND or /add acp:COMMAND"
+                                                    .into();
+                                            continue;
+                                        };
+                                        let slot = app.agent_count();
+                                        let name = match &agent_spec {
+                                            AgentSpec::Agy(command) | AgentSpec::Acp(command) => {
+                                                display_agent_name(command)
+                                            }
+                                        };
+                                        app.set_agent_name(slot, name);
+                                        if controls.send(AdapterControl::Add(agent_spec)).is_ok() {
+                                            app.status = format!("adding agent {slot}");
+                                        } else {
+                                            app.status = "unable to add agent".into();
+                                        }
+                                    }
                                     LocalCommand::Agents => {
                                         if let Some(controls) = &controls {
                                             let _ = controls.send(AdapterControl::Stop);
@@ -1804,6 +1864,20 @@ fn run_terminal(
                                             app.status = "no crashed agent to reload".into();
                                         }
                                     }
+                                    LocalCommand::DropSlot(slot) => {
+                                        if slot == 0 {
+                                            app.status =
+                                                "owner cannot be dropped; use /close".into();
+                                        } else if let Some(controls) = &controls {
+                                            if controls.send(AdapterControl::Drop(slot)).is_ok() {
+                                                app.mark_agent_dropped(slot);
+                                            } else {
+                                                app.status = "unable to drop agent".into();
+                                            }
+                                        } else {
+                                            app.status = "drop unavailable in solo session".into();
+                                        }
+                                    }
                                     LocalCommand::Drop => {
                                         if let Some(slot) = app.failed_agent()
                                             && let Some(controls) = &controls
@@ -1813,7 +1887,7 @@ fn run_terminal(
                                                 return Ok(());
                                             }
                                             let _ = controls.send(AdapterControl::Drop(slot));
-                                            app.status = format!("agent {slot} dropped");
+                                            app.mark_agent_dropped(slot);
                                         } else {
                                             app.status = "no crashed agent to drop".into();
                                         }

@@ -66,6 +66,8 @@ bounded to preserve tmux responsiveness.
 - `/help` — show the complete keyboard and command guide.
 - `/config` — open the lightweight inline settings panel.
 - `/agents` — return to the agent store and edit the saved roster.
+- `/add agy:COMMAND` or `/add acp:COMMAND` — append a live peer without
+  restarting the current conversation.
 - `/export` — write the retained transcript to a timestamped Markdown file.
 - `/diff split` and `/diff unified` — choose side-by-side or inline diff rows.
 - `/mode` — focus mode settings; `/mode chat` selects chat mode.
@@ -73,7 +75,8 @@ bounded to preserve tmux responsiveness.
   `/collab roster`, `/collab manual`, and `/collab pair` select a strategy.
 - `/pause` and `/resume` — pause or resume a multi-agent relay.
 - `/reload` — retry the most recently crashed adapter in place.
-- `/drop` — remove a crashed peer from the active relay.
+- `/drop` — remove the most recently crashed peer; `/drop SLOT` removes a
+  peer by zero-based roster slot (slot 0 is the owner).
 - `/cd PATH` — change the workspace directory for subsequent launches.
 - `/clear` — clear the local transcript.
 - `!command` — run a bounded shell command in the current workspace.

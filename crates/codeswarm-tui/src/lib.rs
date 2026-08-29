@@ -82,8 +82,10 @@ pub enum LocalCommand {
     Collaboration,
     Export,
     Agents,
+    Add(String),
     Reload,
     Drop,
+    DropSlot(usize),
     Directory(String),
     Diff,
 }
@@ -754,8 +756,18 @@ impl App {
             }
             "/export" => LocalCommand::Export,
             "/agents" => LocalCommand::Agents,
+            "/add" => {
+                if argument.is_empty() {
+                    self.status = "usage: /add agy:COMMAND or /add acp:COMMAND".into();
+                    LocalCommand::Handled
+                } else {
+                    LocalCommand::Add(argument)
+                }
+            }
             "/reload" => LocalCommand::Reload,
-            "/drop" => LocalCommand::Drop,
+            "/drop" => argument
+                .parse::<usize>()
+                .map_or(LocalCommand::Drop, LocalCommand::DropSlot),
             "/diff" => {
                 match argument.to_ascii_lowercase().as_str() {
                     "split" => self.diff_split = true,
@@ -1146,6 +1158,10 @@ impl App {
             .or_insert_with(|| "starting".into());
     }
 
+    pub fn agent_count(&self) -> usize {
+        self.agent_names.len()
+    }
+
     pub fn record_human_message(&mut self, prompt: &str, direct: bool) {
         let prefix = if direct { "You → direct: " } else { "You: " };
         self.transcript.append(
@@ -1224,6 +1240,11 @@ impl App {
         self.failed_agent = None;
         self.agent_states.insert(slot, "starting".into());
         self.status = "reloading agent".into();
+    }
+
+    pub fn mark_agent_dropped(&mut self, slot: usize) {
+        self.agent_states.insert(slot, "dropped".into());
+        self.status = format!("agent {slot} dropped");
     }
 
     pub fn set_header(&mut self, active_agent: impl Into<String>, status: impl Into<String>) {
@@ -2031,7 +2052,7 @@ fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
 fn render_keyboard_help(buffer: &mut Buffer, area: Rect) {
     let lines = [
         " keys: ↑/↓ scroll · End follow tail · Tab details · Ctrl+K cancel queue · ? hide help",
-        " commands: /help  /config  /agents  /export  /diff  /mode  /collab  /reload  /drop  /cd",
+        " commands: /help  /config  /agents  /add  /export  /diff  /mode  /collab  /reload  /drop  /cd",
         " /mode chat · /collab roster|manual|pair · /pause · /resume",
         " /clear clears the local transcript · /close exits the session",
         " Ctrl+Enter sends to the selected agent · Ctrl+C cancels active work",
@@ -3280,7 +3301,15 @@ mod tests {
             app.handle_local_command("/agents"),
             Some(LocalCommand::Agents)
         );
+        assert_eq!(
+            app.handle_local_command("/add acp:reviewer --acp"),
+            Some(LocalCommand::Add("acp:reviewer --acp".into()))
+        );
         assert_eq!(app.handle_local_command("/drop"), Some(LocalCommand::Drop));
+        assert_eq!(
+            app.handle_local_command("/drop 2"),
+            Some(LocalCommand::DropSlot(2))
+        );
         assert_eq!(
             app.handle_local_command("/cd /tmp"),
             Some(LocalCommand::Directory("/tmp".into()))

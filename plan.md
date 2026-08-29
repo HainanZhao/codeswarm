@@ -152,6 +152,8 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   before prompt dispatch, with prompt-level regression coverage.
 - [x] Keep healthy roster peers usable after a failed/dropped adapter by
   allowing single-slot continuation and retargeting untagged prompts.
+- [x] Add live `/add` and `/drop SLOT` controls over the relay coordinator,
+  with startup rollback and stable slot identity.
 - [x] Integrated resize settling and latest-state frame recovery into a
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and

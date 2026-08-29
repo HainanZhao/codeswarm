@@ -675,8 +675,41 @@ impl RelayHost {
         Ok(())
     }
 
+    /// Start and append a new adapter in the next stable roster slot. The
+    /// adapter is started before it becomes visible to the relay, so a failed
+    /// add cannot leave a half-active slot behind.
+    pub async fn add_agent(
+        &mut self,
+        mut host: AdapterHost,
+        name: impl Into<String>,
+    ) -> AdapterResult<RosterSlot> {
+        let slot = self.hosts.len();
+        if host.adapter().slot() != slot {
+            return Err(AdapterError::Transport(
+                "new adapter slot must append after the existing roster".into(),
+            ));
+        }
+        if let Err(error) = host.start().await {
+            let _ = host.stop().await;
+            return Err(error);
+        }
+        let capabilities = host.adapter().capabilities();
+        self.hosts.push(host);
+        self.relay.add_agent();
+        self.introduced.push(false);
+        self.roster_names.push(name.into());
+        if let Some(sink) = &self.event_sink {
+            sink(AgentEvent::Ready { slot, capabilities });
+        }
+        Ok(slot)
+    }
+
     pub fn relay(&self) -> &Relay {
         &self.relay
+    }
+
+    pub fn next_slot(&self) -> RosterSlot {
+        self.hosts.len()
     }
 
     pub fn relay_mut(&mut self) -> &mut Relay {
@@ -3450,6 +3483,57 @@ mod tests {
             }
         ));
         assert_eq!(relay.dispatches().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn relay_host_can_append_a_started_adapter_in_a_new_slot() {
+        let first = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(
+                0,
+                AgentCapabilities::default(),
+                [AgentEvent::TurnComplete { slot: 0 }],
+            )),
+            None,
+        );
+        let second = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(
+                1,
+                AgentCapabilities::default(),
+                [AgentEvent::TurnComplete { slot: 1 }],
+            )),
+            None,
+        );
+        let mut relay = RelayHost::new(vec![first, second], 4).expect("relay");
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = std::sync::Arc::clone(&events);
+        relay.set_event_sink(move |event| captured.lock().expect("lock").push(event));
+        relay.start().await.expect("start");
+        let slot = relay
+            .add_agent(
+                AdapterHost::new(
+                    Box::new(ScriptedAdapter::new(
+                        2,
+                        AgentCapabilities::default(),
+                        [AgentEvent::TurnComplete { slot: 2 }],
+                    )),
+                    None,
+                ),
+                "Reviewer",
+            )
+            .await
+            .expect("append agent");
+        assert_eq!(slot, 2);
+        assert_eq!(
+            relay.relay().active_slots().collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(
+            events
+                .lock()
+                .expect("lock")
+                .iter()
+                .any(|event| { matches!(event, AgentEvent::Ready { slot: 2, .. }) })
+        );
     }
 
     #[tokio::test]
