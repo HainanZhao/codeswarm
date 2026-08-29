@@ -19,7 +19,7 @@ matrix records behavior, not widget-level implementation details.
 | Reviewer stop token | Implemented | Prompt guidance, filtering, and batch termination tests. |
 | Pause/resume/cancel/queue | Implemented | CLI controls and relay cancellation. |
 | Mode policy synchronization | Implemented | Advertised catalogs drive the config picker, Auto pilot synchronizes once per loaded slot, and semantic selections translate through adapter-native IDs. |
-| Crash tombstone/reload UX | Partial | Core tombstones and `/reload` retries a failed slot; an explicit reload/drop prompt is still needed for unattended failures. |
+| Crash tombstone/reload UX | Implemented | Core tombstones failed slots and exposes `/reload` and `/drop` recovery actions. |
 | Project-directory selection | Implemented | Rust supports `--project-dir PATH`, positional paths, `/cd PATH`, and `Ctrl+D` in the agent store. |
 | Local `!command` shell execution | Implemented | Runs asynchronously in the workspace with bounded output and local transcript rendering. |
 | Persistent prompt/settings preferences | Partial | Roster, custom agents, follow-tail, and collapsed-details persist; density/theme/notification/tool/diff preferences do not. |

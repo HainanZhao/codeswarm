@@ -82,6 +82,7 @@ pub enum LocalCommand {
     Export,
     Agents,
     Reload,
+    Drop,
     Directory(String),
 }
 
@@ -629,6 +630,7 @@ impl App {
             "/export" => LocalCommand::Export,
             "/agents" => LocalCommand::Agents,
             "/reload" => LocalCommand::Reload,
+            "/drop" => LocalCommand::Drop,
             "/cd" => {
                 if argument.is_empty() {
                     self.status = "usage: /cd PATH".into();
@@ -1151,7 +1153,7 @@ impl App {
                 self.agent_states.insert(*slot, "error".into());
                 self.failed_agent = Some(*slot);
                 self.status = if *started {
-                    format!("crashed: {detail} · /reload")
+                    format!("crashed: {detail} · /reload or /drop")
                 } else {
                     format!("failed to start: {detail}")
                 };
@@ -1650,7 +1652,7 @@ fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
 fn render_keyboard_help(buffer: &mut Buffer, area: Rect) {
     let lines = [
         " keys: ↑/↓ scroll · End follow tail · Tab details · Ctrl+K cancel queue · ? hide help",
-        " commands: /help  /config  /agents  /export  /mode  /collab  /reload  /cd",
+        " commands: /help  /config  /agents  /export  /mode  /collab  /reload  /drop  /cd",
         " /mode chat · /collab roster|manual|pair · /pause · /resume",
         " /clear clears the local transcript · /close exits the session",
         " Ctrl+Enter sends to the selected agent · Ctrl+C cancels active work",
@@ -2487,6 +2489,7 @@ mod tests {
             app.handle_local_command("/agents"),
             Some(LocalCommand::Agents)
         );
+        assert_eq!(app.handle_local_command("/drop"), Some(LocalCommand::Drop));
         assert_eq!(
             app.handle_local_command("/cd /tmp"),
             Some(LocalCommand::Directory("/tmp".into()))

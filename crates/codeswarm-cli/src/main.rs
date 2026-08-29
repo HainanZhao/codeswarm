@@ -49,6 +49,7 @@ enum AdapterControl {
     SetStrategy(CollaborationStrategy),
     SetMode(String),
     Reload(usize),
+    Drop(usize),
     Cancel,
     Stop,
 }
@@ -803,6 +804,7 @@ fn run_agy_task(
                             let _ = sender.send(Err(error));
                         }
                     }
+                    Some(AdapterControl::Drop(_)) => {}
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
                     | Some(AdapterControl::Pause)
@@ -906,6 +908,7 @@ fn run_acp_task(
                             let _ = sender.send(Err(error));
                         }
                     }
+                    Some(AdapterControl::Drop(_)) => {}
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
                     | Some(AdapterControl::Pause)
@@ -1186,6 +1189,11 @@ fn run_relay_task(
                         let _ = sender.send(Err(error));
                     }
                 }
+                Some(AdapterControl::Drop(slot)) => {
+                    if let Err(error) = relay.relay_mut().drop_agent(slot) {
+                        let _ = sender.send(Err(AdapterError::Transport(error.into())));
+                    }
+                }
                 Some(AdapterControl::Cancel) => {
                     let _ = sender.send(Err(AdapterError::Unsupported("no active relay turn")));
                 }
@@ -1206,7 +1214,7 @@ fn run_terminal(
     load_ui_preferences(app);
     app.set_prompt_completions([
         "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/exit", "/export",
-        "/help", "/mode", "/pause", "/quit", "/reload", "/resume",
+        "/help", "/mode", "/pause", "/quit", "/reload", "/drop", "/resume",
     ]);
     let mut selected_slot = selected_slot;
     let event_log = event_log().ok();
@@ -1555,6 +1563,20 @@ fn run_terminal(
                                         let _ = controls.send(AdapterControl::Reload(slot));
                                     } else {
                                         app.status = "no crashed agent to reload".into();
+                                    }
+                                }
+                                LocalCommand::Drop => {
+                                    if let Some(slot) = app.failed_agent()
+                                        && let Some(controls) = &controls
+                                    {
+                                        if selected_slot.is_none() {
+                                            let _ = controls.send(AdapterControl::Stop);
+                                            return Ok(());
+                                        }
+                                        let _ = controls.send(AdapterControl::Drop(slot));
+                                        app.status = format!("agent {slot} dropped");
+                                    } else {
+                                        app.status = "no crashed agent to drop".into();
                                     }
                                 }
                                 LocalCommand::Directory(path) => {
