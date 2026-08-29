@@ -2265,18 +2265,15 @@ fn rpc_id_to_string(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        AcpAdapter, AdapterHost, AgentAdapter, AgyAdapter, RelayHost, ScriptedAdapter,
+        parse_acp_notification, parse_agy_line, parse_command_line,
+    };
     use async_trait::async_trait;
     use codeswarm_core::TerminalEvent;
     use codeswarm_core::{
         AgentCapabilities, AgentEvent, EventLog, PermissionAnswer, ToolStatus,
         relay::{DEFAULT_STOP_ACKNOWLEDGMENT, RelayDecision, STOP_TOKEN},
-    };
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-
-    use super::{
-        AcpAdapter, AdapterHost, AgentAdapter, AgyAdapter, RelayHost, ScriptedAdapter,
-        parse_acp_notification, parse_agy_line, parse_command_line,
     };
     use serde_json::Value;
 
@@ -2567,15 +2564,10 @@ mod tests {
             "#!/bin/sh\nprintf '%s\\n' '{\"event\":\"init\",\"conversation_id\":\"native-session\"}' '{\"event\":\"step_update\",\"step_update\":{\"step_type\":\"agent_response\",\"text_delta\":\"ok\"}}' '{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"ok\"}}'\n",
         )
         .expect("write native test script");
-        let mut permissions = std::fs::metadata(&script_path)
-            .expect("script metadata")
-            .permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&script_path, permissions).expect("make script executable");
         let mut adapter = AgyAdapter::new(
             0,
             std::env::current_dir().expect("cwd"),
-            script_path.display().to_string(),
+            format!("sh {}", script_path.display()),
         );
         adapter.start().await.expect("start native adapter");
         // Startup emits its mode catalog and readiness before a turn.
@@ -2611,15 +2603,10 @@ mod tests {
             "#!/bin/sh\nprintf '%s\\n' '{\"event\":\"result\",\"result\":{\"status\":\"FAILURE\",\"error\":\"agent failed\"}}'\n",
         )
         .expect("write native test script");
-        let mut permissions = std::fs::metadata(&script_path)
-            .expect("script metadata")
-            .permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&script_path, permissions).expect("make script executable");
         let mut adapter = AgyAdapter::new(
             0,
             std::env::current_dir().expect("cwd"),
-            script_path.display().to_string(),
+            format!("sh {}", script_path.display()),
         );
         adapter.start().await.expect("start native adapter");
         assert!(adapter.next_event().await.is_some());
