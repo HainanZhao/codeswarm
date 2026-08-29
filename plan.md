@@ -75,6 +75,8 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   after backpressure and requires a complete repaint before deltas resume.
 - [x] Added deterministic trailing-edge resize coalescing so only final pane
   geometry is applied after a resize burst.
+- [x] Added \`AdapterHost\` reload, mode forwarding, and failure tombstoning
+  while preserving the stable roster slot and event log.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
   \`make rust-tmux\`.
 
