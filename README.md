@@ -30,6 +30,8 @@ codeswarm --demo
 codeswarm --agy "describe the repository"
 codeswarm --acp "codex-acp" "review the current changes"
 codeswarm --project-dir ~/projects/example
+# A directory may also be supplied positionally.
+codeswarm ~/projects/example
 ```
 
 Launch a mixed roster with repeated `--roster` arguments:

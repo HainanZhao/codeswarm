@@ -15,7 +15,8 @@ Select agents with the arrow keys and `Space`, then press `Enter`. The selected
 roster is saved and restored by the next bare launch. Use `--demo` to exercise
 the UI without an external agent.
 
-Use `--project-dir PATH` to start the session in a different workspace.
+Use `--project-dir PATH` (or pass a directory positionally) to start the
+session in a different workspace.
 
 The store reads custom agents from
 `$XDG_CONFIG_HOME/codeswarm/codeswarm.json` (default:

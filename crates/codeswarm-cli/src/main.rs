@@ -144,11 +144,20 @@ fn main() -> std::io::Result<()> {
             return Ok(());
         }
         std::env::set_current_dir(path)?;
+    } else if arguments.len() == 1
+        && !arguments[0].starts_with('-')
+        && PathBuf::from(&arguments[0]).is_dir()
+    {
+        std::env::set_current_dir(&arguments[0])?;
     }
     let alternate_screen = arguments.iter().any(|argument| argument == "--alt-screen");
     let launch = parse_launch(&arguments).or_else(|| {
-        (arguments.is_empty() || (arguments.len() == 2 && arguments.first()? == "--project-dir"))
-            .then(bare_launch)
+        (arguments.is_empty()
+            || (arguments.len() == 2 && arguments.first()? == "--project-dir")
+            || (arguments.len() == 1
+                && !arguments[0].starts_with('-')
+                && PathBuf::from(&arguments[0]).is_dir()))
+        .then(bare_launch)
     });
     let Some(launch) = launch else {
         println!(
