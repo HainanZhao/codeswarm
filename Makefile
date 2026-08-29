@@ -29,6 +29,16 @@ package:
 .PHONY: verify
 verify: diff-check package test compile lock typecheck
 
+.PHONY: rust-test
+rust-test:
+	cargo fmt --check
+	cargo test --workspace
+	cargo clippy --workspace --all-targets -- -D warnings
+
+.PHONY: rust-tmux
+rust-tmux:
+	bash tests/tmux/smoke.sh
+
 .PHONY: diff-check
 diff-check:
 	git diff --check HEAD

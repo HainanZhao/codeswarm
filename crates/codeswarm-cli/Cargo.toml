@@ -1,0 +1,19 @@
+[package]
+name = "codeswarm-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "codeswarm"
+path = "src/main.rs"
+
+[dependencies]
+codeswarm-transcript = { path = "../codeswarm-transcript" }
+codeswarm-tui = { path = "../codeswarm-tui" }
+crossterm.workspace = true
+ratatui.workspace = true
+
+[lints]
+workspace = true
