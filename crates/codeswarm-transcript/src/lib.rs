@@ -83,6 +83,18 @@ impl Transcript {
         true
     }
 
+    /// Extend an in-progress block without changing its identity. Stream
+    /// renderers use this to turn thousands of token chunks into one logical
+    /// response rather than thousands of transcript objects.
+    pub fn extend(&mut self, id: u64, text: &str) -> bool {
+        let Some(block) = self.blocks.iter_mut().find(|block| block.id == id) else {
+            return false;
+        };
+        block.source.push_str(text);
+        self.invalidate_rows();
+        true
+    }
+
     /// Render height rows beginning at scroll_y, including a bounded overscan
     /// margin. Steady-state scrolling clones an indexed slice.
     pub fn viewport(
@@ -266,5 +278,14 @@ mod tests {
         let second = transcript.viewport(80, total / 3 + 1, 24, 8);
         assert!(first.len() <= 40);
         assert!(second.len() <= 40);
+    }
+
+    #[test]
+    fn streaming_extends_one_logical_block() {
+        let mut transcript = Transcript::default();
+        let id = transcript.append(BlockKind::Agent, "first", false);
+        assert!(transcript.extend(id, " second"));
+        assert_eq!(transcript.len(), 1);
+        assert_eq!(transcript.viewport(80, 0, 10, 0)[0].text, "first second");
     }
 }

@@ -39,11 +39,8 @@ fn main() -> std::io::Result<()> {
 }
 
 fn run_demo(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
-    let mut app = App {
-        active_agent: "CodeSwarm preview".into(),
-        status: "press q to quit".into(),
-        ..App::default()
-    };
+    let mut app = App::default();
+    app.set_header("CodeSwarm preview", "press q to quit");
     app.transcript.append(
         BlockKind::Notice,
         "Ratatui preview uses a viewport-only transcript.",

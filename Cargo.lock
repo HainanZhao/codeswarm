@@ -181,6 +181,7 @@ version = "0.1.0"
 name = "codeswarm-tui"
 version = "0.1.0"
 dependencies = [
+ "codeswarm-core",
  "codeswarm-transcript",
  "ratatui",
 ]

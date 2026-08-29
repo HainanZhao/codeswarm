@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+codeswarm-core = { path = "../codeswarm-core" }
 codeswarm-transcript = { path = "../codeswarm-transcript" }
 ratatui.workspace = true
 

@@ -3,6 +3,9 @@
 //! The renderer is intentionally stateless with respect to historical rows:
 //! scrolling asks the transcript for a small cached slice and draws that slice.
 
+use std::collections::BTreeMap;
+
+use codeswarm_core::{AgentEvent, TerminalEvent, ToolStatus};
 use codeswarm_transcript::{RenderRow, Transcript};
 use ratatui::{
     Frame,
@@ -21,6 +24,7 @@ pub struct App {
     pub prompt: String,
     pub active_agent: String,
     pub status: String,
+    streaming_blocks: BTreeMap<usize, u64>,
 }
 
 impl Default for App {
@@ -32,11 +36,93 @@ impl Default for App {
             prompt: String::new(),
             active_agent: "Initializing".into(),
             status: "idle".into(),
+            streaming_blocks: BTreeMap::new(),
         }
     }
 }
 
 impl App {
+    pub fn set_header(&mut self, active_agent: impl Into<String>, status: impl Into<String>) {
+        self.active_agent = active_agent.into();
+        self.status = status.into();
+    }
+
+    /// Apply normalized adapter state without exposing protocol-specific
+    /// objects to the renderer. Text chunks are coalesced into one immutable
+    /// transcript block per active agent turn.
+    pub fn apply_event(&mut self, event: &AgentEvent) {
+        match event {
+            AgentEvent::Ready { slot, .. } => {
+                self.active_agent = format!("Agent {slot}");
+                self.status = "ready".into();
+            }
+            AgentEvent::ModesReplaced { .. } => {}
+            AgentEvent::Text { slot, text } => {
+                let block = self.streaming_blocks.get(slot).copied().unwrap_or_else(|| {
+                    let id =
+                        self.transcript
+                            .append(codeswarm_transcript::BlockKind::Agent, "", false);
+                    self.streaming_blocks.insert(*slot, id);
+                    id
+                });
+                self.transcript.extend(block, text);
+                self.active_agent = format!("Agent {slot}");
+                self.status = "streaming".into();
+            }
+            AgentEvent::Thought { slot, text } => {
+                self.transcript.append(
+                    codeswarm_transcript::BlockKind::Thought,
+                    format!("Agent {slot}: {text}"),
+                    true,
+                );
+            }
+            AgentEvent::Tool { slot, update } => {
+                let state = match update.status {
+                    ToolStatus::Pending => "pending",
+                    ToolStatus::Running => "running",
+                    ToolStatus::Completed => "completed",
+                    ToolStatus::Failed => "failed",
+                };
+                self.transcript.append(
+                    codeswarm_transcript::BlockKind::Tool,
+                    format!("Agent {slot}: {} · {state}", update.title),
+                    true,
+                );
+            }
+            AgentEvent::Permission { slot, request } => {
+                self.active_agent = format!("Agent {slot}");
+                self.status = format!("permission: {}", request.title);
+            }
+            AgentEvent::Terminal { slot, event } => {
+                let text = match event {
+                    TerminalEvent::Created { command, .. } => format!("Agent {slot}: {command}"),
+                    TerminalEvent::Output { text, .. } => format!("Agent {slot}: {text}"),
+                    TerminalEvent::Exited { code, .. } => format!("Agent {slot}: exited {code}"),
+                    TerminalEvent::Released { .. } => format!("Agent {slot}: terminal released"),
+                };
+                self.transcript
+                    .append(codeswarm_transcript::BlockKind::Tool, text, true);
+            }
+            AgentEvent::TurnComplete { slot } => {
+                self.streaming_blocks.remove(slot);
+                self.status = "idle".into();
+            }
+            AgentEvent::Failed {
+                slot,
+                started,
+                detail,
+            } => {
+                self.streaming_blocks.remove(slot);
+                self.active_agent = format!("Agent {slot}");
+                self.status = if *started {
+                    format!("crashed: {detail}")
+                } else {
+                    format!("failed to start: {detail}")
+                };
+            }
+        }
+    }
+
     pub fn scroll_by(&mut self, delta: isize, width: usize, height: usize) {
         let max_scroll = self
             .transcript
@@ -131,5 +217,29 @@ mod tests {
             .expect("draw");
         let rendered = terminal.backend().buffer();
         assert!(rendered.content().iter().any(|cell| cell.symbol() == "w"));
+    }
+
+    #[test]
+    fn streamed_chunks_extend_one_response_block() {
+        let mut app = App::default();
+        app.apply_event(&codeswarm_core::AgentEvent::Text {
+            slot: 0,
+            text: "first ".into(),
+        });
+        app.apply_event(&codeswarm_core::AgentEvent::Text {
+            slot: 0,
+            text: "second".into(),
+        });
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(
+            app.transcript.viewport(80, 0, 10, 0)[0].text,
+            "first second"
+        );
+        app.apply_event(&codeswarm_core::AgentEvent::TurnComplete { slot: 0 });
+        app.apply_event(&codeswarm_core::AgentEvent::Text {
+            slot: 0,
+            text: "next turn".into(),
+        });
+        assert_eq!(app.transcript.len(), 2);
     }
 }
