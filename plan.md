@@ -77,6 +77,8 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   geometry is applied after a resize burst.
 - [x] Added \`AdapterHost\` reload, mode forwarding, and failure tombstoning
   while preserving the stable roster slot and event log.
+- [x] Normalized ACP permission requests, including stable tool IDs, titles,
+  and selectable option labels.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
   \`make rust-tmux\`.
 
