@@ -26,8 +26,9 @@ measurement does not trigger an unnecessary widget-tree rebuild.
 
 When adding or changing transcript tests:
 
-- settle the app with `await pilot.pause(...)` before asserting mounted
-  windows or scroll ranges;
+- wait with a bounded timeout for an observable readiness condition, such as
+  completed Markdown rendering or an active virtual window, before asserting
+  mounted windows or scroll ranges; arbitrary sleeps are machine-dependent;
 - use `CodeSwarmApp.run_test` at a fixed terminal size;
 - assert logical message retention and bounded mounting, rather than relying
   on a specific platform's exact row count;

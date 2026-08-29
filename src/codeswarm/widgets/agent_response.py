@@ -48,6 +48,12 @@ class AgentResponse(ConversationMarkdown):
             self._markdown = markdown
         self._stream: MarkdownStream | None = None
         self._skip_mount_update = False
+        self._initial_render_complete = False
+
+    @property
+    def initial_render_complete(self) -> bool:
+        """Whether the initial Markdown document finished parsing and mounting."""
+        return self._initial_render_complete
 
     async def _on_mount(self, _event: Mount) -> None:
         """Initialize Markdown only once across virtual-window remounts.
@@ -72,8 +78,15 @@ class AgentResponse(ConversationMarkdown):
         """Keep virtual remounts from clearing or rebuilding the document."""
         if self._skip_mount_update:
             self._skip_mount_update = False
+            self._initial_render_complete = True
             return AwaitComplete.nothing()
-        return super().update(markdown)
+        update = super().update(markdown)
+
+        async def mark_complete() -> None:
+            await update
+            self._initial_render_complete = True
+
+        return AwaitComplete(mark_complete())
 
     def block_cursor_clear(self) -> None:
         self.block_cursor_offset = -1

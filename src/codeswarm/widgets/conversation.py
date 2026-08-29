@@ -204,8 +204,7 @@ class Contents(containers.VerticalGroup, can_focus=False):
                 (*self._mounted_indices, len(self._transcript_blocks) - 1)
             )
 
-    def _measure_mounted_blocks(self) -> bool:
-        changed = False
+    def _measure_mounted_blocks(self) -> None:
         for block in self.mounted_blocks:
             top, _right, bottom, _left = block.styles.margin
             metrics = (
@@ -216,8 +215,6 @@ class Contents(containers.VerticalGroup, can_focus=False):
             if self._block_metrics.get(block) != metrics:
                 self._block_metrics[block] = metrics
                 self._positions_cache = None
-                changed = True
-        return changed
 
     def _has_unlaid_transcript_blocks(self) -> bool:
         """Whether mounted blocks still need their first complete layout."""
@@ -232,7 +229,7 @@ class Contents(containers.VerticalGroup, can_focus=False):
             if (
                 response is not None
                 and getattr(response, "source", "")
-                and not response.children
+                and not getattr(response, "initial_render_complete", False)
             ):
                 return True
             if block.outer_size.height <= 0:

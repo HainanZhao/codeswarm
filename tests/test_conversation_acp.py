@@ -85,6 +85,25 @@ def _contrast_ratio(foreground: Color, background: Color) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
+async def _wait_for_ui(
+    pilot,
+    predicate,
+    *,
+    message: str,
+    timeout: float = 3.0,
+) -> None:
+    """Wait for a semantic UI condition with a bounded diagnostic timeout."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    stable_observations = 0
+    while stable_observations < 2:
+        stable_observations = stable_observations + 1 if predicate() else 0
+        if stable_observations == 2:
+            return
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError(message)
+        await pilot.pause()
+
+
 class _RosterAgent:
     def __init__(self, name: str) -> None:
         self.name = name
@@ -2492,7 +2511,14 @@ class ConversationACPDispatchTests(unittest.TestCase):
                 blocks = [UserInput(f"History {index}") for index in range(130)]
                 for block in blocks:
                     await conversation.post(block)
-                await pilot.pause(0.3)
+                await _wait_for_ui(
+                    pilot,
+                    lambda: (
+                        conversation.contents._virtualized
+                        and len(conversation.contents.children) < len(blocks) // 2
+                    ),
+                    message="transcript did not settle to a virtualized window",
+                )
 
                 self.assertLess(
                     len(conversation.contents.children), len(blocks) // 2
@@ -2501,8 +2527,16 @@ class ConversationACPDispatchTests(unittest.TestCase):
                 self.assertIn(blocks[-1], conversation.contents.children)
                 max_scroll_y = conversation.window.max_scroll_y
 
+                conversation.window.follow_output = False
                 conversation.window.scroll_home(animate=False, immediate=True)
-                await pilot.pause(0.3)
+                await _wait_for_ui(
+                    pilot,
+                    lambda: (
+                        blocks[0] in conversation.contents.children
+                        and conversation.window.max_scroll_y == max_scroll_y
+                    ),
+                    message="transcript height did not stabilize after scrolling home",
+                )
 
                 self.assertEqual(conversation.window.max_scroll_y, max_scroll_y)
                 self.assertIn(blocks[0], conversation.contents.children)
@@ -2522,7 +2556,14 @@ class ConversationACPDispatchTests(unittest.TestCase):
                 self.assertIn(blocks[-1], conversation.contents.children)
 
                 conversation.window.scroll_end(animate=False, immediate=True)
-                await pilot.pause(0.3)
+                await _wait_for_ui(
+                    pilot,
+                    lambda: (
+                        blocks[0] not in conversation.contents.children
+                        and conversation.window.max_scroll_y == max_scroll_y
+                    ),
+                    message="transcript height did not stabilize after scrolling to tail",
+                )
 
                 self.assertEqual(conversation.window.max_scroll_y, max_scroll_y)
                 self.assertNotIn(blocks[0], conversation.contents.children)
@@ -2545,13 +2586,30 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     )
                     await pilot.pause()
 
-                await pilot.pause(0.5)
+                await _wait_for_ui(
+                    pilot,
+                    lambda: (
+                        conversation.contents._virtualized
+                        and len(conversation.contents.mounted_blocks) < 25
+                    ),
+                    message="realistic transcript did not settle to a bounded window",
+                )
 
                 self.assertEqual(len(conversation.contents.transcript_blocks), 100)
                 self.assertLess(len(conversation.contents.mounted_blocks), 25)
 
+                conversation.window.follow_output = False
                 conversation.window.scroll_home(animate=False, immediate=True)
-                await pilot.pause(0.3)
+                await _wait_for_ui(
+                    pilot,
+                    lambda: (
+                        conversation.contents.transcript_blocks[0]
+                        in conversation.contents.children
+                        and conversation.contents._requested_scroll_y is None
+                        and not conversation.contents._window_worker_running
+                    ),
+                    message="virtual transcript did not settle at the top",
+                )
                 remounts = 0
                 original_remove_children = conversation.contents.remove_children
 
@@ -2581,6 +2639,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                 for index in range(160):
                     await conversation.post(Note(f"History {index}"))
                 await pilot.pause(0.2)
+                conversation.window.follow_output = False
                 conversation.window.scroll_home(animate=False, immediate=True)
                 await pilot.pause(0.1)
                 calls = 0
@@ -2612,6 +2671,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         Note("\n".join(f"History {index}" for _ in range(40)))
                     )
                 await pilot.pause(0.3)
+                conversation.window.follow_output = False
                 conversation.window.scroll_home(animate=False, immediate=True)
                 await pilot.pause(0.1)
 
@@ -2663,8 +2723,16 @@ class ConversationACPDispatchTests(unittest.TestCase):
                     messages.append(conversation._agent_message)
                 await pilot.pause(0.3)
 
+                conversation.window.follow_output = False
                 conversation.window.scroll_home(animate=False, immediate=True)
-                await pilot.pause(0.3)
+                await _wait_for_ui(
+                    pilot,
+                    lambda: (
+                        messages[0] in conversation.contents.children
+                        and bool(messages[0].response.children)
+                    ),
+                    message="first agent response did not finish rendering",
+                )
 
                 first_response = messages[0].response
                 self.assertIsNotNone(first_response)
@@ -2675,6 +2743,54 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         "Reply 0" in paragraph.render().plain
                         for paragraph in first_response.query(MarkdownParagraph)
                     )
+                )
+
+        asyncio.run(scenario())
+
+    def test_zero_block_markdown_does_not_prevent_virtualization(self) -> None:
+        """A completed invisible document must not keep all history mounted."""
+
+        async def scenario() -> None:
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(80, 12)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                agent = _RosterAgent("Claude")
+                conversation.session.roster = [
+                    RosterEntry(
+                        AgentData(
+                            identity="claude.ai",
+                            name="Claude",
+                            short_name="claude",
+                        ),
+                        agent,  # type: ignore[arg-type]
+                    )
+                ]
+                conversation.begin_agent_output(agent)  # type: ignore[arg-type]
+                response = await conversation.post_agent_response(
+                    "<!-- intentionally invisible -->"
+                )
+                self.assertIsNotNone(response)
+                for index in range(130):
+                    await conversation.post(Note(f"History {index}"))
+
+                await _wait_for_ui(
+                    pilot,
+                    lambda: response.initial_render_complete,
+                    message="zero-block Markdown did not finish parsing",
+                )
+                await _wait_for_ui(
+                    pilot,
+                    lambda: conversation.contents._virtualized,
+                    message="zero-block Markdown prevented transcript virtualization",
+                )
+
+                assert response is not None
+                self.assertFalse(response.children)
+                self.assertTrue(conversation.contents._virtualized)
+                self.assertLess(
+                    len(conversation.contents.mounted_blocks),
+                    len(conversation.contents.transcript_blocks) // 2,
                 )
 
         asyncio.run(scenario())
