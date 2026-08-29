@@ -59,6 +59,7 @@ pub trait AgentAdapter: Send {
 pub struct AdapterHost {
     adapter: Box<dyn AgentAdapter>,
     pub state: SessionState,
+    pub last_error: Option<String>,
     event_log: Option<EventLog>,
 }
 
@@ -67,6 +68,7 @@ impl std::fmt::Debug for AdapterHost {
         formatter
             .debug_struct("AdapterHost")
             .field("state", &self.state)
+            .field("last_error", &self.last_error)
             .field("event_log", &self.event_log)
             .finish_non_exhaustive()
     }
@@ -78,6 +80,7 @@ impl AdapterHost {
         Self {
             adapter,
             state: SessionState::new(slot.saturating_add(1)),
+            last_error: None,
             event_log,
         }
     }
@@ -94,6 +97,21 @@ impl AdapterHost {
         self.adapter.cancel().await
     }
 
+    pub async fn set_mode(&mut self, mode: String) -> AdapterResult<()> {
+        self.adapter.set_mode(mode).await
+    }
+
+    pub async fn reload(&mut self) -> AdapterResult<()> {
+        self.adapter.reload().await?;
+        let slot = self.adapter.slot();
+        if let Some(agent) = self.state.slots.get_mut(slot) {
+            agent.active = true;
+            agent.capabilities = self.adapter.capabilities();
+        }
+        self.last_error = None;
+        Ok(())
+    }
+
     pub async fn stop(&mut self) -> AdapterResult<()> {
         self.adapter.stop().await
     }
@@ -101,7 +119,16 @@ impl AdapterHost {
     pub async fn next_effects(&mut self) -> Option<AdapterResult<Vec<Effect>>> {
         let event = match self.adapter.next_event().await {
             None => return None,
-            Some(Err(error)) => return Some(Err(error)),
+            Some(Err(error)) => {
+                self.last_error = Some(error.to_string());
+                let slot = self.adapter.slot();
+                let failure = AgentEvent::Failed {
+                    slot,
+                    started: true,
+                    detail: error.to_string(),
+                };
+                return Some(Ok(reduce(&mut self.state, failure)));
+            }
             Some(Ok(event)) => event,
         };
         if let Some(log) = &self.event_log
