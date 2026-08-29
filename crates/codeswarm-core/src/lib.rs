@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub mod relay;
+
 /// Stable roster position; slot zero is always the owner.
 pub type RosterSlot = usize;
 
