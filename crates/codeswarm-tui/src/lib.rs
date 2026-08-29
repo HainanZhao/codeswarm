@@ -583,6 +583,7 @@ pub struct App {
     config_selected: usize,
     collapse_details: bool,
     notifications: bool,
+    terminal_focused: bool,
     show_thoughts: bool,
     expand_tools: bool,
     density: Density,
@@ -625,6 +626,7 @@ impl Default for App {
             config_selected: 0,
             collapse_details: true,
             notifications: false,
+            terminal_focused: true,
             show_thoughts: false,
             expand_tools: false,
             density: Density::Comfortable,
@@ -984,6 +986,18 @@ impl App {
 
     pub fn set_notifications_enabled(&mut self, enabled: bool) {
         self.notifications = enabled;
+    }
+
+    /// Track terminal focus separately from the notification preference. A
+    /// focused terminal should not trigger an OS notification; this mirrors
+    /// the previous client's blur-only system notification policy while
+    /// keeping the setting useful in tmux where focus events may be absent.
+    pub fn set_terminal_focused(&mut self, focused: bool) {
+        self.terminal_focused = focused;
+    }
+
+    pub fn terminal_focused(&self) -> bool {
+        self.terminal_focused
     }
 
     pub fn thoughts_enabled(&self) -> bool {
@@ -2334,8 +2348,12 @@ fn render_transcript(
     let lines = if rows.is_empty() {
         Vec::new()
     } else {
+        let mut in_code = false;
         rows.into_iter()
             .map(|row| {
+                if row.first_in_block {
+                    in_code = false;
+                }
                 let marker = if row.first_in_block {
                     match row.kind {
                         codeswarm_transcript::BlockKind::Human => "› ",
@@ -2353,17 +2371,17 @@ fn render_transcript(
                     && let Some((speaker, body)) = row.text.split_once(": ")
                 {
                     let color = agent_color_for_name(app, speaker);
-                    return Line::from(vec![
+                    let mut spans = vec![
                         Span::styled(marker, Style::default().fg(color).bold()),
                         Span::styled(format!("{speaker}:"), Style::default().fg(color).bold()),
-                        Span::styled(format!(" {body}"), markdown_style(row.kind, body)),
-                    ]);
+                    ];
+                    spans.extend(markdown_spans(row.kind, &format!(" {body}"), &mut in_code));
+                    return Line::from(spans);
                 }
                 let style = row_style(row.kind, &row.text);
-                Line::from(vec![
-                    Span::styled(marker, style.add_modifier(Modifier::BOLD)),
-                    Span::styled(row.text.clone(), markdown_style(row.kind, &row.text)),
-                ])
+                let mut spans = vec![Span::styled(marker, style.add_modifier(Modifier::BOLD))];
+                spans.extend(markdown_spans(row.kind, &row.text, &mut in_code));
+                Line::from(spans)
             })
             .collect::<Vec<_>>()
     };
@@ -2515,6 +2533,61 @@ fn markdown_style(kind: codeswarm_transcript::BlockKind, text: &str) -> Style {
     }
 }
 
+fn markdown_spans(
+    kind: codeswarm_transcript::BlockKind,
+    text: &str,
+    in_code: &mut bool,
+) -> Vec<Span<'static>> {
+    if text.trim_start().starts_with("```") {
+        *in_code = !*in_code;
+        return vec![Span::styled(
+            text.to_owned(),
+            Style::default().fg(Color::Gray),
+        )];
+    }
+    if *in_code {
+        return vec![Span::styled(
+            text.to_owned(),
+            Style::default().fg(Color::LightCyan),
+        )];
+    }
+    let base = markdown_style(kind, text);
+    let mut spans = Vec::new();
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        let next = ["**", "*", "`"]
+            .iter()
+            .filter_map(|delimiter| remaining.find(delimiter).map(|index| (index, *delimiter)))
+            .min_by_key(|(index, _)| *index);
+        let Some((start, delimiter)) = next else {
+            spans.push(Span::styled(remaining.to_owned(), base));
+            break;
+        };
+        if start > 0 {
+            spans.push(Span::styled(remaining[..start].to_owned(), base));
+        }
+        let content_start = start + delimiter.len();
+        let Some(end_relative) = remaining[content_start..].find(delimiter) else {
+            spans.push(Span::styled(remaining[start..].to_owned(), base));
+            break;
+        };
+        let end = content_start + end_relative;
+        let mut style = base;
+        style = match delimiter {
+            "**" => style.add_modifier(Modifier::BOLD),
+            "*" => style.add_modifier(Modifier::ITALIC),
+            "`" => style.fg(Color::LightYellow),
+            _ => style,
+        };
+        spans.push(Span::styled(
+            remaining[content_start..end].to_owned(),
+            style,
+        ));
+        remaining = &remaining[end + delimiter.len()..];
+    }
+    spans
+}
+
 fn looks_like_unified_diff(text: &str) -> bool {
     let mut has_hunk = false;
     let mut has_file_header = false;
@@ -2528,13 +2601,18 @@ fn looks_like_unified_diff(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use codeswarm_transcript::BlockKind;
-    use ratatui::{Terminal, backend::TestBackend, layout::Rect, style::Color};
+    use ratatui::{
+        Terminal,
+        backend::TestBackend,
+        layout::Rect,
+        style::{Color, Modifier},
+    };
     use tui_textarea::{Input, Key};
 
     use super::{
         App, ConfigAction, ConfigKey, LocalCommand, PermissionAction, PermissionKey, PromptAction,
         PromptEditor, StoreAction, StoreAgent, StoreKey, agent_header_color, agent_slot_color,
-        markdown_style, render, row_style,
+        markdown_spans, markdown_style, render, row_style,
     };
 
     fn key(key: Key) -> Input {
@@ -2837,6 +2915,24 @@ mod tests {
     }
 
     #[test]
+    fn markdown_inline_emphasis_and_fenced_code_are_styled_without_reflow() {
+        let mut in_code = false;
+        let spans = markdown_spans(BlockKind::Agent, "**bold** and `code`", &mut in_code);
+        assert!(
+            spans.iter().any(|span| span.content == "bold"
+                && span.style.add_modifier(Modifier::BOLD) == span.style)
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.content == "code" && span.style.fg == Some(Color::LightYellow))
+        );
+        let _ = markdown_spans(BlockKind::Agent, "```rust", &mut in_code);
+        let code = markdown_spans(BlockKind::Agent, "let answer = 42;", &mut in_code);
+        assert_eq!(code[0].style.fg, Some(Color::LightCyan));
+    }
+
+    #[test]
     fn appended_detail_remains_visible_at_the_tail_of_a_long_transcript() {
         let backend = TestBackend::new(80, 12);
         let mut terminal = Terminal::new(backend).expect("test terminal");
@@ -3101,6 +3197,16 @@ mod tests {
             ConfigAction::Changed
         );
         assert!(app.notifications_enabled());
+    }
+
+    #[test]
+    fn system_notifications_are_disabled_while_terminal_is_focused() {
+        let mut app = App::default();
+        assert!(app.terminal_focused());
+        app.set_terminal_focused(false);
+        assert!(!app.terminal_focused());
+        app.set_terminal_focused(true);
+        assert!(app.terminal_focused());
     }
 
     #[test]

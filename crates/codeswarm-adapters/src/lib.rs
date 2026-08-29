@@ -2262,6 +2262,14 @@ mod tests {
     };
     use serde_json::Value;
 
+    fn unique_test_path(stem: &str, extension: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{stem}-{}-{nonce}.{extension}", std::process::id()))
+    }
+
     #[test]
     fn parses_configured_commands_with_shell_style_quotes_without_a_shell() {
         assert_eq!(
@@ -2535,8 +2543,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_stream_persists_announced_conversation_for_follow_up_turns() {
-        let script_path =
-            std::env::temp_dir().join(format!("codeswarm-agy-session-{}.sh", std::process::id()));
+        let script_path = unique_test_path("codeswarm-agy-session", "sh");
         std::fs::write(
             &script_path,
             "#!/bin/sh\nprintf '%s\\n' '{\"event\":\"init\",\"conversation_id\":\"native-session\"}' '{\"event\":\"step_update\",\"step_update\":{\"step_type\":\"agent_response\",\"text_delta\":\"ok\"}}' '{\"event\":\"result\",\"result\":{\"status\":\"SUCCESS\",\"response\":\"ok\"}}'\n",
@@ -2580,8 +2587,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_stream_reports_unsuccessful_result_as_crash_not_completion() {
-        let script_path =
-            std::env::temp_dir().join(format!("codeswarm-agy-failure-{}.sh", std::process::id()));
+        let script_path = unique_test_path("codeswarm-agy-failure", "sh");
         std::fs::write(
             &script_path,
             "#!/bin/sh\nprintf '%s\\n' '{\"event\":\"result\",\"result\":{\"status\":\"FAILURE\",\"error\":\"agent failed\"}}'\n",

@@ -24,7 +24,9 @@ use codeswarm_tui::{
     PromptAction, QueuedPrompt, StoreAction, StoreAgent, StoreKey, render,
 };
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    event::{
+        self, DisableFocusChange, EnableFocusChange, Event, KeyCode, KeyEventKind, KeyModifiers,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -187,6 +189,11 @@ fn main() -> std::io::Result<()> {
 
     enable_raw_mode()?;
     let mut output = stdout();
+    // Ask terminals that support it (including tmux when configured) to
+    // report focus changes. The renderer remains correct when a terminal does
+    // not answer: App defaults to focused, so OS notifications are never
+    // emitted based on an unknown focus state.
+    execute!(output, EnableFocusChange)?;
     if alternate_screen {
         execute!(output, EnterAlternateScreen)?;
     }
@@ -210,6 +217,7 @@ fn main() -> std::io::Result<()> {
         } => run_roster(&mut terminal, specs, prompt, first_slot, max_rounds),
     };
     disable_raw_mode()?;
+    execute!(terminal.backend_mut(), DisableFocusChange)?;
     if alternate_screen {
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     }
@@ -1449,7 +1457,9 @@ fn run_terminal(
                         if matches!(&event, AgentEvent::TurnComplete { .. })
                             && app.notifications_enabled()
                         {
-                            notify_turn_complete(&app.active_agent);
+                            if !app.terminal_focused() {
+                                notify_turn_complete(&app.active_agent);
+                            }
                             let _ = stdout().write_all(b"\x07");
                             let _ = stdout().flush();
                         }
@@ -1499,384 +1509,404 @@ fn run_terminal(
         if !event::poll(Duration::from_millis(50))? {
             continue;
         }
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Press {
+        match event::read()? {
+            Event::FocusGained => {
+                app.set_terminal_focused(true);
                 continue;
             }
-            if app.config_visible() {
-                let config_key = match key.code {
-                    KeyCode::Up => Some(ConfigKey::Up),
-                    KeyCode::Down => Some(ConfigKey::Down),
-                    KeyCode::Enter => Some(ConfigKey::Confirm),
-                    KeyCode::Esc => Some(ConfigKey::Cancel),
-                    _ => None,
-                };
-                if let Some(config_key) = config_key {
-                    let previous_collaboration = app.collaboration().to_owned();
-                    let config_action = app.handle_config_key(config_key);
-                    if config_action == ConfigAction::Close
-                        && let Err(error) = save_ui_preferences(app)
-                    {
-                        app.status = format!("unable to save preferences: {error}");
-                    }
-                    if let Some(mode) = app.take_requested_mode()
-                        && let Some(controls) = &controls
-                    {
-                        let _ = controls.send(AdapterControl::SetMode(mode));
-                    }
-                    if previous_collaboration != app.collaboration()
-                        && let Some(controls) = &controls
-                    {
-                        let _ = controls.send(AdapterControl::SetStrategy(collaboration_strategy(
-                            app.collaboration(),
-                        )));
-                    }
-                }
+            Event::FocusLost => {
+                app.set_terminal_focused(false);
                 continue;
             }
-            let size = terminal.size()?;
-            let interaction_height = size.height.min(24) as usize;
-            match key.code {
-                KeyCode::Char('q') if controls.is_none() && app.prompt.is_empty() => {
-                    if let Some(controls) = &controls {
-                        let _ = controls.send(AdapterControl::Stop);
-                    }
-                    return Ok(());
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
                 }
-                KeyCode::Esc if pending_permission.is_none() => {
-                    if let Some(controls) = &controls {
-                        let _ = controls.send(AdapterControl::Stop);
-                    }
-                    return Ok(());
-                }
-                KeyCode::Esc if pending_permission.is_some() => {
-                    let action = app.handle_permission_key(PermissionKey::Cancel);
-                    if dispatch_permission_action(controls.as_ref(), action) {
-                        pending_permission = None;
-                    }
-                }
-                KeyCode::Up if pending_permission.is_some() => {
-                    let _ = app.handle_permission_key(PermissionKey::Up);
-                }
-                KeyCode::Down if pending_permission.is_some() => {
-                    let _ = app.handle_permission_key(PermissionKey::Down);
-                }
-                KeyCode::Enter if pending_permission.is_some() => {
-                    let action = app.handle_permission_key(PermissionKey::Confirm);
-                    if dispatch_permission_action(controls.as_ref(), action) {
-                        pending_permission = None;
-                    }
-                }
-                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.cancel_selected_queued().is_some() {
-                        app.status = "queued prompt cancelled".into();
-                    } else {
-                        app.status = "queue empty".into();
-                    }
-                }
-                KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
-                    if app.move_queue_selection(-1).is_some() {
-                        app.status = "selected previous queued prompt".into();
-                    }
-                }
-                KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
-                    if app.move_queue_selection(1).is_some() {
-                        app.status = "selected next queued prompt".into();
-                    }
-                }
-                KeyCode::Down => {
-                    if matches!(
-                        app.handle_prompt_input(Input::from(key)),
-                        PromptAction::Ignored
-                    ) {
-                        app.scroll_by(
-                            1,
-                            size.width as usize,
-                            app.content_height(interaction_height),
-                        );
-                    }
-                }
-                KeyCode::Up => {
-                    if matches!(
-                        app.handle_prompt_input(Input::from(key)),
-                        PromptAction::Ignored
-                    ) {
-                        app.scroll_by(
-                            -1,
-                            size.width as usize,
-                            app.content_height(interaction_height),
-                        );
-                    }
-                }
-                KeyCode::End => {
-                    app.follow_tail(size.width as usize, app.content_height(interaction_height))
-                }
-                KeyCode::Tab => {
-                    if app.prompt.trim_start().starts_with('/') {
-                        if let PromptAction::Completion { index, total, .. } =
-                            app.handle_prompt_input(Input::from(key))
+                if app.config_visible() {
+                    let config_key = match key.code {
+                        KeyCode::Up => Some(ConfigKey::Up),
+                        KeyCode::Down => Some(ConfigKey::Down),
+                        KeyCode::Enter => Some(ConfigKey::Confirm),
+                        KeyCode::Esc => Some(ConfigKey::Cancel),
+                        _ => None,
+                    };
+                    if let Some(config_key) = config_key {
+                        let previous_collaboration = app.collaboration().to_owned();
+                        let config_action = app.handle_config_key(config_key);
+                        if config_action == ConfigAction::Close
+                            && let Err(error) = save_ui_preferences(app)
                         {
-                            app.status = format!("command completion {}/{}", index + 1, total);
+                            app.status = format!("unable to save preferences: {error}");
                         }
-                    } else if app.toggle_focused_detail().is_some() {
-                        app.status = "detail toggled".into();
+                        if let Some(mode) = app.take_requested_mode()
+                            && let Some(controls) = &controls
+                        {
+                            let _ = controls.send(AdapterControl::SetMode(mode));
+                        }
+                        if previous_collaboration != app.collaboration()
+                            && let Some(controls) = &controls
+                        {
+                            let _ = controls.send(AdapterControl::SetStrategy(
+                                collaboration_strategy(app.collaboration()),
+                            ));
+                        }
                     }
+                    continue;
                 }
-                KeyCode::Char('?') if app.prompt.is_empty() => {
-                    let visible = app.toggle_keyboard_help();
-                    app.status = if visible {
-                        "keyboard help shown".into()
-                    } else {
-                        "keyboard help hidden".into()
-                    };
-                }
-                KeyCode::F(1) => {
-                    let visible = app.toggle_keyboard_help();
-                    app.status = if visible {
-                        "keyboard help shown".into()
-                    } else {
-                        "keyboard help hidden".into()
-                    };
-                }
-                KeyCode::Char(character)
-                    if selected_slot.is_some()
-                        && character.is_ascii_digit()
-                        && key.modifiers.contains(KeyModifiers::ALT) =>
-                {
-                    let slot = character.to_digit(10).unwrap_or_default() as usize;
-                    if slot > 0 {
-                        selected_slot = Some(slot - 1);
-                        app.status = format!("selected agent {}", slot - 1);
+                let size = terminal.size()?;
+                let interaction_height = size.height.min(24) as usize;
+                match key.code {
+                    KeyCode::Char('q') if controls.is_none() && app.prompt.is_empty() => {
+                        if let Some(controls) = &controls {
+                            let _ = controls.send(AdapterControl::Stop);
+                        }
+                        return Ok(());
                     }
-                }
-                KeyCode::Enter
-                    if selected_slot.is_some()
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                        && !app.prompt.trim().is_empty() =>
-                {
-                    if let Some(controls) = &controls {
-                        let prompt = app.prompt.clone();
-                        let slot = selected_slot.expect("guarded selected slot");
-                        app.record_human_message(&prompt, true);
-                        if turn_active {
-                            if app.queue_prompt(prompt, Some(slot), true).is_some() {
-                                let _ = app.take_prompt();
-                                app.status = "direct prompt queued".into();
-                            } else {
-                                app.status = "queue full or prompt empty".into();
+                    KeyCode::Esc if pending_permission.is_none() => {
+                        if let Some(controls) = &controls {
+                            let _ = controls.send(AdapterControl::Stop);
+                        }
+                        return Ok(());
+                    }
+                    KeyCode::Esc if pending_permission.is_some() => {
+                        let action = app.handle_permission_key(PermissionKey::Cancel);
+                        if dispatch_permission_action(controls.as_ref(), action) {
+                            pending_permission = None;
+                        }
+                    }
+                    KeyCode::Up if pending_permission.is_some() => {
+                        let _ = app.handle_permission_key(PermissionKey::Up);
+                    }
+                    KeyCode::Down if pending_permission.is_some() => {
+                        let _ = app.handle_permission_key(PermissionKey::Down);
+                    }
+                    KeyCode::Enter if pending_permission.is_some() => {
+                        let action = app.handle_permission_key(PermissionKey::Confirm);
+                        if dispatch_permission_action(controls.as_ref(), action) {
+                            pending_permission = None;
+                        }
+                    }
+                    KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if app.cancel_selected_queued().is_some() {
+                            app.status = "queued prompt cancelled".into();
+                        } else {
+                            app.status = "queue empty".into();
+                        }
+                    }
+                    KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                        if app.move_queue_selection(-1).is_some() {
+                            app.status = "selected previous queued prompt".into();
+                        }
+                    }
+                    KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                        if app.move_queue_selection(1).is_some() {
+                            app.status = "selected next queued prompt".into();
+                        }
+                    }
+                    KeyCode::Down => {
+                        if matches!(
+                            app.handle_prompt_input(Input::from(key)),
+                            PromptAction::Ignored
+                        ) {
+                            app.scroll_by(
+                                1,
+                                size.width as usize,
+                                app.content_height(interaction_height),
+                            );
+                        }
+                    }
+                    KeyCode::Up => {
+                        if matches!(
+                            app.handle_prompt_input(Input::from(key)),
+                            PromptAction::Ignored
+                        ) {
+                            app.scroll_by(
+                                -1,
+                                size.width as usize,
+                                app.content_height(interaction_height),
+                            );
+                        }
+                    }
+                    KeyCode::End => {
+                        app.follow_tail(size.width as usize, app.content_height(interaction_height))
+                    }
+                    KeyCode::Tab => {
+                        if app.prompt.trim_start().starts_with('/') {
+                            if let PromptAction::Completion { index, total, .. } =
+                                app.handle_prompt_input(Input::from(key))
+                            {
+                                app.status = format!("command completion {}/{}", index + 1, total);
                             }
-                        } else if controls
-                            .send(AdapterControl::Direct {
-                                slot,
-                                prompt: app.take_prompt(),
-                            })
-                            .is_ok()
-                        {
-                            turn_active = true;
-                            app.status = "direct turn queued".into();
+                        } else if app.toggle_focused_detail().is_some() {
+                            app.status = "detail toggled".into();
                         }
                     }
-                }
-                KeyCode::Enter => {
-                    if let PromptAction::Submit(prompt) = app.handle_prompt_input(Input::from(key))
+                    KeyCode::Char('?') if app.prompt.is_empty() => {
+                        let visible = app.toggle_keyboard_help();
+                        app.status = if visible {
+                            "keyboard help shown".into()
+                        } else {
+                            "keyboard help hidden".into()
+                        };
+                    }
+                    KeyCode::F(1) => {
+                        let visible = app.toggle_keyboard_help();
+                        app.status = if visible {
+                            "keyboard help shown".into()
+                        } else {
+                            "keyboard help hidden".into()
+                        };
+                    }
+                    KeyCode::Char(character)
+                        if selected_slot.is_some()
+                            && character.is_ascii_digit()
+                            && key.modifiers.contains(KeyModifiers::ALT) =>
                     {
-                        append_prompt_history(&prompt);
-                        if let Some(command) = prompt.trim().strip_prefix('!') {
-                            let command = command.trim();
-                            if command.is_empty() {
-                                app.status = "type a command after !".into();
-                            } else {
-                                app.record_human_message(&prompt, false);
-                                app.transcript.append(
-                                    BlockKind::Tool,
-                                    format!("$ {command}"),
-                                    false,
-                                );
-                                turn_active = true;
-                                app.status = "running local command".into();
-                                spawn_local_shell(shell_sender.clone(), command.to_owned());
-                            }
-                        } else if let Some(local) = app.handle_local_command(&prompt) {
-                            match local {
-                                LocalCommand::Handled => {}
-                                LocalCommand::Close => {
-                                    if let Some(controls) = &controls {
-                                        let _ = controls.send(AdapterControl::Stop);
-                                    }
-                                    return Ok(());
-                                }
-                                LocalCommand::Cancel => {
-                                    if let Some(controls) = &controls {
-                                        let _ = controls.send(AdapterControl::Cancel);
-                                    }
-                                    app.status = "cancelling".into();
-                                }
-                                LocalCommand::Pause => {
-                                    if let Some(controls) = &controls {
-                                        let _ = controls.send(AdapterControl::Pause);
-                                        app.status = "relay paused".into();
-                                    } else {
-                                        app.status = "pause unavailable in solo session".into();
-                                    }
-                                }
-                                LocalCommand::Resume => {
-                                    if let Some(controls) = &controls {
-                                        let _ = controls.send(AdapterControl::Resume);
-                                        app.status = "relay resumed".into();
-                                    } else {
-                                        app.status = "resume unavailable in solo session".into();
-                                    }
-                                }
-                                LocalCommand::Mode => {
-                                    if let Some(mode) = app.take_requested_mode()
-                                        && let Some(controls) = &controls
-                                    {
-                                        let _ = controls.send(AdapterControl::SetMode(mode));
-                                    }
-                                }
-                                LocalCommand::Collaboration => {
-                                    if let Some(controls) = &controls {
-                                        let _ = controls.send(AdapterControl::SetStrategy(
-                                            collaboration_strategy(app.collaboration()),
-                                        ));
-                                    }
-                                }
-                                LocalCommand::Agents => {
-                                    if let Some(controls) = &controls {
-                                        let _ = controls.send(AdapterControl::Stop);
-                                    }
-                                    return run_store(terminal);
-                                }
-                                LocalCommand::Reload => {
-                                    if let Some(slot) = app.failed_agent()
-                                        && let Some(controls) = &controls
-                                    {
-                                        app.mark_agent_reloaded(slot);
-                                        let _ = controls.send(AdapterControl::Reload(slot));
-                                    } else {
-                                        app.status = "no crashed agent to reload".into();
-                                    }
-                                }
-                                LocalCommand::Drop => {
-                                    if let Some(slot) = app.failed_agent()
-                                        && let Some(controls) = &controls
-                                    {
-                                        if selected_slot.is_none() {
-                                            let _ = controls.send(AdapterControl::Stop);
-                                            return Ok(());
-                                        }
-                                        let _ = controls.send(AdapterControl::Drop(slot));
-                                        app.status = format!("agent {slot} dropped");
-                                    } else {
-                                        app.status = "no crashed agent to drop".into();
-                                    }
-                                }
-                                LocalCommand::Directory(path) => {
-                                    let path = PathBuf::from(path).canonicalize();
-                                    match path {
-                                        Ok(path) if path.is_dir() => {
-                                            match std::env::set_current_dir(&path) {
-                                                Ok(()) => {
-                                                    app.status =
-                                                        format!("workspace: {}", path.display())
-                                                }
-                                                Err(error) => {
-                                                    app.status = format!(
-                                                        "unable to change workspace: {error}"
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        Ok(path) => {
-                                            app.status =
-                                                format!("not a directory: {}", path.display())
-                                        }
-                                        Err(error) => {
-                                            app.status =
-                                                format!("unable to resolve workspace: {error}")
-                                        }
-                                    }
-                                }
-                                LocalCommand::Export => match export_conversation(app) {
-                                    Ok(path) => {
-                                        app.status =
-                                            format!("conversation exported to {}", path.display())
-                                    }
-                                    Err(error) => app.status = format!("export failed: {error}"),
-                                },
-                                LocalCommand::Diff => {
-                                    if let Err(error) = save_ui_preferences(app) {
-                                        app.status =
-                                            format!("unable to save diff preference: {error}");
-                                    }
-                                }
-                            }
-                        } else if let Some(controls) = &controls {
-                            app.record_human_message(&prompt, false);
+                        let slot = character.to_digit(10).unwrap_or_default() as usize;
+                        if slot > 0 {
+                            selected_slot = Some(slot - 1);
+                            app.status = format!("selected agent {}", slot - 1);
+                        }
+                    }
+                    KeyCode::Enter
+                        if selected_slot.is_some()
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !app.prompt.trim().is_empty() =>
+                    {
+                        if let Some(controls) = &controls {
+                            let prompt = app.prompt.clone();
+                            let slot = selected_slot.expect("guarded selected slot");
+                            app.record_human_message(&prompt, true);
                             if turn_active {
-                                if app.queue_prompt(prompt, selected_slot, false).is_some() {
-                                    app.status = "prompt queued".into();
+                                if app.queue_prompt(prompt, Some(slot), true).is_some() {
+                                    let _ = app.take_prompt();
+                                    app.status = "direct prompt queued".into();
                                 } else {
                                     app.status = "queue full or prompt empty".into();
                                 }
-                            } else {
-                                let command = if let Some(slot) = selected_slot {
-                                    AdapterControl::Queue { slot, prompt }
+                            } else if controls
+                                .send(AdapterControl::Direct {
+                                    slot,
+                                    prompt: app.take_prompt(),
+                                })
+                                .is_ok()
+                            {
+                                turn_active = true;
+                                app.status = "direct turn queued".into();
+                            }
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let PromptAction::Submit(prompt) =
+                            app.handle_prompt_input(Input::from(key))
+                        {
+                            append_prompt_history(&prompt);
+                            if let Some(command) = prompt.trim().strip_prefix('!') {
+                                let command = command.trim();
+                                if command.is_empty() {
+                                    app.status = "type a command after !".into();
                                 } else {
-                                    AdapterControl::Prompt(prompt)
-                                };
-                                if controls.send(command).is_ok() {
+                                    app.record_human_message(&prompt, false);
+                                    app.transcript.append(
+                                        BlockKind::Tool,
+                                        format!("$ {command}"),
+                                        false,
+                                    );
                                     turn_active = true;
-                                    app.status = "queued".into();
+                                    app.status = "running local command".into();
+                                    spawn_local_shell(shell_sender.clone(), command.to_owned());
+                                }
+                            } else if let Some(local) = app.handle_local_command(&prompt) {
+                                match local {
+                                    LocalCommand::Handled => {}
+                                    LocalCommand::Close => {
+                                        if let Some(controls) = &controls {
+                                            let _ = controls.send(AdapterControl::Stop);
+                                        }
+                                        return Ok(());
+                                    }
+                                    LocalCommand::Cancel => {
+                                        if let Some(controls) = &controls {
+                                            let _ = controls.send(AdapterControl::Cancel);
+                                        }
+                                        app.status = "cancelling".into();
+                                    }
+                                    LocalCommand::Pause => {
+                                        if let Some(controls) = &controls {
+                                            let _ = controls.send(AdapterControl::Pause);
+                                            app.status = "relay paused".into();
+                                        } else {
+                                            app.status = "pause unavailable in solo session".into();
+                                        }
+                                    }
+                                    LocalCommand::Resume => {
+                                        if let Some(controls) = &controls {
+                                            let _ = controls.send(AdapterControl::Resume);
+                                            app.status = "relay resumed".into();
+                                        } else {
+                                            app.status =
+                                                "resume unavailable in solo session".into();
+                                        }
+                                    }
+                                    LocalCommand::Mode => {
+                                        if let Some(mode) = app.take_requested_mode()
+                                            && let Some(controls) = &controls
+                                        {
+                                            let _ = controls.send(AdapterControl::SetMode(mode));
+                                        }
+                                    }
+                                    LocalCommand::Collaboration => {
+                                        if let Some(controls) = &controls {
+                                            let _ = controls.send(AdapterControl::SetStrategy(
+                                                collaboration_strategy(app.collaboration()),
+                                            ));
+                                        }
+                                    }
+                                    LocalCommand::Agents => {
+                                        if let Some(controls) = &controls {
+                                            let _ = controls.send(AdapterControl::Stop);
+                                        }
+                                        return run_store(terminal);
+                                    }
+                                    LocalCommand::Reload => {
+                                        if let Some(slot) = app.failed_agent()
+                                            && let Some(controls) = &controls
+                                        {
+                                            app.mark_agent_reloaded(slot);
+                                            let _ = controls.send(AdapterControl::Reload(slot));
+                                        } else {
+                                            app.status = "no crashed agent to reload".into();
+                                        }
+                                    }
+                                    LocalCommand::Drop => {
+                                        if let Some(slot) = app.failed_agent()
+                                            && let Some(controls) = &controls
+                                        {
+                                            if selected_slot.is_none() {
+                                                let _ = controls.send(AdapterControl::Stop);
+                                                return Ok(());
+                                            }
+                                            let _ = controls.send(AdapterControl::Drop(slot));
+                                            app.status = format!("agent {slot} dropped");
+                                        } else {
+                                            app.status = "no crashed agent to drop".into();
+                                        }
+                                    }
+                                    LocalCommand::Directory(path) => {
+                                        let path = PathBuf::from(path).canonicalize();
+                                        match path {
+                                            Ok(path) if path.is_dir() => {
+                                                match std::env::set_current_dir(&path) {
+                                                    Ok(()) => {
+                                                        app.status =
+                                                            format!("workspace: {}", path.display())
+                                                    }
+                                                    Err(error) => {
+                                                        app.status = format!(
+                                                            "unable to change workspace: {error}"
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            Ok(path) => {
+                                                app.status =
+                                                    format!("not a directory: {}", path.display())
+                                            }
+                                            Err(error) => {
+                                                app.status =
+                                                    format!("unable to resolve workspace: {error}")
+                                            }
+                                        }
+                                    }
+                                    LocalCommand::Export => match export_conversation(app) {
+                                        Ok(path) => {
+                                            app.status = format!(
+                                                "conversation exported to {}",
+                                                path.display()
+                                            )
+                                        }
+                                        Err(error) => {
+                                            app.status = format!("export failed: {error}")
+                                        }
+                                    },
+                                    LocalCommand::Diff => {
+                                        if let Err(error) = save_ui_preferences(app) {
+                                            app.status =
+                                                format!("unable to save diff preference: {error}");
+                                        }
+                                    }
+                                }
+                            } else if let Some(controls) = &controls {
+                                app.record_human_message(&prompt, false);
+                                if turn_active {
+                                    if app.queue_prompt(prompt, selected_slot, false).is_some() {
+                                        app.status = "prompt queued".into();
+                                    } else {
+                                        app.status = "queue full or prompt empty".into();
+                                    }
+                                } else {
+                                    let command = if let Some(slot) = selected_slot {
+                                        AdapterControl::Queue { slot, prompt }
+                                    } else {
+                                        AdapterControl::Prompt(prompt)
+                                    };
+                                    if controls.send(command).is_ok() {
+                                        turn_active = true;
+                                        app.status = "queued".into();
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                KeyCode::Char('p')
-                    if selected_slot.is_some() && key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(controls) = &controls {
-                        let _ = controls.send(AdapterControl::Pause);
-                        app.status = "relay paused".into();
-                    }
-                }
-                KeyCode::Char('r')
-                    if selected_slot.is_some() && key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    if let Some(controls) = &controls {
-                        let _ = controls.send(AdapterControl::Resume);
-                        app.status = "relay resumed".into();
-                    }
-                }
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if !turn_active {
-                        if let Some(controls) = &controls {
-                            let _ = controls.send(AdapterControl::Stop);
-                        }
-                        return Ok(());
-                    }
-                    if cancel_requested_at
-                        .is_some_and(|started| started.elapsed() <= Duration::from_secs(3))
+                    KeyCode::Char('p')
+                        if selected_slot.is_some()
+                            && key.modifiers.contains(KeyModifiers::CONTROL) =>
                     {
                         if let Some(controls) = &controls {
-                            let _ = controls.send(AdapterControl::Stop);
+                            let _ = controls.send(AdapterControl::Pause);
+                            app.status = "relay paused".into();
                         }
-                        return Ok(());
                     }
-                    if let Some(controls) = &controls {
-                        let _ = controls.send(AdapterControl::Cancel);
+                    KeyCode::Char('r')
+                        if selected_slot.is_some()
+                            && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        if let Some(controls) = &controls {
+                            let _ = controls.send(AdapterControl::Resume);
+                            app.status = "relay resumed".into();
+                        }
                     }
-                    cancel_requested_at = Some(Instant::now());
-                    app.status = "cancelling · press Ctrl+C again to quit".into();
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if !turn_active {
+                            if let Some(controls) = &controls {
+                                let _ = controls.send(AdapterControl::Stop);
+                            }
+                            return Ok(());
+                        }
+                        if cancel_requested_at
+                            .is_some_and(|started| started.elapsed() <= Duration::from_secs(3))
+                        {
+                            if let Some(controls) = &controls {
+                                let _ = controls.send(AdapterControl::Stop);
+                            }
+                            return Ok(());
+                        }
+                        if let Some(controls) = &controls {
+                            let _ = controls.send(AdapterControl::Cancel);
+                        }
+                        cancel_requested_at = Some(Instant::now());
+                        app.status = "cancelling · press Ctrl+C again to quit".into();
+                    }
+                    _ => match app.handle_prompt_input(Input::from(key)) {
+                        PromptAction::Completion { index, total, .. } => {
+                            app.status = format!("command completion {}/{}", index + 1, total);
+                        }
+                        PromptAction::Changed | PromptAction::Ignored | PromptAction::Submit(_) => {
+                        }
+                    },
                 }
-                _ => match app.handle_prompt_input(Input::from(key)) {
-                    PromptAction::Completion { index, total, .. } => {
-                        app.status = format!("command completion {}/{}", index + 1, total);
-                    }
-                    PromptAction::Changed | PromptAction::Ignored | PromptAction::Submit(_) => {}
-                },
             }
+            _ => continue,
         }
     }
 }
