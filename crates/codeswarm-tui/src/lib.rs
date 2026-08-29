@@ -68,6 +68,7 @@ pub enum LocalCommand {
     Mode,
     Collaboration,
     Export,
+    Agents,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,6 +83,35 @@ pub enum ConfigKey {
 pub enum ConfigAction {
     Ignored,
     Changed,
+    Close,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoreKey {
+    Up,
+    Down,
+    Toggle,
+    MoveUp,
+    MoveDown,
+    Confirm,
+    Cancel,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoreAgent {
+    pub identity: String,
+    pub name: String,
+    pub adapter: String,
+    pub command: String,
+    pub available: bool,
+    pub selected: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StoreAction {
+    Ignored,
+    Changed,
+    Launch(Vec<usize>),
     Close,
 }
 
@@ -467,6 +497,9 @@ pub struct App {
     config_visible: bool,
     config_selected: usize,
     collapse_details: bool,
+    store_visible: bool,
+    store_selected: usize,
+    store_agents: Vec<StoreAgent>,
     prompt_editor: PromptEditor,
     agent_names: BTreeMap<usize, String>,
     queued_prompts: VecDeque<QueuedPrompt>,
@@ -492,6 +525,9 @@ impl Default for App {
             config_visible: false,
             config_selected: 0,
             collapse_details: true,
+            store_visible: false,
+            store_selected: 0,
+            store_agents: Vec::new(),
             prompt_editor: PromptEditor::default(),
             agent_names: BTreeMap::new(),
             queued_prompts: VecDeque::new(),
@@ -554,6 +590,7 @@ impl App {
                 }
             }
             "/export" => LocalCommand::Export,
+            "/agents" => LocalCommand::Agents,
             "/help" => {
                 self.keyboard_help = true;
                 self.status = "keyboard help shown".into();
@@ -584,6 +621,73 @@ impl App {
         self.config_visible
     }
 
+    pub fn show_store(&mut self, agents: Vec<StoreAgent>) {
+        self.store_agents = agents;
+        self.store_selected = 0;
+        self.store_visible = true;
+    }
+
+    pub fn store_visible(&self) -> bool {
+        self.store_visible
+    }
+
+    pub fn store_agents(&self) -> &[StoreAgent] {
+        &self.store_agents
+    }
+
+    pub fn handle_store_key(&mut self, key: StoreKey) -> StoreAction {
+        if !self.store_visible || self.store_agents.is_empty() {
+            return StoreAction::Ignored;
+        }
+        match key {
+            StoreKey::Cancel => {
+                self.store_visible = false;
+                StoreAction::Close
+            }
+            StoreKey::Up => {
+                self.store_selected = self.store_selected.saturating_sub(1);
+                StoreAction::Changed
+            }
+            StoreKey::Down => {
+                self.store_selected = (self.store_selected + 1).min(self.store_agents.len() - 1);
+                StoreAction::Changed
+            }
+            StoreKey::Toggle => {
+                self.store_agents[self.store_selected].selected =
+                    !self.store_agents[self.store_selected].selected;
+                StoreAction::Changed
+            }
+            StoreKey::MoveUp if self.store_selected > 0 => {
+                self.store_agents
+                    .swap(self.store_selected, self.store_selected - 1);
+                self.store_selected -= 1;
+                StoreAction::Changed
+            }
+            StoreKey::MoveDown if self.store_selected + 1 < self.store_agents.len() => {
+                self.store_agents
+                    .swap(self.store_selected, self.store_selected + 1);
+                self.store_selected += 1;
+                StoreAction::Changed
+            }
+            StoreKey::MoveUp | StoreKey::MoveDown => StoreAction::Ignored,
+            StoreKey::Confirm => {
+                let selected = self
+                    .store_agents
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, agent)| agent.selected.then_some(index))
+                    .collect::<Vec<_>>();
+                let selected = if selected.is_empty() {
+                    vec![self.store_selected]
+                } else {
+                    selected
+                };
+                self.store_visible = false;
+                StoreAction::Launch(selected)
+            }
+        }
+    }
+
     pub fn handle_config_key(&mut self, key: ConfigKey) -> ConfigAction {
         if !self.config_visible {
             return ConfigAction::Ignored;
@@ -599,14 +703,14 @@ impl App {
                 ConfigAction::Changed
             }
             ConfigKey::Down => {
-                self.config_selected = self.config_selected.saturating_add(1).min(4);
+                self.config_selected = self.config_selected.saturating_add(1).min(5);
                 ConfigAction::Changed
             }
             ConfigKey::Confirm => {
                 match self.config_selected {
                     0 => self.follow_tail = !self.follow_tail,
                     1 => self.collapse_details = !self.collapse_details,
-                    2..=4 => {}
+                    2..=5 => {}
                     _ => return ConfigAction::Ignored,
                 }
                 self.status = "configuration updated".into();
@@ -1025,6 +1129,10 @@ impl App {
 pub fn render(frame: &mut Frame, app: &mut App) {
     app.sync_prompt_editor();
     let area = frame.area();
+    if app.store_visible {
+        render_store(frame, app, area);
+        return;
+    }
     if app.config_visible {
         render_config(frame, app, area);
         return;
@@ -1263,7 +1371,7 @@ fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
 fn render_keyboard_help(buffer: &mut Buffer, area: Rect) {
     let lines = [
         " keys: ↑/↓ scroll · End follow tail · Tab details · Ctrl+K cancel queue · ? hide help",
-        " commands: /help  /config  /export  /mode  /collab",
+        " commands: /help  /config  /agents  /export  /mode  /collab",
         " /mode chat · /collab roster|manual|pair · /pause · /resume",
         " /clear clears the local transcript · /close exits the session",
         " Ctrl+Enter sends to the selected agent · Ctrl+C cancels active work",
@@ -1302,6 +1410,7 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
         ("Mode", app.mode(), false),
         ("Collaboration", app.collaboration(), false),
         ("Renderer", "Inline · tmux safe", false),
+        ("Agent store", "Run /agents", false),
     ];
     let mut lines = Vec::with_capacity(rows.len() + 3);
     lines.push(Line::styled(
@@ -1343,6 +1452,83 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .title(" CodeSwarm settings ")
+                .title_style(Style::default().fg(Color::Cyan).bold())
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .render(modal, frame.buffer_mut());
+}
+
+fn render_store(frame: &mut Frame, app: &App, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let width = area.width.clamp(44, 88);
+    let height = area.height.clamp(10, 22);
+    let modal = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width.min(area.width),
+        height.min(area.height),
+    );
+    frame.render_widget(Clear, modal);
+    let mut lines = vec![
+        Line::styled(
+            "Choose your agents",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Line::styled(
+            "Space select · Alt+↑/↓ reorder · Enter launch · Esc quit",
+            Style::default().fg(Color::Gray),
+        ),
+        Line::raw(""),
+    ];
+    for (index, agent) in app.store_agents.iter().enumerate() {
+        let marker = if index == app.store_selected {
+            "▶"
+        } else {
+            " "
+        };
+        let checked = if agent.selected { "☑" } else { "☐" };
+        let availability = if agent.available {
+            "ready"
+        } else {
+            "not found"
+        };
+        let style = if index == app.store_selected {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(38, 48, 65))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {marker} {checked} "), style),
+            Span::styled(format!("{:<20}", agent.name), style),
+            Span::styled(
+                format!(" {:<9} {}", availability, agent.adapter),
+                if agent.available {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::Yellow)
+                },
+            ),
+        ]));
+        if index == app.store_selected {
+            lines.push(Line::styled(
+                format!("     {} · {}", agent.identity, agent.command),
+                Style::default().fg(Color::Gray),
+            ));
+        }
+    }
+    Paragraph::new(lines)
+        .style(Style::default().bg(PANEL_BG))
+        .block(
+            Block::default()
+                .title(" CodeSwarm agent store ")
                 .title_style(Style::default().fg(Color::Cyan).bold())
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan)),
@@ -1465,7 +1651,7 @@ mod tests {
 
     use super::{
         App, ConfigAction, ConfigKey, LocalCommand, PermissionAction, PermissionKey, PromptAction,
-        PromptEditor, render,
+        PromptEditor, StoreAction, StoreAgent, StoreKey, render,
     };
 
     fn key(key: Key) -> Input {
@@ -1815,6 +2001,10 @@ mod tests {
             app.handle_local_command("/collab invalid"),
             Some(LocalCommand::Handled)
         );
+        assert_eq!(
+            app.handle_local_command("/agents"),
+            Some(LocalCommand::Agents)
+        );
     }
 
     #[test]
@@ -1868,6 +2058,74 @@ mod tests {
         assert!(rendered.contains("/export"), "rendered={rendered:?}");
         assert!(rendered.contains("/collab"), "rendered={rendered:?}");
         assert!(rendered.contains("/mode"), "rendered={rendered:?}");
+    }
+
+    #[test]
+    fn agent_store_selects_reorders_and_launches_a_roster() {
+        let mut app = App::default();
+        app.show_store(vec![
+            StoreAgent {
+                identity: "one.example".into(),
+                name: "One".into(),
+                adapter: "ACP".into(),
+                command: "one-acp".into(),
+                available: true,
+                selected: false,
+            },
+            StoreAgent {
+                identity: "two.example".into(),
+                name: "Two".into(),
+                adapter: "native".into(),
+                command: "two".into(),
+                available: false,
+                selected: false,
+            },
+        ]);
+        assert_eq!(app.handle_store_key(StoreKey::Toggle), StoreAction::Changed);
+        assert_eq!(app.handle_store_key(StoreKey::Down), StoreAction::Changed);
+        assert_eq!(app.handle_store_key(StoreKey::Toggle), StoreAction::Changed);
+        assert_eq!(app.handle_store_key(StoreKey::MoveUp), StoreAction::Changed);
+        assert_eq!(
+            app.handle_store_key(StoreKey::Confirm),
+            StoreAction::Launch(vec![0, 1])
+        );
+        assert!(!app.store_visible());
+        assert_eq!(app.store_agents()[0].identity, "two.example");
+    }
+
+    #[test]
+    fn agent_store_renders_availability_and_command_details() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        app.show_store(vec![StoreAgent {
+            identity: "custom.example".into(),
+            name: "Custom Agent".into(),
+            adapter: "ACP".into(),
+            command: "custom-agent --acp".into(),
+            available: false,
+            selected: false,
+        }]);
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw store");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            rendered.contains("Choose your agents"),
+            "rendered={rendered:?}"
+        );
+        assert!(rendered.contains("Custom Agent"), "rendered={rendered:?}");
+        assert!(rendered.contains("not found"), "rendered={rendered:?}");
+        assert!(
+            rendered.contains("custom-agent --acp"),
+            "rendered={rendered:?}"
+        );
     }
 
     #[test]

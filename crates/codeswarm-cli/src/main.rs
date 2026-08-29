@@ -11,12 +11,13 @@ use codeswarm_adapters::{
     AcpAdapter, AdapterError, AdapterHost, AdapterResult, AgentAdapter, AgyAdapter, RelayHost,
 };
 use codeswarm_core::PermissionAnswer;
+use codeswarm_core::agents::{AdapterKind, AgentDefinition, catalog_from_settings};
 use codeswarm_core::launcher::{LaunchDecision, launch_decision};
 use codeswarm_core::{AgentEvent, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{
     App, ConfigKey, Input, LocalCommand, PermissionAction, PermissionKey, PromptAction,
-    QueuedPrompt, render,
+    QueuedPrompt, StoreAction, StoreAgent, StoreKey, render,
 };
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -194,10 +195,11 @@ fn bare_launch() -> Launch {
 }
 
 fn bare_launch_from_settings(settings: &str) -> Launch {
-    let catalog = agent_catalog();
+    let catalog = catalog_from_settings(settings);
     let identities = catalog
         .iter()
-        .map(|(identity, _)| (*identity).to_owned())
+        .filter(|agent| agent.active)
+        .map(|agent| agent.identity.clone())
         .collect::<Vec<_>>();
     match launch_decision(settings, &identities) {
         LaunchDecision::Restore { identities } => {
@@ -206,8 +208,10 @@ fn bare_launch_from_settings(settings: &str) -> Launch {
                 .filter_map(|identity| {
                     catalog
                         .iter()
-                        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(identity))
-                        .map(|(_, spec)| spec.clone())
+                        .find(|candidate| {
+                            candidate.active && candidate.identity.eq_ignore_ascii_case(identity)
+                        })
+                        .map(agent_spec)
                 })
                 .collect::<Vec<_>>();
             if specs.is_empty() {
@@ -232,21 +236,11 @@ fn settings_path() -> Option<PathBuf> {
         .map(|root| root.join("codeswarm").join("codeswarm.json"))
 }
 
-fn agent_catalog() -> Vec<(&'static str, AgentSpec)> {
-    vec![
-        ("antigravity.google.com", AgentSpec::Agy("agy".into())),
-        (
-            "claude.com",
-            AgentSpec::Acp("npx -y @agentclientprotocol/claude-agent-acp".into()),
-        ),
-        ("geminicli.com", AgentSpec::Acp("gemini --acp".into())),
-        (
-            "openai.com",
-            AgentSpec::Acp("npx -y @agentclientprotocol/codex-acp".into()),
-        ),
-        ("opencode.ai", AgentSpec::Acp("opencode acp".into())),
-        ("qwen.ai", AgentSpec::Acp("qwen --acp".into())),
-    ]
+fn agent_spec(agent: &AgentDefinition) -> AgentSpec {
+    match agent.adapter {
+        AdapterKind::Native => AgentSpec::Agy(agent.command.clone()),
+        AdapterKind::Acp => AgentSpec::Acp(agent.command.clone()),
+    }
 }
 
 fn parse_roster_launch(arguments: &[String]) -> Option<Launch> {
@@ -332,13 +326,114 @@ fn display_agent_name(command: &str) -> String {
 
 fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
     let mut app = App::default();
-    app.set_header("CodeSwarm agent store", "select a roster with --roster");
-    app.transcript.append(
-        BlockKind::Notice,
-        "No usable saved roster was found. Start an explicit roster with repeated --roster flags.",
-        false,
-    );
-    run_terminal(terminal, &mut app, None, None, None)
+    let settings = settings_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let catalog = catalog_from_settings(&settings);
+    let launchable_catalog = codeswarm_core::agents::active_catalog(catalog);
+    let agents = launchable_catalog
+        .iter()
+        .map(|agent| StoreAgent {
+            identity: agent.identity.clone(),
+            name: agent.name.clone(),
+            adapter: match agent.adapter {
+                AdapterKind::Native => "native".into(),
+                AdapterKind::Acp => "ACP".into(),
+            },
+            command: agent.command.clone(),
+            available: command_available(&agent.command),
+            selected: false,
+        })
+        .collect();
+    app.show_store(agents);
+    loop {
+        terminal.draw(|frame| render(frame, &mut app))?;
+        if !event::poll(Duration::from_millis(50))? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        let store_key = match key.code {
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => Some(StoreKey::MoveUp),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => Some(StoreKey::MoveDown),
+            KeyCode::Up => Some(StoreKey::Up),
+            KeyCode::Down => Some(StoreKey::Down),
+            KeyCode::Char(' ') => Some(StoreKey::Toggle),
+            KeyCode::Enter => Some(StoreKey::Confirm),
+            KeyCode::Esc | KeyCode::Char('q') => Some(StoreKey::Cancel),
+            _ => None,
+        };
+        let Some(store_key) = store_key else { continue };
+        match app.handle_store_key(store_key) {
+            StoreAction::Launch(indices) => {
+                let selected = indices
+                    .into_iter()
+                    .filter_map(|index| app.store_agents().get(index))
+                    .collect::<Vec<_>>();
+                if selected.is_empty() {
+                    continue;
+                }
+                let identities = selected
+                    .iter()
+                    .map(|agent| agent.identity.clone())
+                    .collect::<Vec<_>>();
+                save_roster(&identities)?;
+                let specs = selected
+                    .iter()
+                    .filter_map(|agent| {
+                        launchable_catalog
+                            .iter()
+                            .find(|candidate| candidate.identity == agent.identity)
+                    })
+                    .map(agent_spec)
+                    .collect::<Vec<_>>();
+                return run_roster(terminal, specs, None, 0, 100);
+            }
+            StoreAction::Close => return Ok(()),
+            StoreAction::Ignored | StoreAction::Changed => {}
+        }
+    }
+}
+
+fn command_available(command: &str) -> bool {
+    let (program, _) = split_command(command);
+    !program.is_empty()
+        && std::process::Command::new("which")
+            .arg(program)
+            .status()
+            .is_ok_and(|status| status.success())
+}
+
+fn save_roster(identities: &[String]) -> std::io::Result<()> {
+    let Some(path) = settings_path() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut settings = path
+        .exists()
+        .then(|| std::fs::read_to_string(&path).ok())
+        .flatten()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    let launcher = settings
+        .entry("launcher")
+        .or_insert_with(|| serde_json::json!({}));
+    if !launcher.is_object() {
+        *launcher = serde_json::json!({});
+    }
+    launcher["roster"] = serde_json::Value::String(identities.join("\n"));
+    let encoded = serde_json::to_vec_pretty(&serde_json::Value::Object(settings))
+        .map_err(std::io::Error::other)?;
+    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    std::fs::write(&temporary, encoded)?;
+    std::fs::rename(temporary, path)
 }
 
 fn run_preview(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
@@ -821,8 +916,8 @@ fn run_terminal(
     selected_slot: Option<usize>,
 ) -> std::io::Result<()> {
     app.set_prompt_completions([
-        "/cancel", "/clear", "/close", "/collab", "/config", "/exit", "/export", "/help", "/mode",
-        "/pause", "/quit", "/resume",
+        "/agents", "/cancel", "/clear", "/close", "/collab", "/config", "/exit", "/export",
+        "/help", "/mode", "/pause", "/quit", "/resume",
     ]);
     let mut selected_slot = selected_slot;
     let event_log = event_log().ok();
@@ -1067,6 +1162,12 @@ fn run_terminal(
                                     app.status = "relay resumed".into();
                                 }
                                 LocalCommand::Mode | LocalCommand::Collaboration => {}
+                                LocalCommand::Agents => {
+                                    if let Some(controls) = &controls {
+                                        let _ = controls.send(AdapterControl::Stop);
+                                    }
+                                    return run_store(terminal);
+                                }
                                 LocalCommand::Export => match export_conversation(app) {
                                     Ok(path) => {
                                         app.status =

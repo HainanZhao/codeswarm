@@ -302,8 +302,16 @@ any advanced panel or alternate-screen implementation.
   guidance. It is rendered without touching the transcript cache.
 - Markdown export reads logical transcript blocks directly, retaining hidden
   thought/tool details without rewrapping the 5k-word viewport.
+- The Rust agent catalog restores the built-in native/ACP entries and accepts
+  custom or built-in override definitions from
+  `$XDG_CONFIG_HOME/codeswarm/codeswarm.json`.
+- Bare launch now opens a real keyboard-driven agent store when no roster is
+  saved: `Space` selects, `Alt+↑/↓` reorders, and `Enter` persists and starts
+  the highlighted roster. `/agents` returns to that store from a session.
 - `tests/tmux/config.sh` exercises the release binary through a real tmux pane,
   including opening, navigating, toggling, closing, and exporting.
+- `tests/tmux/store.sh` verifies that a fresh bare launch exposes an actionable
+  agent catalog and selection controls.
 
 ## Phase 5 — Collaboration and Lazy Detail Views
 

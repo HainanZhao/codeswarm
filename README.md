@@ -40,12 +40,38 @@ codeswarm --roster "acp:codex-acp" --roster "agy:agy" "review the patch"
 Adapters are intentionally not forced through ACP. Native adapters and custom
 ACP commands can coexist in one roster.
 
+### Configure custom agents
+
+The agent store reads `~/.config/codeswarm/codeswarm.json` (or
+`$XDG_CONFIG_HOME/codeswarm/codeswarm.json`). Add an `agents` array or object;
+entries replace built-ins with the same identity or add a new agent:
+
+```json
+{
+  "agents": {
+    "reviewer.local": {
+      "name": "Local Reviewer",
+      "short_name": "reviewer",
+      "adapter": "acp",
+      "command": "my-reviewer --acp",
+      "active": true
+    }
+  }
+}
+```
+
+Use `adapter: "native"` for a native command. Bare `codeswarm` displays these
+entries in the store; `Space` selects them, `Alt+↑/↓` changes roster order, and
+`Enter` launches the selection. The store writes the selected identities back
+to `launcher.roster` without overwriting other settings.
+
 ## Commands
 
 Inside the conversation prompt:
 
 - `/help` shows keyboard and command help.
 - `/config` opens the lightweight inline settings panel.
+- `/agents` returns to the agent store to edit the saved roster.
 - `/export` writes the retained conversation to Markdown.
 - `/mode` and `/mode chat` select or show the current mode state.
 - `/collab roster|manual|pair` selects collaboration routing.

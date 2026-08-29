@@ -15,6 +15,14 @@ Select agents with the arrow keys and `Space`, then press `Enter`. The selected
 roster is saved and restored by the next bare launch. Use `--demo` to exercise
 the UI without an external agent.
 
+The store reads custom agents from
+`$XDG_CONFIG_HOME/codeswarm/codeswarm.json` (default:
+`~/.config/codeswarm/codeswarm.json`). Add an `agents` array or object with
+`identity`, `name`, `short_name`, `adapter` (`native` or `acp`), and `command`.
+Entries may override a built-in identity or add a new one. In the store,
+`Space` toggles membership, `Alt+Up`/`Alt+Down` changes order, and `Enter`
+launches the selected roster (or the highlighted agent when none is selected).
+
 ## Agent adapters
 
 CodeSwarm supports both native adapters and ACP adapters. They share the same
@@ -43,6 +51,7 @@ terminal output, and UI history stay local to the producing agent.
 
 - `/help` — show the complete keyboard and command guide.
 - `/config` — open the lightweight inline settings panel.
+- `/agents` — return to the agent store and edit the saved roster.
 - `/export` — write the retained transcript to a timestamped Markdown file.
 - `/mode` — focus mode settings; `/mode chat` selects chat mode.
 - `/collab` — focus collaboration settings;
