@@ -138,6 +138,27 @@ impl Transcript {
         true
     }
 
+    /// Replace one logical block in place. Protocols such as ACP emit a
+    /// `tool_call` followed by several `tool_call_update` messages; updating
+    /// the existing block keeps a long session bounded by logical tool calls
+    /// instead of appending a new card for every lifecycle notification.
+    pub fn replace(
+        &mut self,
+        id: u64,
+        kind: BlockKind,
+        source: impl Into<String>,
+        collapsed: bool,
+    ) -> bool {
+        let Some(block) = self.blocks.iter_mut().find(|block| block.id == id) else {
+            return false;
+        };
+        block.kind = kind;
+        block.source = source.into();
+        block.collapsed = collapsed;
+        self.invalidate_rows();
+        true
+    }
+
     /// Render height rows beginning at scroll_y, including a bounded overscan
     /// margin. Steady-state scrolling clones an indexed slice.
     pub fn viewport(

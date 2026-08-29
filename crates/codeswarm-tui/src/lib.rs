@@ -779,6 +779,10 @@ pub struct App {
     selected_queue: Option<usize>,
     keyboard_help: bool,
     streaming_blocks: BTreeMap<(usize, codeswarm_transcript::BlockKind), u64>,
+    /// Active tool-call IDs are stable across ACP lifecycle updates. Keep the
+    /// corresponding transcript block so updates replace the preview in
+    /// place instead of adding an unbounded card for every status change.
+    tool_blocks: BTreeMap<(usize, String), u64>,
     focused_detail: Option<u64>,
     /// Background workspace index used only by the optional `@path` picker.
     /// It is deliberately separate from transcript state so index updates do
@@ -841,6 +845,7 @@ impl Default for App {
             selected_queue: None,
             keyboard_help: false,
             streaming_blocks: BTreeMap::new(),
+            tool_blocks: BTreeMap::new(),
             focused_detail: None,
             path_index: None,
             path_query: String::new(),
@@ -982,6 +987,7 @@ impl App {
                 self.transcript.clear();
                 self.scroll_y = 0;
                 self.streaming_blocks.clear();
+                self.tool_blocks.clear();
                 self.focused_detail = None;
                 self.status = "conversation cleared".into();
                 LocalCommand::Handled
@@ -1877,6 +1883,16 @@ impl App {
         self.agent_usage.get(&slot)
     }
 
+    /// Return context usage for the agent currently shown in the status HUD.
+    /// The lookup stays O(roster) and only runs during a frame render; usage
+    /// updates themselves remain cheap state replacement events.
+    pub fn active_agent_usage(&self) -> Option<&UsageUpdate> {
+        self.agent_names
+            .iter()
+            .find(|(_, name)| name.as_str() == self.active_agent)
+            .and_then(|(slot, _)| self.agent_usage.get(slot))
+    }
+
     /// Start a lazy workspace index for `@path` prompt references.  Starting
     /// this index never scans synchronously; callers may invoke it when a
     /// session starts or after `/cd` changes the workspace.
@@ -1952,13 +1968,17 @@ impl App {
         self.path_selection
     }
 
-    /// Height needed for the picker, capped to six rows so it cannot steal
+    /// Height needed for the picker, capped to eight rows so it cannot steal
     /// the whole tmux pane from the transcript or prompt.
     pub fn path_picker_height(&self) -> u16 {
         if !self.path_picker_visible() {
             0
         } else {
-            self.path_matches.len().min(5).saturating_add(2) as u16
+            // One header, one top/bottom border pair, and one row per
+            // candidate.  The previous `+2` clipped the last (and, for a
+            // single match, only) result because the header consumed the
+            // entire inner area.
+            self.path_matches.len().min(5).saturating_add(3) as u16
         }
     }
 
@@ -2155,7 +2175,20 @@ impl App {
                         self.collapse_details && update.status != ToolStatus::Failed
                     }
                 };
-                let id = self.transcript.append(kind, source, collapsed);
+                let key = (*slot, update.id.clone());
+                let id = if let Some(id) = self.tool_blocks.get(&key).copied() {
+                    if self.transcript.replace(id, kind, source.clone(), collapsed) {
+                        id
+                    } else {
+                        let id = self.transcript.append(kind, source, collapsed);
+                        self.tool_blocks.insert(key, id);
+                        id
+                    }
+                } else {
+                    let id = self.transcript.append(kind, source, collapsed);
+                    self.tool_blocks.insert(key, id);
+                    id
+                };
                 self.focused_detail = Some(id);
             }
             AgentEvent::Permission { slot, request } => {
@@ -2199,6 +2232,8 @@ impl App {
                     .remove(&(*slot, codeswarm_transcript::BlockKind::Agent));
                 self.streaming_blocks
                     .remove(&(*slot, codeswarm_transcript::BlockKind::Thought));
+                self.tool_blocks
+                    .retain(|(tool_slot, _), _| tool_slot != slot);
                 self.streaming_blocks
                     .remove(&(*slot, codeswarm_transcript::BlockKind::Human));
                 if self
@@ -2565,6 +2600,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                 Color::Yellow
             }),
         ),
+        if let Some(usage) = app.active_agent_usage() {
+            let percent = usage
+                .used
+                .saturating_mul(100)
+                .checked_div(usage.size)
+                .unwrap_or(0);
+            Span::styled(
+                format!(
+                    "  ·  context {}K/{}K ({percent}%)",
+                    usage.used / 1000,
+                    usage.size / 1000
+                ),
+                Style::default().fg(Color::Gray),
+            )
+        } else {
+            Span::raw("")
+        },
         if app.roster_summary().is_empty() {
             Span::raw("")
         } else {
@@ -2788,6 +2840,22 @@ fn render_compact(frame: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new(prompt)
             .style(Style::default().fg(Color::White).bg(PANEL_BG))
             .render(prompt_area, frame.buffer_mut());
+
+        // Keep the path picker usable in a narrow tmux/mobile pane too.  It
+        // overlays the lower transcript rows, but never covers the prompt,
+        // which remains the stable input target in compact mode.
+        if app.path_picker_visible() {
+            let picker_height = app.path_picker_height().min(area.height.saturating_sub(2));
+            if picker_height > 0 {
+                let picker_area = Rect::new(
+                    area.x,
+                    prompt_area.y.saturating_sub(picker_height),
+                    area.width,
+                    picker_height,
+                );
+                render_path_picker(frame.buffer_mut(), picker_area, app);
+            }
+        }
     }
 }
 
@@ -4225,6 +4293,18 @@ mod tests {
         }
         assert!(app.path_picker_visible());
         assert_eq!(app.path_matches()[app.path_selection()].path, "src/main.rs");
+        let mut terminal = Terminal::new(TestBackend::new(30, 8)).expect("compact terminal");
+        terminal
+            .draw(|frame| super::render(frame, &mut app))
+            .expect("draw compact path picker");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("src/main"), "rendered={rendered:?}");
         assert!(matches!(
             app.handle_path_picker_key(Key::Enter),
             PathPickerAction::Insert(value) if value == "@src/main.rs "
@@ -4267,6 +4347,36 @@ mod tests {
         assert_eq!(
             app.handle_local_command("/unknown"),
             Some(LocalCommand::Handled)
+        );
+    }
+
+    #[test]
+    fn context_usage_is_visible_in_the_active_status_hud() {
+        let backend = TestBackend::new(100, 12);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut app = App::default();
+        app.set_agent_name(0, "Claude Code");
+        app.apply_event(&codeswarm_core::AgentEvent::UsageUpdated {
+            slot: 0,
+            usage: codeswarm_core::UsageUpdate {
+                used: 4_200,
+                size: 128_000,
+            },
+        });
+        app.active_agent = "Claude Code".into();
+        terminal
+            .draw(|frame| super::render(frame, &mut app))
+            .expect("draw");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            rendered.contains("context 4K/128K (3%)"),
+            "rendered={rendered:?}"
         );
     }
 

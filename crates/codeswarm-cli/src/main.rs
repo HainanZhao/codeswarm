@@ -479,10 +479,34 @@ fn settings_path() -> Option<PathBuf> {
 }
 
 fn agent_spec(agent: &AgentDefinition) -> AgentSpec {
+    let command = agent
+        .full_access_startup_argument
+        .as_deref()
+        .filter(|argument| !argument.trim().is_empty())
+        .map_or_else(
+            || agent.command.clone(),
+            |argument| append_command_argument(&agent.command, argument),
+        );
     match agent.adapter {
-        AdapterKind::Native => AgentSpec::Agy(agent.command.clone()),
-        AdapterKind::Acp => AgentSpec::Acp(agent.command.clone()),
+        AdapterKind::Native => AgentSpec::Agy(command),
+        AdapterKind::Acp => AgentSpec::Acp(command),
     }
+}
+
+/// Append one catalog argument without changing the existing command's
+/// shell-free tokenization. Catalog values are parsed by `parse_command_line`,
+/// so quote only the argument being added and leave the original command
+/// spelling intact for display and identity resolution.
+fn append_command_argument(command: &str, argument: &str) -> String {
+    let quoted = if argument
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || "-_.=/:@".contains(character))
+    {
+        argument.to_owned()
+    } else {
+        format!("'{}'", argument.replace('\'', "'\\''"))
+    };
+    format!("{command} {quoted}")
 }
 
 fn parse_roster_launch(arguments: &[String]) -> Option<Launch> {
@@ -578,7 +602,7 @@ fn display_agent_name(command: &str) -> String {
         "Qwen Code".into()
     } else if lower.contains("gemini") {
         "Gemini CLI".into()
-    } else if lower == "agy" || lower.contains("antigravity") {
+    } else if lower.split_whitespace().next() == Some("agy") || lower.contains("antigravity") {
         "Antigravity CLI".into()
     } else {
         command.into()
@@ -594,14 +618,15 @@ fn catalog_identity_for_command(command: &str) -> String {
         .and_then(|path| std::fs::read_to_string(path).ok())
         .unwrap_or_default();
     let normalized = command.trim();
+    let executable = command_executable(normalized);
     catalog_from_settings(&settings)
         .into_iter()
         .find(|agent| {
             agent.command.trim().eq_ignore_ascii_case(normalized)
-                || agent
-                    .detect_command
-                    .as_deref()
-                    .is_some_and(|detect| detect.trim().eq_ignore_ascii_case(normalized))
+                || agent.detect_command.as_deref().is_some_and(|detect| {
+                    detect.trim().eq_ignore_ascii_case(normalized)
+                        || executable == command_executable(detect)
+                })
                 || agent.name.eq_ignore_ascii_case(normalized)
                 || agent.short_name.eq_ignore_ascii_case(normalized)
                 || agent
@@ -610,6 +635,12 @@ fn catalog_identity_for_command(command: &str) -> String {
                     .any(|alias| alias.eq_ignore_ascii_case(normalized))
         })
         .map_or_else(|| normalized.to_owned(), |agent| agent.identity)
+}
+
+fn command_executable(command: &str) -> Option<String> {
+    parse_command_line(command)
+        .ok()
+        .map(|(program, _)| program.to_ascii_lowercase())
 }
 
 /// Build the single-owner snapshot used by direct (non-relay) launches.
@@ -2906,6 +2937,17 @@ fn load_owner_session_id_from(
     if !owner_matches {
         return None;
     }
+    // A session handle is only resumable when the adapter advertised the
+    // protocol's load-session capability.  Without this guard a fresh
+    // invocation of a non-resumable ACP agent can be poisoned by stale
+    // metadata from a previous owner.
+    if loaded
+        .get("agent_supports_load_session")
+        .and_then(serde_json::Value::as_bool)
+        == Some(false)
+    {
+        return None;
+    }
     // `owner_session_id` is the explicit Rust snapshot key.  Fall back to
     // the Python-compatible session-row name so snapshots produced before
     // that alias was added remain resumable.
@@ -3022,9 +3064,10 @@ mod tests {
         bare_launch_from_settings, dispatch_permission_action, dispatch_queued_prompt,
         normalize_arguments, parse_launch, prepare_launch_arguments, project_dir_argument,
         project_prompt_history_path, reconcile_config_roster, run_relay_sequence_with_controls,
-        standalone_session_metadata, validate_project_directory,
+        sanitize_direct_event, standalone_session_metadata, validate_project_directory,
     };
     use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
+    use codeswarm_core::persistence::{SessionMetadata, SessionMetadataStore};
     use codeswarm_core::{AgentCapabilities, AgentEvent, PermissionAnswer};
     use codeswarm_tui::{PermissionAction, QueuedPrompt, StoreAgent};
     use std::collections::BTreeSet;
@@ -3127,8 +3170,20 @@ mod tests {
             "antigravity.google.com"
         );
         assert_eq!(
+            super::catalog_identity_for_command("agy --dangerously-skip-permissions"),
+            "antigravity.google.com"
+        );
+        assert_eq!(
             super::catalog_identity_for_command("npx -y @agentclientprotocol/codex-acp"),
             "openai.com"
+        );
+    }
+
+    #[test]
+    fn native_catalog_arguments_keep_the_friendly_display_name() {
+        assert_eq!(
+            super::display_agent_name("agy --dangerously-skip-permissions"),
+            "Antigravity CLI"
         );
     }
 
@@ -3189,6 +3244,39 @@ mod tests {
     }
 
     #[test]
+    fn owner_session_restore_skips_non_resumable_adapter_handles() {
+        let root = std::env::temp_dir().join(format!(
+            "codeswarm-owner-nonresumable-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("project directory");
+        let metadata_path = root.join("session.json");
+        let mut data = serde_json::Map::new();
+        data.insert(
+            "cwd".into(),
+            serde_json::Value::String(root.display().to_string()),
+        );
+        data.insert("owner".into(), serde_json::json!("Gemini CLI"));
+        data.insert(
+            "owner_session_id".into(),
+            serde_json::json!("stale-session"),
+        );
+        data.insert(
+            "agent_supports_load_session".into(),
+            serde_json::json!(false),
+        );
+        SessionMetadataStore::open(&metadata_path)
+            .write(&SessionMetadata::new(data))
+            .expect("write metadata");
+        assert_eq!(
+            super::load_owner_session_id_from(&metadata_path, &root, "Gemini CLI"),
+            None
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn accepts_a_project_directory_flag_without_routing_it_to_the_agent() {
         assert_eq!(
             project_dir_argument(&["--project-dir".into(), "/tmp".into()]),
@@ -3229,6 +3317,19 @@ mod tests {
         assert_eq!(
             super::resolve_live_agent_spec("agy:custom-agent"),
             Some(AgentSpec::Agy("custom-agent".into()))
+        );
+    }
+
+    #[test]
+    fn catalog_native_launch_preserves_full_access_startup_argument() {
+        let catalog = codeswarm_core::agents::default_catalog();
+        let antigravity = catalog
+            .iter()
+            .find(|agent| agent.identity == "antigravity.google.com")
+            .expect("antigravity catalog entry");
+        assert_eq!(
+            super::agent_spec(antigravity),
+            AgentSpec::Agy("agy --dangerously-skip-permissions".into())
         );
     }
 
@@ -3353,7 +3454,7 @@ mod tests {
             Launch::Roster { specs, prompt: None, first_slot: 0, max_rounds: 100 }
                 if specs == [
                     AgentSpec::Acp("npx -y @agentclientprotocol/codex-acp".into()),
-                    AgentSpec::Agy("agy".into())
+                    AgentSpec::Agy("agy --dangerously-skip-permissions".into())
                 ]
         ));
     }
@@ -3553,7 +3654,7 @@ mod tests {
         output.extend(sanitize_direct_event(
             AgentEvent::Text {
                 slot: 0,
-                text: format!("STOP] trailing"),
+                text: "STOP] trailing".to_string(),
             },
             &mut tail,
         ));
@@ -3568,7 +3669,7 @@ mod tests {
                 _ => None,
             })
             .collect::<String>();
-        assert_eq!(text, "visible [CODESWARM:STOP] trailing");
+        assert_eq!(text, "visible  trailing");
         assert!(!text.contains(token));
     }
 }

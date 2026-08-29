@@ -199,10 +199,13 @@ Still required before cutover:
   preserving ad-hoc adapters and coordinator rollback semantics.
 - [x] Cover deferred new-owner activation with a Ready-gated promotion and
   rollback cleanup when the replacement or owner transfer fails.
-- [ ] Complete legacy session-row metadata compatibility for every live
-  reconfiguration branch (including titles and adapter-specific owner data).
+- [x] Complete exposed session metadata compatibility for relay and standalone
+  launches, including owner/title/identity/protocol/session aliases, atomic
+  off-thread writes, capability-gated restore, and live roster updates. The
+  retired SQLite session browser remains intentionally unexposed.
 - [ ] Complete real-agent dogfooding, preview release/rollback, and staged
-  default cutover.
+  default cutover (provider credentials and launch policy are environment
+  dependent).
 
 Build and verification usage is documented in docs/RUST_REWRITE.md. The Rust
 executable is the only supported client; real-agent dogfooding remains an

@@ -28,6 +28,11 @@ pub struct AgentDefinition {
     pub command: String,
     #[serde(default)]
     pub detect_command: Option<String>,
+    /// Optional argument appended when launching a native adapter in its
+    /// default full-access mode.  This mirrors the Python catalog field while
+    /// keeping custom adapters free to omit it.
+    #[serde(default)]
+    pub full_access_startup_argument: Option<String>,
     #[serde(default = "default_active")]
     pub active: bool,
 }
@@ -52,6 +57,7 @@ impl AgentDefinition {
             aliases: Vec::new(),
             adapter,
             detect_command: Some(command.clone()),
+            full_access_startup_argument: None,
             active: true,
             identity,
             command,
@@ -61,6 +67,7 @@ impl AgentDefinition {
 
 /// The built-in catalog shipped with CodeSwarm.
 pub fn default_catalog() -> Vec<AgentDefinition> {
+    #[allow(clippy::too_many_arguments)]
     fn builtin(
         identity: &str,
         name: &str,
@@ -69,10 +76,12 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
         command: &str,
         detect_command: &str,
         aliases: &[&str],
+        full_access_startup_argument: Option<&str>,
     ) -> AgentDefinition {
         let mut agent = AgentDefinition::new(identity, name, short_name, adapter, command);
         agent.detect_command = Some(detect_command.into());
         agent.aliases = aliases.iter().map(|alias| (*alias).into()).collect();
+        agent.full_access_startup_argument = full_access_startup_argument.map(str::to_owned);
         agent
     }
 
@@ -85,6 +94,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
             "agy",
             "agy",
             &["agy"],
+            Some("--dangerously-skip-permissions"),
         ),
         builtin(
             "claude.com",
@@ -94,6 +104,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
             "npx -y @agentclientprotocol/claude-agent-acp",
             "claude",
             &[],
+            None,
         ),
         builtin(
             "geminicli.com",
@@ -103,6 +114,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
             "gemini --acp",
             "gemini",
             &[],
+            None,
         ),
         builtin(
             "openai.com",
@@ -112,6 +124,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
             "npx -y @agentclientprotocol/codex-acp",
             "codex",
             &["openai"],
+            None,
         ),
         builtin(
             "opencode.ai",
@@ -121,6 +134,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
             "opencode acp",
             "opencode",
             &[],
+            None,
         ),
         builtin(
             "qwen.ai",
@@ -130,6 +144,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
             "qwen --acp",
             "qwen",
             &[],
+            None,
         ),
     ]
 }
@@ -277,6 +292,10 @@ mod tests {
             .expect("antigravity");
         assert_eq!(antigravity.aliases, ["agy"]);
         assert_eq!(antigravity.detect_command.as_deref(), Some("agy"));
+        assert_eq!(
+            antigravity.full_access_startup_argument.as_deref(),
+            Some("--dangerously-skip-permissions")
+        );
 
         let codex = catalog
             .iter()
