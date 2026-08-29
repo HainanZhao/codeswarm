@@ -23,7 +23,7 @@ matrix records behavior, not widget-level implementation details.
 | Pause/resume/cancel/queue | Implemented | CLI controls and relay cancellation. |
 | Mode policy synchronization | Implemented | Advertised catalogs drive the config picker, Auto pilot synchronizes once per loaded slot, and semantic selections translate through adapter-native IDs. |
 | First-turn roster guidance | Implemented | Each relay agent receives a one-time identity/collaborator introduction; reloads receive it again. |
-| Adapter crash attribution | Implemented | Native result failures, ACP transport errors, and relay EOFs tombstone their slot and emit a reloadable failure event. |
+| Adapter crash attribution | Implemented | Native result failures, ACP transport errors, and relay EOFs tombstone their slot and emit a reloadable failure event; Unix children run in isolated process groups for descendant cleanup. |
 | Crash tombstone/reload UX | Implemented | Core tombstones failed slots and exposes `/reload` and `/drop` recovery actions. |
 | Project-directory selection | Implemented | Rust supports `--project-dir PATH`, positional paths, `/cd PATH`, and `Ctrl+D` in the agent store. |
 | Local `!command` shell execution | Implemented | Runs asynchronously in the workspace with bounded output and local transcript rendering. |

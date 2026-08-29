@@ -204,12 +204,27 @@ pub fn parse_command_line(command: &str) -> Result<(String, Vec<String>), Comman
 /// when its handle is dropped, so every adapter shutdown path must await this
 /// helper before releasing the handle.
 async fn terminate_child(child: &mut Child) -> AdapterResult<()> {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // Kill the isolated process group first so shell/terminal descendants
+        // do not survive cancellation. `start_kill` below remains the
+        // fallback for platforms where the group signal is unavailable.
+        let _ = Command::new("kill")
+            .args(["-TERM", &format!("-{pid}")])
+            .status()
+            .await;
+    }
     let kill_error = child.start_kill().err();
     let wait_error = child.wait().await.err();
     if let Some(error) = kill_error.or(wait_error) {
         return Err(AdapterError::Transport(error.to_string()));
     }
     Ok(())
+}
+
+fn isolate_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    command.process_group(0);
 }
 
 /// Drain diagnostics without allowing a noisy peer to block on stderr or
@@ -1014,6 +1029,7 @@ impl AgentAdapter for AgyAdapter {
         let (program, args) = parse_command_line(&self.command)
             .map_err(|error| AdapterError::Spawn(format!("invalid agent command: {error}")))?;
         let mut command = Command::new(program);
+        isolate_process_group(&mut command);
         command
             .args(args)
             .arg("--print")
@@ -1478,6 +1494,7 @@ impl AcpAdapter {
             return Err("terminal cwd is not a directory".into());
         }
         let mut process = Command::new(command);
+        isolate_process_group(&mut process);
         if let Some(args) = params.get("args").and_then(Value::as_array) {
             process.args(args.iter().filter_map(Value::as_str));
         }
@@ -1768,6 +1785,7 @@ impl AcpAdapter {
             self.stop().await?;
         }
         let mut command = Command::new(&self.program);
+        isolate_process_group(&mut command);
         command
             .args(&self.args)
             .current_dir(&self.cwd)
