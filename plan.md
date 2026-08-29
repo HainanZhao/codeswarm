@@ -73,6 +73,8 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   without coupling the UI to process I/O.
 - [x] Added a latest-state frame scheduler that drops stale terminal deltas
   after backpressure and requires a complete repaint before deltas resume.
+- [x] Added deterministic trailing-edge resize coalescing so only final pane
+  geometry is applied after a resize burst.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
   \`make rust-tmux\`.
 
