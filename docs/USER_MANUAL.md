@@ -72,6 +72,10 @@ terminal output, and UI history stay local to the producing agent.
 
 Unknown slash commands are reported locally and are never sent to an agent.
 
+The configuration panel includes an optional notification toggle. On Linux it
+uses `notify-send`; on macOS it uses `osascript` when the corresponding system
+tool is available.
+
 ## Performance model
 
 Transcript blocks are retained as source text and rendered into a cached row

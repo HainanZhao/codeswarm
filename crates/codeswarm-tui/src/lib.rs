@@ -516,6 +516,7 @@ pub struct App {
     config_visible: bool,
     config_selected: usize,
     collapse_details: bool,
+    notifications: bool,
     store_visible: bool,
     store_selected: usize,
     store_agents: Vec<StoreAgent>,
@@ -551,6 +552,7 @@ impl Default for App {
             config_visible: false,
             config_selected: 0,
             collapse_details: true,
+            notifications: false,
             store_visible: false,
             store_selected: 0,
             store_agents: Vec::new(),
@@ -585,7 +587,7 @@ impl App {
             "/mode" => {
                 if argument.is_empty() {
                     self.config_visible = true;
-                    self.config_selected = 2;
+                    self.config_selected = 3;
                     self.status = "mode configuration".into();
                     LocalCommand::Handled
                 } else if matches!(
@@ -609,7 +611,7 @@ impl App {
             "/collab" | "/collaboration" => {
                 if argument.is_empty() {
                     self.config_visible = true;
-                    self.config_selected = 3;
+                    self.config_selected = 4;
                     self.status = "collaboration configuration".into();
                     LocalCommand::Handled
                 } else {
@@ -811,7 +813,7 @@ impl App {
                 ConfigAction::Changed
             }
             ConfigKey::Down => {
-                self.config_selected = self.config_selected.saturating_add(1).min(5);
+                self.config_selected = self.config_selected.saturating_add(1).min(6);
                 ConfigAction::Changed
             }
             ConfigKey::Confirm => {
@@ -819,6 +821,9 @@ impl App {
                     0 => self.follow_tail = !self.follow_tail,
                     1 => self.collapse_details = !self.collapse_details,
                     2 => {
+                        self.notifications = !self.notifications;
+                    }
+                    3 => {
                         let options = self.mode_options();
                         if !options.is_empty() {
                             let index = options
@@ -842,14 +847,14 @@ impl App {
                             self.requested_mode = Some("full-access".into());
                         }
                     }
-                    3 => {
+                    4 => {
                         self.collaboration = match self.collaboration.as_str() {
                             "Roster relay" => "Manual routing".into(),
                             "Manual routing" => "Pair review".into(),
                             _ => "Roster relay".into(),
                         };
                     }
-                    4..=5 => {}
+                    5..=6 => {}
                     _ => return ConfigAction::Ignored,
                 }
                 self.status = "configuration updated".into();
@@ -864,6 +869,14 @@ impl App {
 
     pub fn set_collapse_details(&mut self, collapsed: bool) {
         self.collapse_details = collapsed;
+    }
+
+    pub fn notifications_enabled(&self) -> bool {
+        self.notifications
+    }
+
+    pub fn set_notifications_enabled(&mut self, enabled: bool) {
+        self.notifications = enabled;
     }
 
     pub fn mode(&self) -> &str {
@@ -1699,6 +1712,11 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
             if app.collapse_details { "On" } else { "Off" },
             true,
         ),
+        (
+            "Notifications",
+            if app.notifications { "On" } else { "Off" },
+            true,
+        ),
         ("Mode", app.mode(), false),
         ("Collaboration", app.collaboration(), false),
         ("Renderer", "Inline · tmux safe", false),
@@ -1732,6 +1750,7 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
             match *label {
                 "Follow output" => "Follow",
                 "Collapse details" => "Details",
+                "Notifications" => "Notify",
                 "Collaboration" => "Collab",
                 "Renderer" => "Render",
                 "Agent store" => "Agents",
@@ -2556,6 +2575,7 @@ mod tests {
         app.handle_local_command("/config");
         app.handle_config_key(ConfigKey::Down);
         app.handle_config_key(ConfigKey::Down);
+        app.handle_config_key(ConfigKey::Down);
         assert_eq!(
             app.handle_config_key(ConfigKey::Confirm),
             ConfigAction::Changed
@@ -2565,6 +2585,20 @@ mod tests {
             app.take_requested_mode(),
             Some("codeswarm:mode:plan".into())
         );
+    }
+
+    #[test]
+    fn notification_preference_is_a_persistent_config_value() {
+        let mut app = App::default();
+        app.handle_local_command("/config");
+        app.handle_config_key(ConfigKey::Down);
+        app.handle_config_key(ConfigKey::Down);
+        assert!(!app.notifications_enabled());
+        assert_eq!(
+            app.handle_config_key(ConfigKey::Confirm),
+            ConfigAction::Changed
+        );
+        assert!(app.notifications_enabled());
     }
 
     #[test]

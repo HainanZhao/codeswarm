@@ -580,6 +580,13 @@ fn load_ui_preferences(app: &mut App) {
     {
         app.set_collapse_details(collapsed);
     }
+    if let Some(enabled) = value
+        .get("notifications")
+        .and_then(|notifications| notifications.get("enabled"))
+        .and_then(serde_json::Value::as_bool)
+    {
+        app.set_notifications_enabled(enabled);
+    }
 }
 
 fn save_ui_preferences(app: &App) -> std::io::Result<()> {
@@ -620,6 +627,13 @@ fn save_ui_preferences(app: &App) -> std::io::Result<()> {
         *transcript = serde_json::json!({});
     }
     transcript["collapse_details"] = serde_json::Value::Bool(app.collapse_details());
+    let notifications = settings
+        .entry("notifications")
+        .or_insert_with(|| serde_json::json!({}));
+    if !notifications.is_object() {
+        *notifications = serde_json::json!({});
+    }
+    notifications["enabled"] = serde_json::Value::Bool(app.notifications_enabled());
     let encoded = serde_json::to_vec_pretty(&serde_json::Value::Object(settings))
         .map_err(std::io::Error::other)?;
     let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
@@ -1268,6 +1282,11 @@ fn run_terminal(
                         }
                         app.apply_event(&event);
                         if matches!(&event, AgentEvent::TurnComplete { .. })
+                            && app.notifications_enabled()
+                        {
+                            notify_turn_complete(&app.active_agent);
+                        }
+                        if matches!(&event, AgentEvent::TurnComplete { .. })
                             && let Some(queued) = app.next_queued_prompt().cloned()
                             && dispatch_queued_prompt(controls.as_ref(), &queued)
                         {
@@ -1800,6 +1819,31 @@ fn append_prompt_history(prompt: &str) {
     {
         let _ = file.write_all(format!("{encoded}\n").as_bytes());
     }
+}
+
+fn notify_turn_complete(agent: &str) {
+    let agent = agent.to_owned();
+    thread::spawn(move || {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = std::process::Command::new("notify-send")
+                .args(["CodeSwarm", &format!("{agent} finished a turn")])
+                .status();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let message = format!(
+                "display notification \"{agent} finished a turn\" with title \"CodeSwarm\""
+            );
+            let _ = std::process::Command::new("osascript")
+                .args(["-e", &message])
+                .status();
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = agent;
+        }
+    });
 }
 
 #[cfg(test)]
