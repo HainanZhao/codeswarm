@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub mod agents;
 pub mod collaboration;
 pub mod contract;
 pub mod details;
