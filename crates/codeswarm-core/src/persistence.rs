@@ -12,6 +12,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use serde_json::{Map, Value};
 
@@ -239,6 +240,16 @@ impl SessionMetadata {
         self.data.get(key)
     }
 
+    /// Replace one metadata value while retaining all other keys.
+    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<Value>) -> Option<Value> {
+        self.data.insert(key.into(), value.into())
+    }
+
+    /// Remove one metadata value, returning the previous value when present.
+    pub fn remove(&mut self, key: &str) -> Option<Value> {
+        self.data.remove(key)
+    }
+
     pub fn as_object(&self) -> &Map<String, Value> {
         &self.data
     }
@@ -326,6 +337,22 @@ impl SessionMetadataStore {
         self.read()
     }
 
+    /// Read the current snapshot, apply an in-memory edit, and atomically
+    /// publish the replacement. A missing snapshot is treated as empty
+    /// metadata; malformed or newer snapshots are left untouched and
+    /// returned as errors.
+    pub fn update<F>(&self, edit: F) -> Result<(), PersistenceError>
+    where
+        F: FnOnce(&mut SessionMetadata),
+    {
+        let mut metadata = self
+            .read()?
+            .map(|loaded| loaded.metadata)
+            .unwrap_or_else(SessionMetadata::empty);
+        edit(&mut metadata);
+        self.write(&metadata)
+    }
+
     pub fn write(&self, metadata: &SessionMetadata) -> Result<(), PersistenceError> {
         let json = metadata.to_json()?;
         let temporary = temporary_path(&self.path);
@@ -378,6 +405,129 @@ impl SessionMetadataStore {
             changed,
         })
     }
+
+    /// Start a background metadata writer. Runtime event loops should enqueue
+    /// snapshots through this handle and call [`BufferedSessionMetadataStore::flush`]
+    /// only at lifecycle boundaries; atomic writes and fsync therefore never
+    /// block terminal input or rendering.
+    pub fn buffered(&self) -> std::io::Result<BufferedSessionMetadataStore> {
+        BufferedSessionMetadataStore::open(self.path.clone())
+    }
+}
+
+enum MetadataCommand {
+    Write(SessionMetadata),
+    Flush(Sender<Result<(), PersistenceError>>),
+    Shutdown(Sender<()>),
+}
+
+/// Background writer for runtime session metadata snapshots.
+///
+/// Each queued snapshot is written in order, and every write replaces the
+/// previous file atomically. The handle itself only performs channel sends;
+/// filesystem work happens on its worker thread. `flush` is the explicit
+/// durability boundary used before a session exits.
+pub struct BufferedSessionMetadataStore {
+    sender: Sender<MetadataCommand>,
+    worker: Option<std::thread::JoinHandle<Result<(), PersistenceError>>>,
+}
+
+impl std::fmt::Debug for BufferedSessionMetadataStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BufferedSessionMetadataStore")
+            .field("worker_running", &self.worker.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl BufferedSessionMetadataStore {
+    fn open(path: PathBuf) -> std::io::Result<Self> {
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("codeswarm-session-metadata".into())
+            .spawn(move || metadata_worker(path, receiver))?;
+        Ok(Self {
+            sender,
+            worker: Some(worker),
+        })
+    }
+
+    /// Queue a complete metadata snapshot without doing filesystem I/O in
+    /// the caller.
+    pub fn write(&self, metadata: SessionMetadata) -> Result<(), PersistenceError> {
+        self.sender
+            .send(MetadataCommand::Write(metadata))
+            .map_err(|_| {
+                PersistenceError::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "session metadata writer stopped",
+                ))
+            })
+    }
+
+    /// Drain queued snapshots and wait until the latest one is durable.
+    pub fn flush(&self) -> Result<(), PersistenceError> {
+        let (reply, result) = mpsc::channel();
+        self.sender
+            .send(MetadataCommand::Flush(reply))
+            .map_err(|_| {
+                PersistenceError::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "session metadata writer stopped",
+                ))
+            })?;
+        result.recv().map_err(|_| {
+            PersistenceError::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "session metadata writer stopped",
+            ))
+        })?
+    }
+}
+
+impl Drop for BufferedSessionMetadataStore {
+    fn drop(&mut self) {
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        let (reply, result) = mpsc::channel();
+        if self.sender.send(MetadataCommand::Shutdown(reply)).is_ok() {
+            let _ = result.recv();
+        }
+        let _ = worker.join();
+    }
+}
+
+fn metadata_worker(
+    path: PathBuf,
+    receiver: Receiver<MetadataCommand>,
+) -> Result<(), PersistenceError> {
+    let store = SessionMetadataStore::open(path);
+    let mut first_error = None;
+    while let Ok(command) = receiver.recv() {
+        match command {
+            MetadataCommand::Write(metadata) => {
+                if first_error.is_none()
+                    && let Err(error) = store.write(&metadata)
+                {
+                    first_error = Some(error);
+                }
+            }
+            MetadataCommand::Flush(reply) => {
+                let _ = reply.send(match first_error.take() {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                });
+            }
+            MetadataCommand::Shutdown(reply) => {
+                let result = first_error.take();
+                let _ = reply.send(());
+                return result.map_or(Ok(()), Err);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn read_version(
@@ -599,6 +749,45 @@ mod tests {
             loaded.get("roster"),
             Some(&json!(["openai.com", "claude.ai"]))
         );
+        std::fs::remove_dir_all(path.parent().expect("parent")).expect("cleanup");
+    }
+
+    #[test]
+    fn metadata_update_merges_current_values_and_creates_missing_snapshot() {
+        let path = temp_path("update").join("session.json");
+        let store = SessionMetadataStore::open(&path);
+        store
+            .update(|metadata| {
+                metadata.insert("roster", json!(["claude.ai"]));
+            })
+            .expect("create snapshot");
+        store
+            .update(|metadata| {
+                metadata.insert("owner", json!("Claude Code"));
+                metadata.remove("roster");
+            })
+            .expect("merge snapshot");
+        let loaded = store.read().expect("read").expect("snapshot");
+        assert_eq!(loaded.get("owner"), Some(&json!("Claude Code")));
+        assert_eq!(loaded.get("roster"), None);
+        std::fs::remove_dir_all(path.parent().expect("parent")).expect("cleanup");
+    }
+
+    #[test]
+    fn buffered_metadata_writes_are_durable_at_flush_and_drop() {
+        let path = temp_path("buffered").join("session.json");
+        let store = SessionMetadataStore::open(&path);
+        let writer = store.buffered().expect("writer");
+        let mut metadata = SessionMetadata::empty();
+        metadata.insert("roster", json!(["claude.ai", "openai.com"]));
+        writer.write(metadata).expect("queue snapshot");
+        writer.flush().expect("flush snapshot");
+        let loaded = store.read().expect("read").expect("snapshot");
+        assert_eq!(
+            loaded.get("roster"),
+            Some(&json!(["claude.ai", "openai.com"]))
+        );
+        drop(writer);
         std::fs::remove_dir_all(path.parent().expect("parent")).expect("cleanup");
     }
 
