@@ -288,4 +288,24 @@ mod tests {
         assert_eq!(transcript.len(), 1);
         assert_eq!(transcript.viewport(80, 0, 10, 0)[0].text, "first second");
     }
+
+    #[test]
+    fn five_thousand_word_scroll_stays_under_the_interaction_budget() {
+        let mut transcript = Transcript::default();
+        transcript.append(
+            BlockKind::Agent,
+            fixtures::five_thousand_word_reply(),
+            false,
+        );
+        let rows = transcript.row_count(80);
+        let started = std::time::Instant::now();
+        for scroll_y in (0..rows).step_by(3) {
+            let viewport = transcript.viewport(80, scroll_y, 24, 8);
+            assert!(viewport.len() <= 40);
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(100),
+            "cached 5k-word transcript scrolling exceeded 100ms"
+        );
+    }
 }
