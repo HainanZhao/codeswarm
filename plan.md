@@ -81,6 +81,13 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   and selectable option labels.
 - [x] ACP adapter loads an existing session when the agent advertises
   \`loadSession\`, and rejects unsupported session restoration explicitly.
+- [x] Added replay-safe lazy detail records for tool, thought, terminal, and
+  diff content, including stable replacement and expansion state.
+- [x] Added focused permission UI state with safe empty-option handling,
+  selection, confirmation/cancellation actions, and rendering tests.
+- [x] Wired permission answers through the adapter host and relay: ACP
+  request IDs and JSON-RPC responses are preserved; native adapters explicitly
+  report unsupported permission control.
 - [x] Added lazy collapsed tool/thought/terminal details with explicit
   keyboard expansion, keeping expensive detail off the scroll path.
 - [x] Core reducer tracks active-turn boundaries across text, thought, tool,
@@ -99,6 +106,8 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
   \`make rust-tmux\`.
+- [x] Final verification: 361 Python tests passed, Rust workspace tests and
+  Clippy passed, formatting passed, and the real tmux smoke test passed.
 
 Still required before cutover:
 
