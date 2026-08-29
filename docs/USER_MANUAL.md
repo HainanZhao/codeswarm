@@ -58,6 +58,7 @@ terminal output, and UI history stay local to the producing agent.
 - `/config` — open the lightweight inline settings panel.
 - `/agents` — return to the agent store and edit the saved roster.
 - `/export` — write the retained transcript to a timestamped Markdown file.
+- `/diff split` and `/diff unified` — choose side-by-side or inline diff rows.
 - `/mode` — focus mode settings; `/mode chat` selects chat mode.
 - `/collab` — focus collaboration settings;
   `/collab roster`, `/collab manual`, and `/collab pair` select a strategy.

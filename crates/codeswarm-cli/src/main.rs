@@ -587,6 +587,13 @@ fn load_ui_preferences(app: &mut App) {
     {
         app.set_notifications_enabled(enabled);
     }
+    if let Some(split) = value
+        .get("diff")
+        .and_then(|diff| diff.get("view"))
+        .and_then(serde_json::Value::as_str)
+    {
+        app.set_diff_split(split.eq_ignore_ascii_case("split"));
+    }
 }
 
 fn save_ui_preferences(app: &App) -> std::io::Result<()> {
@@ -634,6 +641,14 @@ fn save_ui_preferences(app: &App) -> std::io::Result<()> {
         *notifications = serde_json::json!({});
     }
     notifications["enabled"] = serde_json::Value::Bool(app.notifications_enabled());
+    let diff = settings
+        .entry("diff")
+        .or_insert_with(|| serde_json::json!({}));
+    if !diff.is_object() {
+        *diff = serde_json::json!({});
+    }
+    diff["view"] =
+        serde_json::Value::String(if app.diff_split() { "split" } else { "unified" }.into());
     let encoded = serde_json::to_vec_pretty(&serde_json::Value::Object(settings))
         .map_err(std::io::Error::other)?;
     let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
@@ -1228,8 +1243,8 @@ fn run_terminal(
     load_ui_preferences(app);
     app.load_prompt_history(load_prompt_history());
     app.set_prompt_completions([
-        "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/exit", "/export",
-        "/help", "/mode", "/pause", "/quit", "/reload", "/drop", "/resume",
+        "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/diff", "/exit",
+        "/export", "/help", "/mode", "/pause", "/quit", "/reload", "/drop", "/resume",
     ]);
     let mut selected_slot = selected_slot;
     let event_log = event_log().ok();
@@ -1635,6 +1650,12 @@ fn run_terminal(
                                     }
                                     Err(error) => app.status = format!("export failed: {error}"),
                                 },
+                                LocalCommand::Diff => {
+                                    if let Err(error) = save_ui_preferences(app) {
+                                        app.status =
+                                            format!("unable to save diff preference: {error}");
+                                    }
+                                }
                             }
                         } else if let Some(controls) = &controls {
                             app.record_human_message(&prompt, false);

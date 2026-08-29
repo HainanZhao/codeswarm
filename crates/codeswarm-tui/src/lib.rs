@@ -84,6 +84,7 @@ pub enum LocalCommand {
     Reload,
     Drop,
     Directory(String),
+    Diff,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -517,6 +518,7 @@ pub struct App {
     config_selected: usize,
     collapse_details: bool,
     notifications: bool,
+    diff_split: bool,
     store_visible: bool,
     store_selected: usize,
     store_agents: Vec<StoreAgent>,
@@ -553,6 +555,7 @@ impl Default for App {
             config_selected: 0,
             collapse_details: true,
             notifications: false,
+            diff_split: false,
             store_visible: false,
             store_selected: 0,
             store_agents: Vec::new(),
@@ -633,6 +636,22 @@ impl App {
             "/agents" => LocalCommand::Agents,
             "/reload" => LocalCommand::Reload,
             "/drop" => LocalCommand::Drop,
+            "/diff" => {
+                match argument.to_ascii_lowercase().as_str() {
+                    "split" => self.diff_split = true,
+                    "unified" | "inline" => self.diff_split = false,
+                    _ => {
+                        self.status = "usage: /diff split or /diff unified".into();
+                        return Some(LocalCommand::Handled);
+                    }
+                }
+                self.status = if self.diff_split {
+                    "diff view set to split".into()
+                } else {
+                    "diff view set to unified".into()
+                };
+                LocalCommand::Diff
+            }
             "/cd" => {
                 if argument.is_empty() {
                     self.status = "usage: /cd PATH".into();
@@ -813,7 +832,7 @@ impl App {
                 ConfigAction::Changed
             }
             ConfigKey::Down => {
-                self.config_selected = self.config_selected.saturating_add(1).min(6);
+                self.config_selected = self.config_selected.saturating_add(1).min(7);
                 ConfigAction::Changed
             }
             ConfigKey::Confirm => {
@@ -854,7 +873,8 @@ impl App {
                             _ => "Roster relay".into(),
                         };
                     }
-                    5..=6 => {}
+                    5 => self.diff_split = !self.diff_split,
+                    6..=7 => {}
                     _ => return ConfigAction::Ignored,
                 }
                 self.status = "configuration updated".into();
@@ -877,6 +897,14 @@ impl App {
 
     pub fn set_notifications_enabled(&mut self, enabled: bool) {
         self.notifications = enabled;
+    }
+
+    pub fn diff_split(&self) -> bool {
+        self.diff_split
+    }
+
+    pub fn set_diff_split(&mut self, split: bool) {
+        self.diff_split = split;
     }
 
     pub fn mode(&self) -> &str {
@@ -1459,7 +1487,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let visible = app
         .transcript
         .viewport(content_width, app.scroll_y, content_height, 0);
-    render_transcript(frame.buffer_mut(), rows[0], visible);
+    render_transcript(frame.buffer_mut(), rows[0], visible, app.diff_split);
 
     let follow_label = if app.follow_tail {
         "FOLLOWING"
@@ -1589,7 +1617,7 @@ fn render_compact(frame: &mut Frame, app: &mut App, area: Rect) {
             app.follow_tail(transcript_area.width as usize, height);
         }
         let visible = app.transcript.viewport(width, app.scroll_y, height, 0);
-        render_transcript(frame.buffer_mut(), transcript_area, visible);
+        render_transcript(frame.buffer_mut(), transcript_area, visible, app.diff_split);
     }
 
     if area.height > 1 {
@@ -1688,7 +1716,7 @@ fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
 fn render_keyboard_help(buffer: &mut Buffer, area: Rect) {
     let lines = [
         " keys: ↑/↓ scroll · End follow tail · Tab details · Ctrl+K cancel queue · ? hide help",
-        " commands: /help  /config  /agents  /export  /mode  /collab  /reload  /drop  /cd",
+        " commands: /help  /config  /agents  /export  /diff  /mode  /collab  /reload  /drop  /cd",
         " /mode chat · /collab roster|manual|pair · /pause · /resume",
         " /clear clears the local transcript · /close exits the session",
         " Ctrl+Enter sends to the selected agent · Ctrl+C cancels active work",
@@ -1732,6 +1760,11 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
         ),
         ("Mode", app.mode(), false),
         ("Collaboration", app.collaboration(), false),
+        (
+            "Diff view",
+            if app.diff_split { "Split" } else { "Unified" },
+            true,
+        ),
         ("Renderer", "Inline · tmux safe", false),
         ("Agent store", "Run /agents", false),
     ];
@@ -1764,6 +1797,7 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
                 "Follow output" => "Follow",
                 "Collapse details" => "Details",
                 "Notifications" => "Notify",
+                "Diff view" => "Diff",
                 "Collaboration" => "Collab",
                 "Renderer" => "Render",
                 "Agent store" => "Agents",
@@ -2002,7 +2036,15 @@ fn render_permission(buffer: &mut Buffer, area: Rect, request: &PermissionPrompt
         .render(area, buffer);
 }
 
-fn render_transcript(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>) {
+fn render_transcript(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>, diff_split: bool) {
+    if diff_split
+        && rows
+            .iter()
+            .any(|row| row.kind == codeswarm_transcript::BlockKind::Diff)
+    {
+        render_split_diff(buffer, area, rows);
+        return;
+    }
     let lines = if rows.is_empty() {
         Vec::new()
     } else {
@@ -2049,6 +2091,52 @@ fn render_transcript(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>) {
                 .border_style(Style::default().fg(Color::Rgb(75, 95, 110))),
         )
         .render(area, buffer);
+}
+
+fn render_split_diff(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>) {
+    let columns =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for row in rows {
+        if row.kind != codeswarm_transcript::BlockKind::Diff {
+            let line = Line::styled(row.text, markdown_style(row.kind, ""));
+            left.push(line.clone());
+            right.push(line);
+            continue;
+        }
+        let text = row.text;
+        let style = row_style(row.kind, &text);
+        let line = Line::styled(text.clone(), style);
+        if text.starts_with('-') && !text.starts_with("---") {
+            left.push(line);
+            right.push(Line::raw(""));
+        } else if text.starts_with('+') && !text.starts_with("+++") {
+            left.push(Line::raw(""));
+            right.push(line);
+        } else {
+            left.push(line.clone());
+            right.push(line);
+        }
+    }
+    Paragraph::new(left)
+        .style(Style::default().bg(TRANSCRIPT_BG))
+        .block(
+            Block::default()
+                .title(" Diff · original ")
+                .borders(Borders::LEFT | Borders::RIGHT)
+                .border_style(Style::default().fg(Color::Red)),
+        )
+        .render(columns[0], buffer);
+    Paragraph::new(right)
+        .style(Style::default().bg(TRANSCRIPT_BG))
+        .block(
+            Block::default()
+                .title(" Diff · updated ")
+                .borders(Borders::LEFT | Borders::RIGHT)
+                .border_style(Style::default().fg(Color::Green)),
+        )
+        .render(columns[1], buffer);
 }
 
 fn agent_header_color(name: &str) -> Color {
@@ -2600,6 +2688,11 @@ mod tests {
             app.handle_local_command("/cd /tmp"),
             Some(LocalCommand::Directory("/tmp".into()))
         );
+        assert_eq!(
+            app.handle_local_command("/diff split"),
+            Some(LocalCommand::Diff)
+        );
+        assert!(app.diff_split());
     }
 
     #[test]
@@ -2942,6 +3035,21 @@ mod tests {
         assert!(rows[0].text.contains("Diff"));
         assert_eq!(app.toggle_focused_detail(), Some(false));
         assert!(app.transcript.row_count(80) > 1);
+        app.set_diff_split(true);
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw split diff");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("original"), "rendered={rendered:?}");
+        assert!(rendered.contains("updated"), "rendered={rendered:?}");
     }
 
     #[test]

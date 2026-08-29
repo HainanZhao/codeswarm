@@ -77,6 +77,7 @@ Inside the conversation prompt:
 - `/config` opens the lightweight inline settings panel.
 - `/agents` returns to the agent store to edit the saved roster.
 - `/export` writes the retained conversation to Markdown.
+- `/diff split|unified` switches the lazy diff view.
 - `/mode` and `/mode chat` select or show the current mode state.
 - `/collab roster|manual|pair` selects collaboration routing.
 - `/pause` and `/resume` control a relay.
