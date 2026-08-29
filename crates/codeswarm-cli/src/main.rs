@@ -735,6 +735,7 @@ fn run_terminal(
                 continue;
             }
             let size = terminal.size()?;
+            let interaction_height = size.height.min(24) as usize;
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
                     if let Some(controls) = &controls {
@@ -762,17 +763,16 @@ fn run_terminal(
                 KeyCode::Down | KeyCode::Char('j') => app.scroll_by(
                     1,
                     size.width as usize,
-                    app.content_height(size.height as usize),
+                    app.content_height(interaction_height),
                 ),
                 KeyCode::Up | KeyCode::Char('k') => app.scroll_by(
                     -1,
                     size.width as usize,
-                    app.content_height(size.height as usize),
+                    app.content_height(interaction_height),
                 ),
-                KeyCode::End => app.follow_tail(
-                    size.width as usize,
-                    app.content_height(size.height as usize),
-                ),
+                KeyCode::End => {
+                    app.follow_tail(size.width as usize, app.content_height(interaction_height))
+                }
                 KeyCode::Tab => {
                     if app.toggle_focused_detail().is_some() {
                         app.status = "detail toggled".into();
