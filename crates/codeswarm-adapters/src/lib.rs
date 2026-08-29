@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use codeswarm_core::{
     AgentCapabilities, AgentEvent, Effect, EventLog, Mode, PermissionRequest, RosterSlot,
     SessionState, ToolStatus, ToolUpdate, reduce,
+    relay::{Relay, RelayDecision},
 };
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -18,6 +19,12 @@ use tokio::process::{Child, ChildStdout, Command};
 use tokio::sync::mpsc;
 
 pub type AdapterResult<T> = Result<T, AdapterError>;
+
+#[derive(Clone, Debug)]
+pub struct HostUpdate {
+    pub event: AgentEvent,
+    pub effects: Vec<Effect>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdapterError {
@@ -117,6 +124,10 @@ impl AdapterHost {
     }
 
     pub async fn next_effects(&mut self) -> Option<AdapterResult<Vec<Effect>>> {
+        Some(self.next_update().await?.map(|update| update.effects))
+    }
+
+    pub async fn next_update(&mut self) -> Option<AdapterResult<HostUpdate>> {
         let event = match self.adapter.next_event().await {
             None => return None,
             Some(Err(error)) => {
@@ -127,7 +138,11 @@ impl AdapterHost {
                     started: true,
                     detail: error.to_string(),
                 };
-                return Some(Ok(reduce(&mut self.state, failure)));
+                let effects = reduce(&mut self.state, failure.clone());
+                return Some(Ok(HostUpdate {
+                    event: failure,
+                    effects,
+                }));
             }
             Some(Ok(event)) => event,
         };
@@ -136,11 +151,119 @@ impl AdapterHost {
         {
             return Some(Err(AdapterError::Transport(error.to_string())));
         }
-        Some(Ok(reduce(&mut self.state, event)))
+        let effects = reduce(&mut self.state, event.clone());
+        Some(Ok(HostUpdate { event, effects }))
     }
 
     pub fn adapter(&self) -> &dyn AgentAdapter {
         &*self.adapter
+    }
+}
+
+/// Sequential multi-adapter runner. It intentionally never polls two
+/// adapters concurrently: the next prompt depends on the prior response.
+#[derive(Debug)]
+pub struct RelayHost {
+    hosts: Vec<AdapterHost>,
+    relay: Relay,
+    dispatches: Vec<(RosterSlot, String)>,
+}
+
+impl RelayHost {
+    pub fn new(hosts: Vec<AdapterHost>, max_rounds: usize) -> Result<Self, AdapterError> {
+        if hosts.len() < 2 {
+            return Err(AdapterError::Unsupported("relay requires two adapters"));
+        }
+        Ok(Self {
+            relay: Relay::new(hosts.len(), max_rounds),
+            hosts,
+            dispatches: Vec::new(),
+        })
+    }
+
+    pub async fn start(&mut self) -> AdapterResult<()> {
+        for host in &mut self.hosts {
+            host.start().await?;
+        }
+        Ok(())
+    }
+
+    pub fn pause(&mut self) {
+        self.relay.pause();
+    }
+
+    pub fn resume(&mut self) {
+        self.relay.resume();
+    }
+
+    pub fn relay(&self) -> &Relay {
+        &self.relay
+    }
+
+    pub fn relay_mut(&mut self) -> &mut Relay {
+        &mut self.relay
+    }
+
+    /// Prompts sent to adapters, in causal dispatch order. This is useful to
+    /// diagnostics and makes the context-routing boundary observable without
+    /// exposing protocol-specific adapter internals.
+    pub fn dispatches(&self) -> &[(RosterSlot, String)] {
+        &self.dispatches
+    }
+
+    pub async fn run_turn(
+        &mut self,
+        task: impl Into<String>,
+        first_slot: RosterSlot,
+    ) -> AdapterResult<RelayDecision> {
+        let task = task.into();
+        if self.relay.shared_task().is_none() {
+            self.relay.set_shared_task(task.clone());
+        }
+        let decision = self.relay.begin(task, first_slot);
+        let RelayDecision::Dispatch {
+            slot,
+            prompt,
+            direct,
+            can_stop,
+        } = &decision
+        else {
+            return Ok(decision);
+        };
+        let unseen = self.relay.unseen_context(*slot);
+        let prompt = if unseen.is_empty() {
+            prompt.clone()
+        } else {
+            format!("{prompt}\n\nPublic updates:\n{unseen}")
+        };
+        let host = self
+            .hosts
+            .get_mut(*slot)
+            .ok_or_else(|| AdapterError::Transport("relay selected missing adapter".into()))?;
+        host.send_prompt(prompt.clone()).await?;
+        self.dispatches.push((*slot, prompt));
+        let mut response = String::new();
+        loop {
+            let update = host
+                .next_update()
+                .await
+                .ok_or_else(|| AdapterError::Transport("adapter ended during turn".into()))??;
+            match &update.event {
+                AgentEvent::Text { text, .. } => response.push_str(text),
+                AgentEvent::TurnComplete { .. } => break,
+                AgentEvent::Failed { detail, .. } => {
+                    return Err(AdapterError::Transport(detail.clone()));
+                }
+                _ => {}
+            }
+        }
+        if !*direct && !response.is_empty() {
+            self.relay.record_public(format!("Agent {slot}"), response);
+        }
+        self.relay.mark_context_seen(*slot);
+        self.relay.finish(*slot, *direct, false);
+        let _ = can_stop;
+        Ok(decision)
     }
 }
 
@@ -387,7 +510,13 @@ impl AgentAdapter for AgyAdapter {
     }
 
     async fn next_event(&mut self) -> Option<AdapterResult<AgentEvent>> {
-        self.receiver.recv().await
+        let event = self.receiver.recv().await;
+        if matches!(event.as_ref(), Some(Ok(AgentEvent::TurnComplete { .. })))
+            && let Some(mut child) = self.child.take()
+        {
+            let _ = child.wait().await;
+        }
+        event
     }
 }
 
@@ -964,5 +1093,142 @@ mod tests {
         assert_eq!(host.state.public_text[0].1, "hello");
         assert_eq!(EventLog::open(&path).read().expect("read").len(), 1);
         std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn relay_host_dispatches_turns_sequentially() {
+        let capabilities = AgentCapabilities {
+            supports_cancel: true,
+            ..AgentCapabilities::default()
+        };
+        let first = ScriptedAdapter::new(
+            0,
+            capabilities.clone(),
+            [
+                AgentEvent::Text {
+                    slot: 0,
+                    text: "first".into(),
+                },
+                AgentEvent::TurnComplete { slot: 0 },
+            ],
+        );
+        let second = ScriptedAdapter::new(
+            1,
+            capabilities,
+            [
+                AgentEvent::Text {
+                    slot: 1,
+                    text: "review".into(),
+                },
+                AgentEvent::TurnComplete { slot: 1 },
+            ],
+        );
+        let hosts = vec![
+            AdapterHost::new(Box::new(first), None),
+            AdapterHost::new(Box::new(second), None),
+        ];
+        let mut relay = super::RelayHost::new(hosts, 4).expect("relay");
+        relay.start().await.expect("start");
+        assert!(matches!(
+            relay.run_turn("task", 0).await.expect("first turn"),
+            codeswarm_core::relay::RelayDecision::Dispatch { slot: 0, .. }
+        ));
+        assert!(matches!(
+            relay.run_turn("first", 0).await.expect("second turn"),
+            codeswarm_core::relay::RelayDecision::Dispatch {
+                slot: 1,
+                can_stop: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            relay
+                .dispatches()
+                .iter()
+                .map(|(slot, _)| *slot)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_host_pause_and_single_agent_collapse_without_dispatching() {
+        let event = [AgentEvent::TurnComplete { slot: 0 }];
+        let first = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(
+                0,
+                AgentCapabilities::default(),
+                event.clone(),
+            )),
+            None,
+        );
+        let second = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(
+                1,
+                AgentCapabilities::default(),
+                [AgentEvent::TurnComplete { slot: 1 }],
+            )),
+            None,
+        );
+        let mut relay = super::RelayHost::new(vec![first, second], 4).expect("relay");
+        relay.start().await.expect("start");
+
+        relay.pause();
+        assert_eq!(
+            relay.run_turn("paused", 0).await.expect("paused turn"),
+            codeswarm_core::relay::RelayDecision::Paused
+        );
+        assert!(relay.dispatches().is_empty());
+
+        relay.resume();
+        relay.relay_mut().drop_agent(1).expect("drop reviewer");
+        assert_eq!(
+            relay
+                .run_turn("collapsed", 0)
+                .await
+                .expect("collapsed turn"),
+            codeswarm_core::relay::RelayDecision::Collapsed
+        );
+        assert!(relay.dispatches().is_empty());
+    }
+
+    #[tokio::test]
+    async fn relay_host_routes_unseen_public_context_to_next_agent() {
+        let first = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(
+                0,
+                AgentCapabilities::default(),
+                [
+                    AgentEvent::Text {
+                        slot: 0,
+                        text: "implemented the fix".into(),
+                    },
+                    AgentEvent::TurnComplete { slot: 0 },
+                ],
+            )),
+            None,
+        );
+        let second = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(
+                1,
+                AgentCapabilities::default(),
+                [AgentEvent::TurnComplete { slot: 1 }],
+            )),
+            None,
+        );
+        let mut relay = super::RelayHost::new(vec![first, second], 4).expect("relay");
+        relay.start().await.expect("start");
+        relay.run_turn("task", 0).await.expect("first turn");
+        relay.run_turn("review this", 0).await.expect("review turn");
+
+        assert_eq!(relay.dispatches().len(), 2);
+        assert_eq!(relay.dispatches()[0], (0, "task".into()));
+        assert_eq!(relay.dispatches()[1].0, 1);
+        assert!(relay.dispatches()[1].1.contains("review this"));
+        assert!(
+            relay.dispatches()[1]
+                .1
+                .contains("Agent 0:\nimplemented the fix")
+        );
     }
 }
