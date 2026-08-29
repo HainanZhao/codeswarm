@@ -1200,6 +1200,7 @@ impl App {
         terminal_height.saturating_sub(
             self.prompt_height_hint()
                 + 1
+                + 1
                 + usize::from(self.queue_height())
                 + usize::from(self.permission_height())
                 + usize::from(self.help_height()),
@@ -1335,13 +1336,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ])
     .split(area);
     let content_width = rows[0].width.saturating_sub(2) as usize;
-    let content_height = rows[0].height as usize;
+    let content_height = usize::from(rows[0].height.saturating_sub(1));
     if app.follow_tail {
-        app.follow_tail(content_width, content_height);
+        app.follow_tail(rows[0].width as usize, content_height);
     }
     let visible = app
         .transcript
-        .viewport(content_width, app.scroll_y, content_height, 4);
+        .viewport(content_width, app.scroll_y, content_height, 0);
     render_transcript(frame.buffer_mut(), rows[0], visible);
 
     let follow_label = if app.follow_tail {
@@ -1467,11 +1468,11 @@ fn render_compact(frame: &mut Frame, app: &mut App, area: Rect) {
             area.height.saturating_sub(2),
         );
         let width = transcript_area.width.saturating_sub(2) as usize;
-        let height = transcript_area.height as usize;
+        let height = usize::from(transcript_area.height.saturating_sub(1));
         if app.follow_tail {
-            app.follow_tail(width, height);
+            app.follow_tail(transcript_area.width as usize, height);
         }
-        let visible = app.transcript.viewport(width, app.scroll_y, height, 1);
+        let visible = app.transcript.viewport(width, app.scroll_y, height, 0);
         render_transcript(frame.buffer_mut(), transcript_area, visible);
     }
 
@@ -2184,6 +2185,40 @@ mod tests {
                 text: "shell-ok".into(),
             },
         });
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("shell-ok"), "rendered={rendered:?}");
+    }
+
+    #[test]
+    fn appended_detail_remains_visible_at_the_tail_of_a_long_transcript() {
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        app.transcript.append(
+            BlockKind::Agent,
+            (0..5_000)
+                .map(|n| format!("word{n}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            false,
+        );
+        app.transcript.append(BlockKind::Tool, "shell-ok", false);
+        app.follow_tail(80, 8);
+        let tail = app.transcript.viewport(78, app.scroll_y, 8, 0);
+        assert!(
+            tail.iter().any(|row| row.text.contains("shell-ok")),
+            "tail={tail:?}, scroll={}",
+            app.scroll_y
+        );
         terminal
             .draw(|frame| render(frame, &mut app))
             .expect("draw");
