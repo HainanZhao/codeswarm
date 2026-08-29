@@ -111,7 +111,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
             "Gemini CLI",
             "gemini",
             AdapterKind::Acp,
-            "gemini --acp",
+            "gemini --experimental-acp",
             "gemini",
             &[],
             None,
@@ -121,7 +121,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
             "Codex CLI",
             "codex",
             AdapterKind::Acp,
-            "npx -y @agentclientprotocol/codex-acp",
+            "npx -y --package=@agentclientprotocol/codex-acp codex-acp",
             "codex",
             &["openai"],
             None,
@@ -307,5 +307,10 @@ mod tests {
             codex.detect_command.as_deref(),
             Some(codex.command.as_str())
         );
+        let gemini = catalog
+            .iter()
+            .find(|agent| agent.identity == "geminicli.com")
+            .expect("gemini");
+        assert_eq!(gemini.command, "gemini --experimental-acp");
     }
 }

@@ -3174,7 +3174,9 @@ mod tests {
             "antigravity.google.com"
         );
         assert_eq!(
-            super::catalog_identity_for_command("npx -y @agentclientprotocol/codex-acp"),
+            super::catalog_identity_for_command(
+                "npx -y --package=@agentclientprotocol/codex-acp codex-acp",
+            ),
             "openai.com"
         );
     }
@@ -3311,7 +3313,7 @@ mod tests {
         assert_eq!(
             super::resolve_live_agent_spec("codex"),
             Some(AgentSpec::Acp(
-                "npx -y @agentclientprotocol/codex-acp".into()
+                "npx -y --package=@agentclientprotocol/codex-acp codex-acp".into()
             ))
         );
         assert_eq!(
@@ -3423,7 +3425,7 @@ mod tests {
             Some(Launch::Roster { specs, prompt: Some(prompt), first_slot: 1, .. })
                 if specs == [
                     AgentSpec::Acp("npx -y @agentclientprotocol/claude-agent-acp".into()),
-                    AgentSpec::Acp("npx -y @agentclientprotocol/codex-acp".into()),
+                    AgentSpec::Acp("npx -y --package=@agentclientprotocol/codex-acp codex-acp".into()),
                 ] && prompt == "review the patch"
         ));
     }
@@ -3453,7 +3455,7 @@ mod tests {
             ),
             Launch::Roster { specs, prompt: None, first_slot: 0, max_rounds: 100 }
                 if specs == [
-                    AgentSpec::Acp("npx -y @agentclientprotocol/codex-acp".into()),
+                    AgentSpec::Acp("npx -y --package=@agentclientprotocol/codex-acp codex-acp".into()),
                     AgentSpec::Agy("agy --dangerously-skip-permissions".into())
                 ]
         ));

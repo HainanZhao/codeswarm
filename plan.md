@@ -142,6 +142,9 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   reload reintroduction, plus explicit relay failure events for recovery UX.
 - [x] Restored Python-compatible named `-a`/`--agent` launch selection and
   one-based `--first-agent` routing.
+- [x] Preserved catalog-declared native startup access arguments (including
+  Antigravity's `--dangerously-skip-permissions`) while leaving custom adapter
+  commands opt-in.
 - [x] Added persistent density and tool-expansion controls, with isolated
   tmux performance state so prompt history cannot steal scroll input.
 - [x] Isolated Unix agent/terminal process groups and terminated/reaped the
@@ -211,12 +214,13 @@ Build and verification usage is documented in docs/RUST_REWRITE.md. The Rust
 executable is the only supported client; real-agent dogfooding remains an
 environment-dependent release gate.
 
-Dogfood note: the installed \`gemini 0.29.5\` exposes ACP, but its cached
-credentials currently return \`IneligibleTierError\` because Gemini Code Assist
-for individuals is no longer supported and requires migration to Antigravity.
-The Rust ACP path was exercised through process startup and surfaced the
-closed stream; a provider account migration or another installed ACP agent is
-required to complete this external validation.
+Dogfood note: the installed Claude Code 2.1.251, Codex CLI 0.150.1, Qwen Code
+0.21.14, and Gemini CLI 0.29.5 were probed through their ACP startup commands;
+Claude, Codex's `codex-acp` wrapper, Qwen, and Gemini all returned valid ACP
+`initialize` responses. Gemini's cached credentials then return
+`IneligibleTierError` because Gemini Code Assist for individuals is no longer
+supported and requires migration to Antigravity; a real model turn therefore
+remains provider-account dependent.
 
 ## Phase 0 — Baseline and Performance Harness
 
