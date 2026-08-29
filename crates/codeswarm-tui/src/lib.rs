@@ -3320,10 +3320,15 @@ fn row_style(kind: codeswarm_transcript::BlockKind, text: &str) -> Style {
 
 fn markdown_style(kind: codeswarm_transcript::BlockKind, text: &str) -> Style {
     let base = block_style(kind);
-    if text.starts_with("#") {
+    let trimmed = text.trim();
+    if trimmed.starts_with('#') {
         base.fg(Color::Cyan).add_modifier(Modifier::BOLD)
-    } else if text.starts_with("```") {
+    } else if trimmed.starts_with("```") {
         base.fg(Color::Gray)
+    } else if matches!(trimmed, "---" | "___" | "***") {
+        base.fg(Color::DarkGray)
+    } else if trimmed.contains('|') && trimmed.split('|').count() >= 3 {
+        base.fg(Color::LightBlue)
     } else {
         base
     }
@@ -3392,15 +3397,15 @@ fn markdown_spans(
             .filter_map(|delimiter| remaining.find(delimiter).map(|index| (index, *delimiter)))
             .min_by_key(|(index, _)| *index);
         let Some((start, delimiter)) = next else {
-            spans.extend(file_reference_spans(base, remaining));
+            spans.extend(inline_text_spans(base, remaining));
             break;
         };
         if start > 0 {
-            spans.extend(file_reference_spans(base, &remaining[..start]));
+            spans.extend(inline_text_spans(base, &remaining[..start]));
         }
         let content_start = start + delimiter.len();
         let Some(end_relative) = remaining[content_start..].find(delimiter) else {
-            spans.extend(file_reference_spans(base, &remaining[start..]));
+            spans.extend(inline_text_spans(base, &remaining[start..]));
             break;
         };
         let end = content_start + end_relative;
@@ -3418,6 +3423,39 @@ fn markdown_spans(
         remaining = &remaining[end + delimiter.len()..];
     }
     spans
+}
+
+/// Style Markdown links and source references without hiding their literal
+/// target. Keeping the complete token visible is useful in a terminal, while
+/// the accent makes it obvious that the text is actionable/reference-like.
+fn inline_text_spans(base: Style, text: &str) -> Vec<Span<'static>> {
+    let link_style = base.fg(Color::LightCyan).add_modifier(Modifier::UNDERLINED);
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    while let Some(open_relative) = text[cursor..].find('[') {
+        let open = cursor + open_relative;
+        let Some(close_relative) = text[open + 1..].find("](") else {
+            break;
+        };
+        let close = open + 1 + close_relative;
+        let Some(end_relative) = text[close + 2..].find(')') else {
+            break;
+        };
+        let end = close + 2 + end_relative + 1;
+        if open > cursor {
+            spans.extend(file_reference_spans(base, &text[cursor..open]));
+        }
+        spans.push(Span::styled(text[open..end].to_owned(), link_style));
+        cursor = end;
+    }
+    if cursor < text.len() {
+        spans.extend(file_reference_spans(base, &text[cursor..]));
+    }
+    if spans.is_empty() {
+        file_reference_spans(base, text)
+    } else {
+        spans
+    }
 }
 
 const FILE_REFERENCE_EXTENSIONS: &[&str] = &[
@@ -3886,6 +3924,28 @@ mod tests {
         assert_eq!(quote[0].style.fg, Some(Color::Cyan));
         let numbered = markdown_spans(BlockKind::Agent, "1. step", &mut in_code);
         assert_eq!(numbered[0].content, "1. ");
+    }
+
+    #[test]
+    fn markdown_links_tables_and_rules_have_lightweight_styles() {
+        let mut in_code = false;
+        let links = markdown_spans(
+            BlockKind::Agent,
+            "see [the guide](https://example.test/docs)",
+            &mut in_code,
+        );
+        assert!(links.iter().any(|span| {
+            span.content == "[the guide](https://example.test/docs)"
+                && span.style.add_modifier.contains(Modifier::UNDERLINED)
+        }));
+        assert_eq!(
+            markdown_style(BlockKind::Agent, "| A | B |").fg,
+            Some(Color::LightBlue)
+        );
+        assert_eq!(
+            markdown_style(BlockKind::Agent, "---").fg,
+            Some(Color::DarkGray)
+        );
     }
 
     #[test]
