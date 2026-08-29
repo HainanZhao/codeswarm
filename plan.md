@@ -68,6 +68,9 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 - [x] Added an inline Ratatui terminal preview with optional alternate screen,
   live adapter event rendering, follow-up prompt dispatch, cancellation, and
   durable user-local event logging.
+- [x] Added \`AdapterHost\`, which consumes ACP/native adapter events, reduces
+  core session state, persists normalized events, and exposes reducer effects
+  without coupling the UI to process I/O.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
   \`make rust-tmux\`.
 
