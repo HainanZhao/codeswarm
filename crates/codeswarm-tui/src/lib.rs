@@ -12,7 +12,7 @@ use ratatui::{
     Frame,
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget},
 };
@@ -22,6 +22,9 @@ use tui_textarea::{TextArea, WrapMode};
 pub mod frame_scheduler;
 
 const MAX_QUEUED_PROMPTS: usize = 100;
+const TRANSCRIPT_BG: Color = Color::Rgb(12, 16, 23);
+const STATUS_BG: Color = Color::Rgb(22, 28, 38);
+const PANEL_BG: Color = Color::Rgb(18, 23, 32);
 
 /// Keyboard actions understood by the focused permission prompt.
 ///
@@ -139,7 +142,7 @@ impl Default for PromptEditor {
         textarea.set_wrap_mode(WrapMode::Word);
         textarea.set_min_rows(1);
         textarea.set_max_rows(8);
-        textarea.set_placeholder_text("Ask an agent… (Shift+Enter for a new line)");
+        textarea.set_placeholder_text("Ask an agent…");
         Self {
             textarea,
             history: VecDeque::new(),
@@ -318,6 +321,13 @@ impl PromptEditor {
     /// measured; transcript history is not touched.
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         frame.render_widget(&self.textarea, area);
+    }
+
+    /// Return the widget's preferred outer height for the supplied width.
+    /// This is bounded by the editor's configured maximum so a pasted prompt
+    /// cannot consume the whole tmux pane.
+    pub fn preferred_height(&mut self, width: u16) -> u16 {
+        self.textarea.measure(width).preferred_rows.clamp(2, 8)
     }
 
     fn cursor_at_end(&self) -> bool {
@@ -525,6 +535,35 @@ impl App {
         }
     }
 
+    /// Apply one terminal key to the focused prompt editor and mirror its
+    /// complete text into the compatibility `prompt` field used by callers.
+    /// Keeping this boundary in the TUI prevents the CLI from accidentally
+    /// bypassing multiline editing, history, and slash completion.
+    pub fn handle_prompt_input(&mut self, input: Input) -> PromptAction {
+        self.sync_prompt_editor();
+        let action = self.prompt_editor.handle_input(input);
+        self.prompt = self.prompt_editor.text();
+        action
+    }
+
+    /// Remove the current prompt from both the compatibility field and the
+    /// focused editor, preserving editor history and cursor invariants.
+    pub fn take_prompt(&mut self) -> String {
+        self.sync_prompt_editor();
+        let prompt = std::mem::take(&mut self.prompt);
+        self.prompt_editor.clear();
+        prompt
+    }
+
+    /// Install the local command vocabulary used by prompt Tab completion.
+    pub fn set_prompt_completions<I, S>(&mut self, candidates: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.prompt_editor.set_completion_candidates(candidates);
+    }
+
     /// Apply normalized adapter state without exposing protocol-specific
     /// objects to the renderer. Text chunks are coalesced into one transcript
     /// block per active agent turn.
@@ -538,9 +577,11 @@ impl App {
             AgentEvent::Text { slot, text } => {
                 let key = (*slot, codeswarm_transcript::BlockKind::Agent);
                 let block = self.streaming_blocks.get(&key).copied().unwrap_or_else(|| {
-                    let id =
-                        self.transcript
-                            .append(codeswarm_transcript::BlockKind::Agent, "", false);
+                    let id = self.transcript.append(
+                        codeswarm_transcript::BlockKind::Agent,
+                        format!("{}: ", self.agent_name(*slot)),
+                        false,
+                    );
                     self.streaming_blocks.insert(key, id);
                     id
                 });
@@ -762,10 +803,20 @@ impl App {
     /// off-screen row.
     pub fn content_height(&self, terminal_height: usize) -> usize {
         terminal_height.saturating_sub(
-            4 + usize::from(self.queue_height())
+            self.prompt_height_hint()
+                + 1
+                + usize::from(self.queue_height())
                 + usize::from(self.permission_height())
                 + usize::from(self.help_height()),
         )
+    }
+
+    fn prompt_height_hint(&self) -> usize {
+        self.prompt_editor
+            .lines()
+            .len()
+            .saturating_add(1)
+            .clamp(2, 8)
     }
 
     fn queue_height(&self) -> u16 {
@@ -839,13 +890,41 @@ impl App {
 pub fn render(frame: &mut Frame, app: &mut App) {
     app.sync_prompt_editor();
     let area = frame.area();
+    if area.width < 36 || area.height < 7 {
+        render_compact(frame, app, area);
+        return;
+    }
+    let total_height = usize::from(area.height);
+    let status_height = usize::from(area.height > 0);
+    let minimum_prompt_height = total_height.saturating_sub(status_height).min(2);
+    let reserve_content =
+        usize::from(total_height > status_height.saturating_add(minimum_prompt_height));
+    let mut optional_height = total_height.saturating_sub(
+        status_height
+            .saturating_add(minimum_prompt_height)
+            .saturating_add(reserve_content),
+    );
+    let permission_height = usize::from(app.permission_height()).min(optional_height);
+    optional_height = optional_height.saturating_sub(permission_height);
+    let queue_height = usize::from(app.queue_height()).min(optional_height);
+    optional_height = optional_height.saturating_sub(queue_height);
+    let help_height = usize::from(app.help_height()).min(optional_height);
+    let available_for_prompt = total_height
+        .saturating_sub(status_height)
+        .saturating_sub(permission_height)
+        .saturating_sub(queue_height)
+        .saturating_sub(help_height);
+    let content_height = usize::from(available_for_prompt > minimum_prompt_height);
+    let preferred_prompt_height = usize::from(app.prompt_editor.preferred_height(area.width));
+    let prompt_height =
+        preferred_prompt_height.min(available_for_prompt.saturating_sub(content_height));
     let rows = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(app.queue_height()),
-        Constraint::Length(app.permission_height()),
-        Constraint::Length(app.help_height()),
-        Constraint::Length(3),
+        Constraint::Min(0),
+        Constraint::Length(status_height as u16),
+        Constraint::Length(queue_height as u16),
+        Constraint::Length(permission_height as u16),
+        Constraint::Length(help_height as u16),
+        Constraint::Length(prompt_height as u16),
     ])
     .split(area);
     let content_width = rows[0].width.saturating_sub(2) as usize;
@@ -869,12 +948,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             app.active_agent.as_str(),
             Style::default().fg(Color::White).bold(),
         ),
-        Span::styled("  ·  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  ·  ", Style::default().fg(Color::Gray)),
         Span::styled(
             app.status.as_str(),
             Style::default().fg(status_color(&app.status)),
         ),
-        Span::styled("  ·  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  ·  ", Style::default().fg(Color::Gray)),
         Span::styled(
             follow_label,
             Style::default().fg(if app.follow_tail {
@@ -893,7 +972,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         },
     ]);
     Paragraph::new(status_line)
-        .style(Style::default().bg(Color::Rgb(22, 28, 38)))
+        .style(Style::default().bg(STATUS_BG))
         .render(rows[1], frame.buffer_mut());
     if app.queued_count() > 0 {
         render_queue(frame.buffer_mut(), rows[2], app);
@@ -905,6 +984,83 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_keyboard_help(frame.buffer_mut(), rows[4]);
     }
     app.prompt_editor.render(frame, rows[5]);
+}
+
+/// Render a useful two- or three-row fallback in a very small pane. Keeping
+/// this path separate avoids asking the multiline editor and auxiliary panels
+/// to compete for space they cannot use.
+fn render_compact(frame: &mut Frame, app: &mut App, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    // Keep the state users need to act on visible before the less important
+    // agent label when a narrow pane clips the line.
+    let status_width = usize::from(area.width).saturating_sub(5);
+    let status_text = compact_label(&app.status, status_width);
+    let label_width =
+        usize::from(area.width).saturating_sub(status_text.chars().count().saturating_add(8));
+    let status = Line::from(vec![
+        Span::styled(" ✈ ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(status_text, Style::default().fg(status_color(&app.status))),
+        Span::styled(" · ", Style::default().fg(Color::Gray)),
+        Span::styled(
+            compact_label(&app.active_agent, label_width),
+            Style::default().fg(Color::White).bold(),
+        ),
+    ]);
+    Paragraph::new(status)
+        .style(Style::default().bg(STATUS_BG))
+        .render(Rect::new(area.x, area.y, area.width, 1), frame.buffer_mut());
+
+    if area.height > 2 {
+        let transcript_area = Rect::new(
+            area.x,
+            area.y.saturating_add(1),
+            area.width,
+            area.height.saturating_sub(2),
+        );
+        let width = transcript_area.width.saturating_sub(2) as usize;
+        let height = transcript_area.height as usize;
+        if app.follow_tail {
+            app.follow_tail(width, height);
+        }
+        let visible = app.transcript.viewport(width, app.scroll_y, height, 1);
+        render_transcript(frame.buffer_mut(), transcript_area, visible);
+    }
+
+    if area.height > 1 {
+        let prompt_area = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+        let prompt = compact_prompt(&app.prompt, area.width as usize);
+        Paragraph::new(prompt)
+            .style(Style::default().fg(Color::White).bg(PANEL_BG))
+            .render(prompt_area, frame.buffer_mut());
+    }
+}
+
+fn compact_label(value: &str, width: usize) -> String {
+    let budget = width.max(1);
+    let mut chars = value.chars();
+    let mut label = chars.by_ref().take(budget).collect::<String>();
+    if chars.next().is_some() && budget > 1 {
+        label.pop();
+        label.push('…');
+    }
+    label
+}
+
+fn compact_prompt(value: &str, width: usize) -> String {
+    let line = value.lines().last().unwrap_or_default();
+    let budget = width.saturating_sub(2);
+    if budget == 0 {
+        return String::new();
+    }
+    let mut chars = line.chars();
+    let mut prompt = chars.by_ref().take(budget).collect::<String>();
+    if chars.next().is_some() && budget > 1 {
+        prompt.pop();
+        prompt.push('…');
+    }
+    format!("> {prompt}")
 }
 
 fn status_color(status: &str) -> Color {
@@ -930,7 +1086,7 @@ fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
             " queue ({}) · Alt+↑/↓ select · Ctrl+K cancel",
             app.queued_count()
         ),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Color::Gray),
     ));
     for (index, queued) in app.queued_prompts.iter().take(visible).enumerate() {
         let marker = if app.selected_queue == Some(index) {
@@ -943,9 +1099,12 @@ fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
             .map_or_else(|| "next".to_owned(), |slot| format!("agent {slot}"));
         let kind = if queued.direct { "direct" } else { "queued" };
         let style = if app.selected_queue == Some(index) {
-            Style::default().fg(Color::Yellow)
-        } else {
             Style::default()
+                .fg(Color::Yellow)
+                .bg(Color::Rgb(50, 42, 22))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
         };
         lines.push(Line::from(vec![
             Span::styled(format!(" {marker} {kind} → {target}: "), style),
@@ -953,7 +1112,12 @@ fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
         ]));
     }
     Paragraph::new(lines)
-        .block(Block::default().borders(Borders::TOP | Borders::BOTTOM))
+        .style(Style::default().bg(PANEL_BG))
+        .block(
+            Block::default()
+                .borders(Borders::TOP | Borders::BOTTOM)
+                .border_style(Style::default().fg(Color::Rgb(65, 75, 90))),
+        )
         .render(area, buffer);
 }
 
@@ -961,7 +1125,7 @@ fn render_keyboard_help(buffer: &mut Buffer, area: Rect) {
     Paragraph::new(Line::raw(
         " keys: ↑/↓ scroll · End follow tail · Tab details · Ctrl+K cancel queue · ? hide help",
     ))
-    .style(Style::default().fg(Color::DarkGray))
+    .style(Style::default().fg(Color::Gray))
     .block(Block::default().borders(Borders::TOP | Borders::BOTTOM))
     .render(area, buffer);
 }
@@ -969,8 +1133,13 @@ fn render_keyboard_help(buffer: &mut Buffer, area: Rect) {
 fn render_permission(buffer: &mut Buffer, area: Rect, request: &PermissionPrompt) {
     let mut lines = Vec::with_capacity(request.options.len().saturating_add(1));
     lines.push(Line::from(vec![
-        Span::styled(" permission: ", Style::default().fg(Color::Yellow)),
-        Span::raw(request.title.as_str()),
+        Span::styled(
+            " permission: ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(request.title.as_str(), Style::default().fg(Color::White)),
     ]));
     for (index, option) in request.options.iter().enumerate() {
         let marker = if index == request.selected {
@@ -979,9 +1148,12 @@ fn render_permission(buffer: &mut Buffer, area: Rect, request: &PermissionPrompt
             " "
         };
         let style = if index == request.selected {
-            Style::default().fg(Color::Yellow)
-        } else {
             Style::default()
+                .fg(Color::Yellow)
+                .bg(Color::Rgb(50, 42, 22))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
         };
         lines.push(Line::from(vec![
             Span::styled(format!(" {marker} {}. ", index + 1), style),
@@ -991,36 +1163,74 @@ fn render_permission(buffer: &mut Buffer, area: Rect, request: &PermissionPrompt
     if request.options.is_empty() {
         lines.push(Line::styled(
             " no options · Esc to cancel",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         ));
     }
     Paragraph::new(lines)
-        .block(Block::default().borders(Borders::TOP | Borders::BOTTOM))
+        .style(Style::default().bg(PANEL_BG))
+        .block(
+            Block::default()
+                .borders(Borders::TOP | Borders::BOTTOM)
+                .border_style(Style::default().fg(Color::Yellow)),
+        )
         .render(area, buffer);
 }
 
 fn render_transcript(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>) {
-    let lines = rows
-        .into_iter()
-        .map(|row| Line::styled(row.text, block_style(row.kind)))
-        .collect::<Vec<_>>();
+    let lines = if rows.is_empty() {
+        vec![
+            Line::styled(
+                "  No messages yet",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::styled(
+                "  Type a prompt below to start a conversation.",
+                Style::default().fg(Color::Gray),
+            ),
+        ]
+    } else {
+        rows.into_iter()
+            .map(|row| {
+                let marker = if row.first_in_block {
+                    match row.kind {
+                        codeswarm_transcript::BlockKind::Human => "› ",
+                        codeswarm_transcript::BlockKind::Agent => "● ",
+                        codeswarm_transcript::BlockKind::Thought => "… ",
+                        codeswarm_transcript::BlockKind::Tool => "◆ ",
+                        codeswarm_transcript::BlockKind::Diff => "± ",
+                        codeswarm_transcript::BlockKind::Notice => "· ",
+                    }
+                } else {
+                    "  "
+                };
+                Line::from(vec![
+                    Span::styled(marker, block_style(row.kind).add_modifier(Modifier::BOLD)),
+                    Span::styled(row.text, block_style(row.kind)),
+                ])
+            })
+            .collect::<Vec<_>>()
+    };
     Paragraph::new(lines)
-        .style(Style::default().bg(Color::Rgb(12, 16, 23)))
+        .style(Style::default().bg(TRANSCRIPT_BG))
         .block(
             Block::default()
                 .title(" Conversation ")
                 .title_style(Style::default().fg(Color::Rgb(120, 145, 165)).bold())
                 .borders(Borders::LEFT | Borders::RIGHT)
-                .border_style(Style::default().fg(Color::Rgb(45, 60, 75))),
+                .border_style(Style::default().fg(Color::Rgb(75, 95, 110))),
         )
         .render(area, buffer);
 }
 
 fn block_style(kind: codeswarm_transcript::BlockKind) -> Style {
     match kind {
-        codeswarm_transcript::BlockKind::Human => Style::default().fg(Color::Blue),
+        codeswarm_transcript::BlockKind::Human => Style::default()
+            .fg(Color::LightBlue)
+            .add_modifier(Modifier::BOLD),
         codeswarm_transcript::BlockKind::Agent => Style::default().fg(Color::White),
-        codeswarm_transcript::BlockKind::Thought => Style::default().fg(Color::DarkGray).italic(),
+        codeswarm_transcript::BlockKind::Thought => Style::default().fg(Color::Gray).italic(),
         codeswarm_transcript::BlockKind::Tool => Style::default().fg(Color::Yellow),
         codeswarm_transcript::BlockKind::Diff => Style::default().fg(Color::Magenta),
         codeswarm_transcript::BlockKind::Notice => Style::default().fg(Color::Cyan),
@@ -1138,9 +1348,112 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("Prompt"));
+        assert!(rendered.contains("Prompt"), "rendered={rendered:?}");
         assert!(rendered.contains("review"));
         assert!(rendered.contains("these changes"));
+    }
+
+    #[test]
+    fn app_routes_prompt_keys_through_editor_and_keeps_compatibility_text() {
+        let mut app = App::default();
+        for character in "first".chars() {
+            assert_eq!(
+                app.handle_prompt_input(key(Key::Char(character))),
+                PromptAction::Changed
+            );
+        }
+        assert_eq!(app.prompt, "first");
+        assert_eq!(
+            app.handle_prompt_input(Input {
+                key: Key::Enter,
+                shift: true,
+                ..Input::default()
+            }),
+            PromptAction::Changed
+        );
+        app.handle_prompt_input(key(Key::Char('n')));
+        assert_eq!(app.prompt, "first\nn");
+        assert_eq!(
+            app.handle_prompt_input(key(Key::Enter)),
+            PromptAction::Submit("first\nn".into())
+        );
+        assert!(app.prompt.is_empty());
+    }
+
+    #[test]
+    fn app_prompt_tab_completion_updates_compatibility_text() {
+        let mut app = App::default();
+        app.set_prompt_completions(["/help", "/history"]);
+        app.handle_prompt_input(key(Key::Char('/')));
+        app.handle_prompt_input(key(Key::Char('h')));
+        assert!(matches!(
+            app.handle_prompt_input(key(Key::Tab)),
+            PromptAction::Completion { value, .. } if value == "/help"
+        ));
+        assert_eq!(app.prompt, "/help");
+    }
+
+    #[test]
+    fn narrow_tmux_pane_clips_optional_regions_without_panicking() {
+        let backend = TestBackend::new(18, 6);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App {
+            prompt: "a deliberately long prompt that must remain editable".into(),
+            ..App::default()
+        };
+        app.queue_prompt("a queued request", Some(1), false);
+        app.apply_event(&codeswarm_core::AgentEvent::Permission {
+            slot: 0,
+            request: codeswarm_core::PermissionRequest {
+                id: "narrow-permission".into(),
+                title: "Allow this operation?".into(),
+                options: vec!["Allow".into(), "Deny".into(), "Always".into()],
+            },
+        });
+        app.toggle_keyboard_help();
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("narrow pane draw");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains(">"), "rendered={rendered:?}");
+    }
+
+    #[test]
+    fn constrained_full_layout_keeps_permission_and_prompt_regions() {
+        let backend = TestBackend::new(40, 7);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App {
+            prompt: "review this".into(),
+            ..App::default()
+        };
+        app.queue_prompt("queued request", Some(1), false);
+        app.apply_event(&codeswarm_core::AgentEvent::Permission {
+            slot: 0,
+            request: codeswarm_core::PermissionRequest {
+                id: "permission".into(),
+                title: "Allow operation?".into(),
+                options: vec!["Allow".into(), "Deny".into()],
+            },
+        });
+        app.toggle_keyboard_help();
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("constrained draw");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("permission:"), "rendered={rendered:?}");
+        assert!(rendered.contains("Prompt"), "rendered={rendered:?}");
     }
 
     #[test]
@@ -1161,6 +1474,71 @@ mod tests {
             .expect("draw");
         let rendered = terminal.backend().buffer();
         assert!(rendered.content().iter().any(|cell| cell.symbol() == "w"));
+    }
+
+    #[test]
+    fn empty_transcript_explains_how_to_start() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("No messages yet"));
+        assert!(rendered.contains("Type a prompt below"));
+    }
+
+    #[test]
+    fn narrow_terminal_keeps_status_transcript_and_prompt_visible() {
+        let backend = TestBackend::new(30, 6);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        app.set_header("Very Long Agent Name", "streaming");
+        app.prompt = "check status".into();
+        app.transcript
+            .append(BlockKind::Agent, "response is visible", false);
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw compact");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("streaming"));
+        assert!(rendered.contains("response"));
+        assert!(rendered.contains("> check status"));
+    }
+
+    #[test]
+    fn failure_status_is_visible_and_uses_error_color() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        app.apply_event(&codeswarm_core::AgentEvent::Failed {
+            slot: 0,
+            started: true,
+            detail: "connection lost".into(),
+        });
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw error");
+        let content = terminal.backend().buffer().content();
+        assert!(content.iter().any(|cell| cell.symbol() == "c"));
+        assert!(
+            content
+                .iter()
+                .any(|cell| cell.fg == ratatui::style::Color::Red)
+        );
     }
 
     #[test]
@@ -1203,7 +1581,7 @@ mod tests {
         assert_eq!(app.transcript.len(), 1);
         assert_eq!(
             app.transcript.viewport(80, 0, 10, 0)[0].text,
-            "first second"
+            "Agent 0: first second"
         );
         app.apply_event(&codeswarm_core::AgentEvent::TurnComplete { slot: 0 });
         app.apply_event(&codeswarm_core::AgentEvent::Text {
