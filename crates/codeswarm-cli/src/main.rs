@@ -13,7 +13,7 @@ use codeswarm_core::PermissionAnswer;
 use codeswarm_core::launcher::{LaunchDecision, launch_decision};
 use codeswarm_core::{AgentEvent, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
-use codeswarm_tui::{App, render};
+use codeswarm_tui::{App, QueuedPrompt, render};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
@@ -41,6 +41,32 @@ enum AdapterControl {
     Resume,
     Cancel,
     Stop,
+}
+
+fn control_for_queued(prompt: &QueuedPrompt) -> Option<AdapterControl> {
+    if prompt.direct {
+        return Some(AdapterControl::Direct {
+            slot: prompt.target?,
+            prompt: prompt.prompt.clone(),
+        });
+    }
+    Some(match prompt.target {
+        Some(slot) => AdapterControl::Queue {
+            slot,
+            prompt: prompt.prompt.clone(),
+        },
+        None => AdapterControl::Prompt(prompt.prompt.clone()),
+    })
+}
+
+fn dispatch_queued_prompt(
+    controls: Option<&tokio::sync::mpsc::UnboundedSender<AdapterControl>>,
+    prompt: &QueuedPrompt,
+) -> bool {
+    let Some(control) = control_for_queued(prompt) else {
+        return false;
+    };
+    controls.is_some_and(|controls| controls.send(control).is_ok())
 }
 
 enum Launch {
@@ -660,11 +686,23 @@ fn run_terminal(
     let mut selected_slot = selected_slot;
     let event_log = event_log().ok();
     let mut pending_permission: Option<(usize, String)> = None;
+    let mut turn_active = false;
     loop {
         if let Some(events) = &events {
             while let Ok(event) = events.try_recv() {
                 match event {
                     Ok(event) => {
+                        match &event {
+                            AgentEvent::Text { .. }
+                            | AgentEvent::Thought { .. }
+                            | AgentEvent::Tool { .. }
+                            | AgentEvent::Permission { .. }
+                            | AgentEvent::Terminal { .. } => turn_active = true,
+                            AgentEvent::TurnComplete { .. } => turn_active = false,
+                            AgentEvent::Ready { .. }
+                            | AgentEvent::ModesReplaced { .. }
+                            | AgentEvent::Failed { .. } => {}
+                        }
                         if let AgentEvent::Permission { slot, request } = &event {
                             pending_permission = Some((*slot, request.id.clone()));
                         }
@@ -675,6 +713,14 @@ fn run_terminal(
                             let _ = log.append(&event);
                         }
                         app.apply_event(&event);
+                        if matches!(&event, AgentEvent::TurnComplete { .. })
+                            && let Some(queued) = app.next_queued_prompt().cloned()
+                            && dispatch_queued_prompt(controls.as_ref(), &queued)
+                        {
+                            app.remove_queued_prompt(queued.id);
+                            turn_active = true;
+                            app.status = "queued prompt dispatched".into();
+                        }
                     }
                     Err(error) => app.set_header("Agent", error.to_string()),
                 }
@@ -696,23 +742,49 @@ fn run_terminal(
                     }
                     return Ok(());
                 }
+                KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if app.cancel_selected_queued().is_some() {
+                        app.status = "queued prompt cancelled".into();
+                    } else {
+                        app.status = "queue empty".into();
+                    }
+                }
+                KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                    if app.move_queue_selection(-1).is_some() {
+                        app.status = "selected previous queued prompt".into();
+                    }
+                }
+                KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                    if app.move_queue_selection(1).is_some() {
+                        app.status = "selected next queued prompt".into();
+                    }
+                }
                 KeyCode::Down | KeyCode::Char('j') => app.scroll_by(
                     1,
                     size.width as usize,
-                    size.height.saturating_sub(4) as usize,
+                    app.content_height(size.height as usize),
                 ),
                 KeyCode::Up | KeyCode::Char('k') => app.scroll_by(
                     -1,
                     size.width as usize,
-                    size.height.saturating_sub(4) as usize,
+                    app.content_height(size.height as usize),
                 ),
-                KeyCode::End => {
-                    app.follow_tail(size.width as usize, size.height.saturating_sub(4) as usize)
-                }
+                KeyCode::End => app.follow_tail(
+                    size.width as usize,
+                    app.content_height(size.height as usize),
+                ),
                 KeyCode::Tab => {
                     if app.toggle_focused_detail().is_some() {
                         app.status = "detail toggled".into();
                     }
+                }
+                KeyCode::Char('?') | KeyCode::F(1) => {
+                    let visible = app.toggle_keyboard_help();
+                    app.status = if visible {
+                        "keyboard help shown".into()
+                    } else {
+                        "keyboard help hidden".into()
+                    };
                 }
                 KeyCode::Char(character)
                     if selected_slot.is_some()
@@ -752,23 +824,51 @@ fn run_terminal(
                         && !app.prompt.trim().is_empty() =>
                 {
                     if let Some(controls) = &controls {
-                        let prompt = std::mem::take(&mut app.prompt);
-                        let _ = controls.send(AdapterControl::Direct {
-                            slot: selected_slot.expect("guarded selected slot"),
-                            prompt,
-                        });
-                        app.status = "direct turn queued".into();
+                        let prompt = app.prompt.clone();
+                        let slot = selected_slot.expect("guarded selected slot");
+                        if turn_active {
+                            if app.queue_prompt(prompt, Some(slot), true).is_some() {
+                                app.prompt.clear();
+                                app.status = "direct prompt queued".into();
+                            } else {
+                                app.status = "queue full or prompt empty".into();
+                            }
+                        } else if controls
+                            .send(AdapterControl::Direct {
+                                slot,
+                                prompt: std::mem::take(&mut app.prompt),
+                            })
+                            .is_ok()
+                        {
+                            turn_active = true;
+                            app.status = "direct turn queued".into();
+                        }
                     }
                 }
                 KeyCode::Enter if !app.prompt.trim().is_empty() => {
                     if let Some(controls) = &controls {
-                        let prompt = std::mem::take(&mut app.prompt);
-                        let command = selected_slot
-                            .map_or(AdapterControl::Prompt(prompt.clone()), |slot| {
-                                AdapterControl::Queue { slot, prompt }
-                            });
-                        let _ = controls.send(command);
-                        app.status = "queued".into();
+                        let prompt = app.prompt.clone();
+                        if turn_active {
+                            if app.queue_prompt(prompt, selected_slot, false).is_some() {
+                                app.prompt.clear();
+                                app.status = "prompt queued".into();
+                            } else {
+                                app.status = "queue full or prompt empty".into();
+                            }
+                        } else {
+                            let command = if let Some(slot) = selected_slot {
+                                AdapterControl::Queue {
+                                    slot,
+                                    prompt: std::mem::take(&mut app.prompt),
+                                }
+                            } else {
+                                AdapterControl::Prompt(std::mem::take(&mut app.prompt))
+                            };
+                            if controls.send(command).is_ok() {
+                                turn_active = true;
+                                app.status = "queued".into();
+                            }
+                        }
                     }
                 }
                 KeyCode::Char('p')
