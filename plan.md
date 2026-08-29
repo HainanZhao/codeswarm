@@ -117,16 +117,17 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 
 Still required before cutover:
 
-- [ ] Wire the completed relay host into the production CLI roster UX,
-  including selected-first routing, direct/private turns, queued-message
-  controls, and reviewer-only stop handling.
-- [ ] Adapter parity for permission answers, terminal lifecycle, session
-  loading/reload, roster-slot recovery, and capability/mode replacement.
-- [ ] Production terminal UI parity: roster, queue controls, permission UI,
-  lazy tool/diff/terminal detail, launcher/settings, and a complete inline
-  interaction model.
-- [ ] Persistence migration/import, shared trace-corpus comparison, dogfooding,
-  preview release, and staged default cutover.
+- [x] Wire the relay host into the Rust CLI roster UX, including native/ACP
+  selection, selected-first routing, direct prompts, pause/resume, and live
+  normalized event streaming.
+- [ ] Finish adapter parity for real terminal lifecycle operations, full mode
+  replacement/synchronization, reviewer-only stop semantics, and all roster
+  failure/reload branches.
+- [ ] Finish production terminal UI parity: queue controls, permission answer
+  focus, lazy tool/diff/terminal detail, launcher/settings persistence, and a
+  complete inline interaction model.
+- [ ] Complete shared trace-corpus comparison, real-agent dogfooding, preview
+  release/rollback, and staged default cutover.
 
 ## Phase 0 — Baseline and Performance Harness
 
