@@ -348,7 +348,7 @@ impl Default for PromptEditor {
         textarea.set_wrap_mode(WrapMode::Word);
         textarea.set_min_rows(1);
         textarea.set_max_rows(8);
-        textarea.set_placeholder_text("Ask an agent…");
+        textarea.set_placeholder_text("How can I help you today?");
         Self {
             textarea,
             history: VecDeque::new(),
@@ -399,6 +399,11 @@ impl PromptEditor {
         self.textarea.set_lines(lines, (row, col));
         self.history_position = None;
         self.reset_completion();
+    }
+
+    /// Change the empty-composer hint without disturbing the current draft.
+    pub fn set_placeholder(&mut self, text: impl Into<String>) {
+        self.textarea.set_placeholder_text(text);
     }
 
     /// Clear the editor and return it to its initial cursor position.
@@ -725,6 +730,7 @@ pub struct App {
     pub scroll_y: usize,
     pub follow_tail: bool,
     pub prompt: String,
+    prompt_message: String,
     pub active_agent: String,
     pub status: String,
     mode: String,
@@ -783,6 +789,7 @@ impl Default for App {
             scroll_y: 0,
             follow_tail: true,
             prompt: String::new(),
+            prompt_message: "How can I help you today?".into(),
             active_agent: "Initializing".into(),
             status: "idle".into(),
             mode: "Auto pilot".into(),
@@ -832,6 +839,18 @@ impl Default for App {
 }
 
 impl App {
+    /// Return the configured empty-composer hint.
+    pub fn prompt_message(&self) -> &str {
+        &self.prompt_message
+    }
+
+    /// Set the empty-composer hint while preserving an in-progress prompt.
+    pub fn set_prompt_message(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.prompt_message = message.clone();
+        self.prompt_editor.set_placeholder(message);
+    }
+
     pub fn handle_local_command(&mut self, input: &str) -> Option<LocalCommand> {
         let mut parts = input.split_whitespace();
         let command = parts.next()?.to_ascii_lowercase();
@@ -1129,6 +1148,16 @@ impl App {
                 } else {
                     selected
                 };
+                let unavailable = selected
+                    .iter()
+                    .filter_map(|index| self.store_agents.get(*index))
+                    .filter(|agent| !agent.available)
+                    .map(|agent| agent.name.as_str())
+                    .collect::<Vec<_>>();
+                if !unavailable.is_empty() {
+                    self.store_status = format!("Not detected: {}", unavailable.join(", "));
+                    return StoreAction::Changed;
+                }
                 self.store_visible = false;
                 StoreAction::Launch(selected)
             }
@@ -3611,6 +3640,20 @@ mod tests {
     }
 
     #[test]
+    fn prompt_message_preference_updates_the_empty_editor_without_losing_draft() {
+        let mut app = App::default();
+        app.prompt_editor.set_text("draft");
+        app.set_prompt_message("Describe the next change");
+
+        assert_eq!(app.prompt_message(), "Describe the next change");
+        assert_eq!(app.prompt_editor.text(), "draft");
+        assert_eq!(
+            app.prompt_editor.textarea.placeholder_text(),
+            "Describe the next change"
+        );
+    }
+
+    #[test]
     fn prompt_editor_submits_and_bounds_deduplicated_history() {
         let mut editor = PromptEditor::from_text("first\nsecond");
         assert_eq!(
@@ -4759,7 +4802,7 @@ mod tests {
                 name: "Two".into(),
                 adapter: "native".into(),
                 command: "two".into(),
-                available: false,
+                available: true,
                 selected: false,
             },
         ]);
@@ -4777,6 +4820,26 @@ mod tests {
         );
         assert!(!app.store_visible());
         assert_eq!(app.store_agents()[0].identity, "two.example");
+    }
+
+    #[test]
+    fn agent_store_keeps_undetected_rosters_open_with_actionable_feedback() {
+        let mut app = App::default();
+        app.show_store(vec![StoreAgent {
+            identity: "missing.example".into(),
+            name: "Missing Agent".into(),
+            adapter: "ACP".into(),
+            command: "missing-agent".into(),
+            available: false,
+            selected: true,
+        }]);
+
+        assert_eq!(
+            app.handle_store_key(StoreKey::Confirm),
+            StoreAction::Changed
+        );
+        assert!(app.store_visible());
+        assert_eq!(app.store_status, "Not detected: Missing Agent");
     }
 
     #[test]

@@ -149,7 +149,8 @@ enum AgentSpec {
 }
 
 fn main() -> std::io::Result<()> {
-    let arguments = normalize_arguments(std::env::args().skip(1).collect());
+    let raw_arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let arguments = prepare_launch_arguments(raw_arguments);
     if arguments
         .iter()
         .any(|argument| argument == "-h" || argument == "--help")
@@ -165,18 +166,15 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
     if let Some(path) = project_dir_argument(&arguments) {
-        if !path.is_dir() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("project directory is not a directory: {}", path.display()),
-            ));
-        }
+        validate_project_directory(&path)?;
         std::env::set_current_dir(path)?;
     } else if arguments.len() == 1
         && !arguments[0].starts_with('-')
         && PathBuf::from(&arguments[0]).is_dir()
     {
-        std::env::set_current_dir(&arguments[0])?;
+        let path = PathBuf::from(&arguments[0]);
+        validate_project_directory(&path)?;
+        std::env::set_current_dir(path)?;
     }
     let alternate_screen = arguments.iter().any(|argument| argument == "--alt-screen");
     let launch = parse_launch(&arguments).or_else(|| {
@@ -266,8 +264,43 @@ fn normalize_arguments(mut arguments: Vec<String>) -> Vec<String> {
             normalized.extend(arguments);
             normalized
         }
-        _ => arguments,
+        _ => {
+            normalize_default_project_path(&mut arguments);
+            arguments
+        }
     }
+}
+
+fn prepare_launch_arguments(arguments: Vec<String>) -> Vec<String> {
+    let explicit_run = arguments.first().is_some_and(|argument| argument == "run");
+    let mut arguments = normalize_arguments(arguments);
+    if explicit_run
+        && arguments
+            .first()
+            .is_some_and(|argument| !argument.starts_with('-') && looks_like_project_path(argument))
+    {
+        arguments.insert(0, "--project-dir".into());
+    }
+    arguments
+}
+
+fn normalize_default_project_path(arguments: &mut Vec<String>) {
+    if arguments
+        .first()
+        .is_some_and(|argument| !argument.starts_with('-') && PathBuf::from(argument).is_dir())
+    {
+        arguments.insert(0, "--project-dir".into());
+    }
+}
+
+fn looks_like_project_path(argument: &str) -> bool {
+    let path = PathBuf::from(argument);
+    path.is_dir()
+        || argument.starts_with('/')
+        || argument.starts_with("./")
+        || argument.starts_with("../")
+        || argument == "."
+        || argument == ".."
 }
 
 fn print_help() {
@@ -281,6 +314,17 @@ fn project_dir_argument(arguments: &[String]) -> Option<PathBuf> {
         .iter()
         .position(|argument| argument == "--project-dir")?;
     arguments.get(index + 1).map(PathBuf::from)
+}
+
+fn validate_project_directory(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Not a directory: {}", path.display()),
+        ))
+    }
 }
 
 fn parse_launch(arguments: &[String]) -> Option<Launch> {
@@ -725,6 +769,14 @@ fn load_ui_preferences(app: &mut App) {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
         return;
     };
+    if let Some(message) = value
+        .get("ui")
+        .and_then(|ui| ui.get("prompt_message"))
+        .and_then(serde_json::Value::as_str)
+        && !message.trim().is_empty()
+    {
+        app.set_prompt_message(message);
+    }
     if let Some(follow) = value
         .get("ui")
         .and_then(|ui| ui.get("follow_output"))
@@ -1012,6 +1064,7 @@ fn save_ui_preferences(app: &App) -> std::io::Result<()> {
                 *ui = serde_json::json!({});
             }
             ui["follow_output"] = serde_json::Value::Bool(app.follow_tail);
+            ui["prompt_message"] = serde_json::Value::String(app.prompt_message().into());
             ui["density"] = serde_json::Value::String(app.density().into());
             ui["scrollbar"] = serde_json::Value::String(
                 if app.scrollbar_visible() {
@@ -1777,7 +1830,12 @@ fn run_terminal(
     if let Ok(root) = std::env::current_dir() {
         app.set_workspace_root(root);
     }
-    app.load_prompt_history(load_prompt_history());
+    // Prompt history belongs to the project that opened this conversation.
+    // Keep the root captured at session start: `/cd` changes the adapter's
+    // working directory, but it does not turn the current conversation into
+    // a different project (and must not leak its prompts into that project).
+    let history_project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    app.load_prompt_history(load_prompt_history(&history_project_root));
     let completion_candidates = [
         "/add", "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/diff",
         "/exit", "/export", "/help", "/mode", "/pause", "/quit", "/reload", "/drop", "/promote",
@@ -2215,7 +2273,7 @@ fn run_terminal(
                         if let PromptAction::Submit(prompt) =
                             app.handle_prompt_input(Input::from(key))
                         {
-                            append_prompt_history(&prompt);
+                            append_prompt_history(&prompt, &history_project_root);
                             if let Some(command) = prompt.trim().strip_prefix('!') {
                                 let command = command.trim();
                                 if command.is_empty() {
@@ -2463,6 +2521,16 @@ fn run_terminal(
                             app.status = "relay paused".into();
                         }
                     }
+                    KeyCode::Char('P')
+                        if selected_slot.is_some()
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                            && key.modifiers.contains(KeyModifiers::SHIFT) =>
+                    {
+                        if let Some(controls) = &controls {
+                            let _ = controls.send(AdapterControl::Pause);
+                            app.status = "relay paused".into();
+                        }
+                    }
                     KeyCode::Char('r')
                         if selected_slot.is_some()
                             && key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -2603,22 +2671,39 @@ fn event_log() -> std::io::Result<BufferedEventLog> {
     EventLog::open(directory.join("rust-events.jsonl")).buffered()
 }
 
-fn prompt_history_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-        .map(|root| root.join("codeswarm").join("prompt-history.jsonl"))
+fn project_prompt_history_path(data_home: &Path, project_root: &Path) -> PathBuf {
+    // Match the Python client's `paths.path_to_name`: an absolute project
+    // path becomes one stable, filesystem-safe component.  This avoids a
+    // global prompt history leaking commands between unrelated repositories.
+    let project_root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    let project_name = project_root
+        .to_string_lossy()
+        .trim_start_matches('/')
+        .replace('/', "-");
+    data_home
+        .join("codeswarm")
+        .join(project_name)
+        .join("prompt_history.jsonl")
 }
 
-fn load_prompt_history() -> Vec<String> {
-    let Some(path) = prompt_history_path() else {
+fn prompt_history_path(project_root: &Path) -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .map(|root| project_prompt_history_path(&root, project_root))
+}
+
+fn load_prompt_history(project_root: &Path) -> Vec<String> {
+    let Some(path) = prompt_history_path(project_root) else {
         return Vec::new();
     };
     history::read(path).unwrap_or_default()
 }
 
-fn append_prompt_history(prompt: &str) {
-    let Some(path) = prompt_history_path() else {
+fn append_prompt_history(prompt: &str, project_root: &Path) {
+    let Some(path) = prompt_history_path(project_root) else {
         return;
     };
     let _ = history::append(path, prompt);
@@ -2684,8 +2769,9 @@ mod tests {
     use super::{
         AdapterControl, AgentSpec, Launch, apply_notification_preferences,
         bare_launch_from_settings, dispatch_permission_action, dispatch_queued_prompt,
-        normalize_arguments, parse_launch, project_dir_argument, reconcile_config_roster,
-        run_relay_sequence_with_controls,
+        normalize_arguments, parse_launch, prepare_launch_arguments, project_dir_argument,
+        project_prompt_history_path, reconcile_config_roster, run_relay_sequence_with_controls,
+        validate_project_directory,
     };
     use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
     use codeswarm_core::{AgentCapabilities, AgentEvent, PermissionAnswer};
@@ -2715,6 +2801,71 @@ mod tests {
                 String::from("--project-dir"),
                 String::from("/tmp"),
             ]
+        );
+    }
+
+    #[test]
+    fn run_path_stays_separate_from_named_agent_options_and_prompt() {
+        let arguments = prepare_launch_arguments(vec![
+            "run".into(),
+            "/tmp".into(),
+            "--agent".into(),
+            "claude".into(),
+            "review the patch".into(),
+        ]);
+        assert!(matches!(
+            parse_launch(&arguments),
+            Some(Launch::Roster { prompt: Some(prompt), .. }) if prompt == "review the patch"
+        ));
+        assert_eq!(
+            project_dir_argument(&arguments),
+            Some(PathBuf::from("/tmp"))
+        );
+    }
+
+    #[test]
+    fn explicit_run_can_take_a_prompt_without_a_workspace_path() {
+        let arguments = prepare_launch_arguments(vec!["run".into(), "summarize this".into()]);
+        assert_eq!(arguments, vec!["summarize this"]);
+    }
+
+    #[test]
+    fn unqualified_path_uses_the_python_default_run_contract() {
+        let arguments = normalize_arguments(vec!["/tmp".into(), "--agent".into(), "claude".into()]);
+        assert_eq!(
+            project_dir_argument(&arguments),
+            Some(PathBuf::from("/tmp"))
+        );
+    }
+
+    #[test]
+    fn bare_prompt_is_not_mistaken_for_a_project_directory() {
+        let arguments = normalize_arguments(vec![
+            "summarize this change".into(),
+            "--agent".into(),
+            "claude".into(),
+        ]);
+        assert_eq!(project_dir_argument(&arguments), None);
+    }
+
+    #[test]
+    fn invalid_project_directory_is_rejected_before_terminal_start() {
+        let error =
+            validate_project_directory(PathBuf::from("/definitely/not/a/project").as_path())
+                .expect_err("missing project directory");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("Not a directory"));
+    }
+
+    #[test]
+    fn prompt_history_is_scoped_to_the_project_data_directory() {
+        let path = project_prompt_history_path(
+            PathBuf::from("/tmp/codeswarm-data").as_path(),
+            PathBuf::from("/workspace/project").as_path(),
+        );
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/codeswarm-data/codeswarm/workspace-project/prompt_history.jsonl")
         );
     }
 

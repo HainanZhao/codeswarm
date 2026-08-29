@@ -663,6 +663,21 @@ pub struct RelayCancellation {
     notify: Arc<Notify>,
 }
 
+#[cfg(test)]
+const CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(10);
+#[cfg(not(test))]
+const CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Bound third-party cancellation hooks so a broken adapter cannot freeze the
+/// terminal control loop.  Native and ACP adapters normally return promptly;
+/// the timeout is for custom adapters whose cancellation future may never
+/// resolve.
+async fn cancel_with_timeout(host: &mut AdapterHost) -> AdapterResult<bool> {
+    tokio::time::timeout(CANCEL_TIMEOUT, host.cancel())
+        .await
+        .map_err(|_| AdapterError::Transport("adapter cancellation timed out".into()))?
+}
+
 impl RelayCancellation {
     pub fn request(&self) {
         self.requested.store(true, Ordering::Release);
@@ -1212,7 +1227,7 @@ impl RelayHost {
         let mut emitted_text = 0usize;
         loop {
             if self.cancel_requested.swap(false, Ordering::AcqRel) {
-                let _ = host.cancel().await?;
+                let _ = cancel_with_timeout(host).await?;
                 return Err(AdapterError::Transport("relay turn cancelled".into()));
             }
             let update = tokio::select! {
@@ -1244,7 +1259,7 @@ impl RelayHost {
                 },
                 _ = self.cancel_notify.notified() => {
                     self.cancel_requested.store(false, Ordering::Release);
-                    let _ = host.cancel().await?;
+                    let _ = cancel_with_timeout(host).await?;
                     return Err(AdapterError::Transport("relay turn cancelled".into()));
                 }
             };
@@ -3067,6 +3082,7 @@ mod tests {
     #[derive(Debug)]
     struct PendingAdapter {
         slot: usize,
+        hang_on_cancel: bool,
     }
 
     #[async_trait]
@@ -3091,6 +3107,9 @@ mod tests {
         }
 
         async fn cancel(&mut self) -> super::AdapterResult<bool> {
+            if self.hang_on_cancel {
+                return std::future::pending().await;
+            }
             Ok(true)
         }
 
@@ -3178,6 +3197,63 @@ mod tests {
         }
     }
 
+    /// Startup can fail after an adapter has allocated resources.  Keep a
+    /// fixture that records whether the failing adapter itself receives the
+    /// cleanup call, not just the already-started peers.
+    #[derive(Debug)]
+    struct FailingStartAdapter {
+        slot: usize,
+        stopped: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl AgentAdapter for FailingStartAdapter {
+        fn slot(&self) -> usize {
+            self.slot
+        }
+
+        fn capabilities(&self) -> AgentCapabilities {
+            AgentCapabilities::default()
+        }
+
+        async fn start(&mut self) -> super::AdapterResult<()> {
+            Err(super::AdapterError::Spawn("startup failed".into()))
+        }
+
+        async fn send_prompt(&mut self, _prompt: String) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn cancel(&mut self) -> super::AdapterResult<bool> {
+            Ok(false)
+        }
+
+        async fn answer_permission(
+            &mut self,
+            _request_id: String,
+            _answer: PermissionAnswer,
+        ) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn set_mode(&mut self, _mode: String) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn reload(&mut self) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn stop(&mut self) -> super::AdapterResult<()> {
+            self.stopped.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn next_event(&mut self) -> Option<super::AdapterResult<AgentEvent>> {
+            None
+        }
+    }
+
     #[tokio::test]
     async fn relay_stop_attempts_every_adapter_after_one_shutdown_failure() {
         let stopped = Arc::new(AtomicUsize::new(0));
@@ -3207,6 +3283,35 @@ mod tests {
 
         let error = relay.stop().await.expect_err("first stop failure");
         assert!(error.to_string().contains("stop failed"));
+        assert_eq!(stopped.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn relay_start_cleans_up_the_adapter_that_failed_startup() {
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let mut relay = RelayHost::new(
+            vec![
+                AdapterHost::new(
+                    Box::new(StopTrackingAdapter {
+                        slot: 0,
+                        stopped: Arc::clone(&stopped),
+                        fail_stop: false,
+                    }),
+                    None,
+                ),
+                AdapterHost::new(
+                    Box::new(FailingStartAdapter {
+                        slot: 1,
+                        stopped: Arc::clone(&stopped),
+                    }),
+                    None,
+                ),
+            ],
+            4,
+        )
+        .expect("relay");
+
+        assert!(relay.start().await.is_err());
         assert_eq!(stopped.load(Ordering::Relaxed), 2);
     }
 
@@ -3648,7 +3753,10 @@ mod tests {
         adapter.start().await.expect("start native adapter");
         assert!(adapter.next_event().await.is_some());
         assert!(adapter.next_event().await.is_some());
-        adapter.send_prompt("continue".into()).await.expect("prompt");
+        adapter
+            .send_prompt("continue".into())
+            .await
+            .expect("prompt");
         assert!(matches!(
             adapter.next_event().await,
             Some(Ok(AgentEvent::Text { text, .. })) if text == "Recovered."
@@ -4129,8 +4237,20 @@ mod tests {
 
     #[tokio::test]
     async fn relay_cancellation_interrupts_a_waiting_adapter_turn() {
-        let first = AdapterHost::new(Box::new(PendingAdapter { slot: 0 }), None);
-        let second = AdapterHost::new(Box::new(PendingAdapter { slot: 1 }), None);
+        let first = AdapterHost::new(
+            Box::new(PendingAdapter {
+                slot: 0,
+                hang_on_cancel: false,
+            }),
+            None,
+        );
+        let second = AdapterHost::new(
+            Box::new(PendingAdapter {
+                slot: 1,
+                hang_on_cancel: false,
+            }),
+            None,
+        );
         let mut relay = super::RelayHost::new(vec![first, second], 4).expect("relay");
         relay.start().await.expect("start");
         let cancellation = relay.cancellation();
@@ -4139,6 +4259,32 @@ mod tests {
         cancellation.request();
         let error = turn.await.expect_err("cancellation should stop turn");
         assert!(error.to_string().contains("relay turn cancelled"));
+    }
+
+    #[tokio::test]
+    async fn relay_cancellation_does_not_wait_forever_for_a_broken_adapter() {
+        let first = AdapterHost::new(
+            Box::new(PendingAdapter {
+                slot: 0,
+                hang_on_cancel: true,
+            }),
+            None,
+        );
+        let second = AdapterHost::new(
+            Box::new(PendingAdapter {
+                slot: 1,
+                hang_on_cancel: false,
+            }),
+            None,
+        );
+        let mut relay = super::RelayHost::new(vec![first, second], 4).expect("relay");
+        relay.start().await.expect("start");
+        let cancellation = relay.cancellation();
+        let turn = relay.run_turn("task", 0);
+        tokio::pin!(turn);
+        cancellation.request();
+        let error = turn.await.expect_err("cancellation should stop turn");
+        assert!(error.to_string().contains("timed out"));
     }
 
     #[tokio::test]

@@ -50,7 +50,11 @@ fi
 echo "5k-word cached scroll: ${scroll_ms}ms (${scroll_rows} rows; budget <100ms)"
 
 binary="$project_root/target/debug/codeswarm"
-command="cd $(printf '%q' "$project_root") && XDG_STATE_HOME=$(printf '%q' "$state_dir") TERM=xterm-256color $(printf '%q' "$binary") --demo"
+# Keep both runtime state and project-scoped prompt history isolated.  A
+# user's saved prompt would otherwise consume Up before the harness can test
+# transcript scrolling, making this performance check depend on their home
+# directory.
+command="cd $(printf '%q' "$project_root") && XDG_STATE_HOME=$(printf '%q' "$state_dir") XDG_DATA_HOME=$(printf '%q' "$state_dir") TERM=xterm-256color $(printf '%q' "$binary") --demo"
 tmux -L "$socket_name" new-session -d -x 80 -y 24 -s "$session_name" "$command"
 
 capture() {
