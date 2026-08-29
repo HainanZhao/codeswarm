@@ -120,6 +120,9 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 - [x] Replaced the display-only prompt with a Ratatui/tui-textarea editor:
   multiline Unicode-safe editing, bounded history, slash completion, local
   commands, and readable command/config/help feedback.
+- [x] Matched the Python master’s core conversation cues in Rust: visible
+  human turns, named agent response starts, per-block markers, identity-aware
+  status, and robust narrow-pane fallback.
 - [x] Added terminal queue/help interaction state: queued and direct prompts,
   target selection, cancellation, follow-tail behavior, and inline keyboard
   help rendering.
