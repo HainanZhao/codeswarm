@@ -793,6 +793,10 @@ impl App {
         self.collapse_details
     }
 
+    pub fn set_collapse_details(&mut self, collapsed: bool) {
+        self.collapse_details = collapsed;
+    }
+
     pub fn mode(&self) -> &str {
         &self.mode
     }

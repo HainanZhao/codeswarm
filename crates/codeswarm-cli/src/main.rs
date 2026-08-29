@@ -18,8 +18,8 @@ use codeswarm_core::relay::{CollaborationStrategy, RelayDecision};
 use codeswarm_core::{AgentEvent, BufferedEventLog, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{
-    App, ConfigKey, Input, LocalCommand, PermissionAction, PermissionKey, PromptAction,
-    QueuedPrompt, StoreAction, StoreAgent, StoreKey, render,
+    App, ConfigAction, ConfigKey, Input, LocalCommand, PermissionAction, PermissionKey,
+    PromptAction, QueuedPrompt, StoreAction, StoreAgent, StoreKey, render,
 };
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -507,6 +507,75 @@ fn save_roster(identities: &[String]) -> std::io::Result<()> {
         *launcher = serde_json::json!({});
     }
     launcher["roster"] = serde_json::Value::String(identities.join("\n"));
+    let encoded = serde_json::to_vec_pretty(&serde_json::Value::Object(settings))
+        .map_err(std::io::Error::other)?;
+    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    std::fs::write(&temporary, encoded)?;
+    std::fs::rename(temporary, path)
+}
+
+fn load_ui_preferences(app: &mut App) {
+    let Some(path) = settings_path() else { return };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
+    if let Some(follow) = value
+        .get("ui")
+        .and_then(|ui| ui.get("follow_output"))
+        .and_then(serde_json::Value::as_bool)
+    {
+        app.follow_tail = follow;
+    }
+    if let Some(collapsed) = value
+        .get("transcript")
+        .and_then(|transcript| transcript.get("collapse_details"))
+        .and_then(serde_json::Value::as_bool)
+    {
+        app.set_collapse_details(collapsed);
+    }
+}
+
+fn save_ui_preferences(app: &App) -> std::io::Result<()> {
+    let Some(path) = settings_path() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut settings = if path.exists() {
+        let text = std::fs::read_to_string(&path)?;
+        let value = serde_json::from_str::<serde_json::Value>(&text).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("settings file is not valid JSON: {error}"),
+            )
+        })?;
+        value.as_object().cloned().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "settings file must contain a JSON object",
+            )
+        })?
+    } else {
+        serde_json::Map::new()
+    };
+    let ui = settings
+        .entry("ui")
+        .or_insert_with(|| serde_json::json!({}));
+    if !ui.is_object() {
+        *ui = serde_json::json!({});
+    }
+    ui["follow_output"] = serde_json::Value::Bool(app.follow_tail);
+    let transcript = settings
+        .entry("transcript")
+        .or_insert_with(|| serde_json::json!({}));
+    if !transcript.is_object() {
+        *transcript = serde_json::json!({});
+    }
+    transcript["collapse_details"] = serde_json::Value::Bool(app.collapse_details());
     let encoded = serde_json::to_vec_pretty(&serde_json::Value::Object(settings))
         .map_err(std::io::Error::other)?;
     let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
@@ -1076,6 +1145,7 @@ fn run_terminal(
     controls: Option<tokio::sync::mpsc::UnboundedSender<AdapterControl>>,
     selected_slot: Option<usize>,
 ) -> std::io::Result<()> {
+    load_ui_preferences(app);
     app.set_prompt_completions([
         "/agents", "/cancel", "/clear", "/close", "/collab", "/config", "/exit", "/export",
         "/help", "/mode", "/pause", "/quit", "/resume",
@@ -1161,7 +1231,12 @@ fn run_terminal(
                 };
                 if let Some(config_key) = config_key {
                     let previous_collaboration = app.collaboration().to_owned();
-                    let _ = app.handle_config_key(config_key);
+                    let config_action = app.handle_config_key(config_key);
+                    if config_action == ConfigAction::Close
+                        && let Err(error) = save_ui_preferences(app)
+                    {
+                        app.status = format!("unable to save preferences: {error}");
+                    }
                     if let Some(mode) = app.take_requested_mode()
                         && let Some(controls) = &controls
                     {

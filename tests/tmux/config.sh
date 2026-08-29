@@ -8,9 +8,12 @@ socket_name="codeswarm-config-$$"
 session_name="codeswarm-config"
 pane_target="${session_name}:0.0"
 binary="$project_root/target/release/codeswarm"
+config_dir="$(mktemp -d "${TMPDIR:-/tmp}/codeswarm-config.XXXXXX")"
 
 cleanup() {
   tmux -L "$socket_name" kill-server 2>/dev/null || true
+  rm -f -- "$config_dir/codeswarm/codeswarm.json"
+  rmdir "$config_dir/codeswarm" "$config_dir" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -22,8 +25,9 @@ if [[ ! -x "$binary" ]]; then
   exit 1
 fi
 
+mkdir -p "$config_dir/codeswarm"
 tmux -L "$socket_name" new-session -d -x 96 -y 24 -s "$session_name" \
-  "cd '$project_root' && TERM=xterm-256color '$binary' --demo"
+  "cd '$project_root' && XDG_CONFIG_HOME='$config_dir' TERM=xterm-256color '$binary' --demo"
 
 capture() {
   tmux -L "$socket_name" capture-pane -p -J -t "$pane_target"
@@ -50,6 +54,10 @@ wait_for "Follow output"
 wait_for "Collapse details"
 wait_for "Renderer"
 
+# Enter toggles Follow output from On to Off; closing the panel persists it.
+tmux -L "$socket_name" send-keys -t "$pane_target" Enter
+wait_for "Follow output       Off"
+
 # Navigate and toggle a setting without leaving the modal.
 tmux -L "$socket_name" send-keys -t "$pane_target" Down Enter
 wait_for "Collapse details"
@@ -58,6 +66,7 @@ wait_for "Collapse details"
 tmux -L "$socket_name" send-keys -t "$pane_target" Escape
 wait_for "Conversation"
 wait_for "Prompt"
+grep -Fq '"follow_output": false' "$config_dir/codeswarm/codeswarm.json"
 
 # Verify export is a local command and creates Markdown rather than reaching
 # an adapter. Remove only this uniquely named test artifact on exit.
