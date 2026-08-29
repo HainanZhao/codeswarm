@@ -22,7 +22,7 @@ Run a mixed roster. Quote each command so its arguments remain part of the
 adapter specification:
 
     cargo run -p codeswarm-cli -- \
-      --roster "acp:gemini --experimental-acp" \
+      --roster "acp:gemini --acp" \
       --roster "agy:agy" \
       "review the current changes" \
       --first 0 --max-rounds 4
@@ -32,10 +32,11 @@ is the tmux/SSH default.
 
 ## Roll back
 
-The preview does not replace the Python package or its settings. Stop the Rust
-process and run the existing executable:
+The preview does not replace the Python package or its settings. In a checkout
+where `.venv/bin/codeswarm` points at the Rust preview, stop that process and
+run the Python entry point directly:
 
-    .venv/bin/codeswarm
+    .venv/bin/python -m codeswarm
 
 Rust event logs are stored under XDG_STATE_HOME/codeswarm (or
 ~/.local/state/codeswarm) and are independent of Python session records.
