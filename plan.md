@@ -102,6 +102,12 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 - [x] Added repeated mixed roster CLI parsing with native/ACP startup,
   selected-first routing, max-round control, pause/resume, direct prompts, and
   live normalized event streaming.
+- [x] Wired saved-roster launch decisions into the Rust launcher while
+  preserving explicit demo, ACP, native, and repeated-roster flags.
+- [x] Added adapter-contract normalization and equivalent ACP/native trace
+  fixtures covering omitted, malformed, reordered, and replaced external state.
+- [x] Added a real tmux performance harness covering 5k-word scroll,
+  prompt-input latency, warm capture p99, and resize-storm settling.
 - [x] Integrated resize settling and latest-state frame recovery into a
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
