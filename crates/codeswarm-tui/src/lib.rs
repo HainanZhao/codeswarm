@@ -128,7 +128,7 @@ pub struct App {
     next_queue_id: u64,
     selected_queue: Option<usize>,
     keyboard_help: bool,
-    streaming_blocks: BTreeMap<usize, u64>,
+    streaming_blocks: BTreeMap<(usize, codeswarm_transcript::BlockKind), u64>,
     focused_detail: Option<u64>,
 }
 
@@ -169,11 +169,12 @@ impl App {
             }
             AgentEvent::ModesReplaced { .. } => {}
             AgentEvent::Text { slot, text } => {
-                let block = self.streaming_blocks.get(slot).copied().unwrap_or_else(|| {
+                let key = (*slot, codeswarm_transcript::BlockKind::Agent);
+                let block = self.streaming_blocks.get(&key).copied().unwrap_or_else(|| {
                     let id =
                         self.transcript
                             .append(codeswarm_transcript::BlockKind::Agent, "", false);
-                    self.streaming_blocks.insert(*slot, id);
+                    self.streaming_blocks.insert(key, id);
                     id
                 });
                 self.transcript.extend(block, text);
@@ -181,11 +182,19 @@ impl App {
                 self.status = "streaming".into();
             }
             AgentEvent::Thought { slot, text } => {
-                let id = self.transcript.append(
-                    codeswarm_transcript::BlockKind::Thought,
-                    format!("Agent {slot}: {text}"),
-                    true,
-                );
+                let key = (*slot, codeswarm_transcript::BlockKind::Thought);
+                let id = self.streaming_blocks.get(&key).copied().unwrap_or_else(|| {
+                    let id = self.transcript.append(
+                        codeswarm_transcript::BlockKind::Thought,
+                        format!("Agent {slot}: "),
+                        true,
+                    );
+                    self.streaming_blocks.insert(key, id);
+                    id
+                });
+                self.transcript.extend(id, text);
+                self.active_agent = format!("Agent {slot}");
+                self.status = "thinking".into();
                 self.focused_detail = Some(id);
             }
             AgentEvent::Tool { slot, update } => {
@@ -226,7 +235,10 @@ impl App {
                 ));
             }
             AgentEvent::TurnComplete { slot } => {
-                self.streaming_blocks.remove(slot);
+                self.streaming_blocks
+                    .remove(&(*slot, codeswarm_transcript::BlockKind::Agent));
+                self.streaming_blocks
+                    .remove(&(*slot, codeswarm_transcript::BlockKind::Thought));
                 if self
                     .permission
                     .as_ref()
@@ -241,7 +253,10 @@ impl App {
                 started,
                 detail,
             } => {
-                self.streaming_blocks.remove(slot);
+                self.streaming_blocks
+                    .remove(&(*slot, codeswarm_transcript::BlockKind::Agent));
+                self.streaming_blocks
+                    .remove(&(*slot, codeswarm_transcript::BlockKind::Thought));
                 if self
                     .permission
                     .as_ref()
@@ -638,6 +653,27 @@ mod tests {
         app.apply_event(&codeswarm_core::AgentEvent::Text {
             slot: 0,
             text: "next turn".into(),
+        });
+        assert_eq!(app.transcript.len(), 2);
+    }
+
+    #[test]
+    fn streamed_thought_chunks_extend_one_collapsed_detail() {
+        let mut app = App::default();
+        app.apply_event(&codeswarm_core::AgentEvent::Thought {
+            slot: 0,
+            text: "first ".into(),
+        });
+        app.apply_event(&codeswarm_core::AgentEvent::Thought {
+            slot: 0,
+            text: "second".into(),
+        });
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(app.status, "thinking");
+        app.apply_event(&codeswarm_core::AgentEvent::TurnComplete { slot: 0 });
+        app.apply_event(&codeswarm_core::AgentEvent::Thought {
+            slot: 0,
+            text: "new turn".into(),
         });
         assert_eq!(app.transcript.len(), 2);
     }
