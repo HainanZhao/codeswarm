@@ -4,6 +4,8 @@
 //! invalidate every later diff. This scheduler therefore drops stale deltas
 //! and requires the caller to submit a complete repaint before deltas resume.
 
+use std::time::{Duration, Instant};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
     pub bytes: Vec<u8>,
@@ -16,6 +18,37 @@ pub struct FrameScheduler {
     pending: Option<Frame>,
     resync_required: bool,
     repaint_requested: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResizeCoalescer {
+    pending: Option<(u16, u16)>,
+    last_event: Option<Instant>,
+    settle_after: Duration,
+}
+
+impl ResizeCoalescer {
+    pub fn new(settle_after: Duration) -> Self {
+        Self {
+            pending: None,
+            last_event: None,
+            settle_after,
+        }
+    }
+
+    pub fn push(&mut self, width: u16, height: u16, now: Instant) {
+        self.pending = Some((width, height));
+        self.last_event = Some(now);
+    }
+
+    pub fn take_settled(&mut self, now: Instant) -> Option<(u16, u16)> {
+        let last_event = self.last_event?;
+        if now.duration_since(last_event) < self.settle_after {
+            return None;
+        }
+        self.last_event = None;
+        self.pending.take()
+    }
 }
 
 impl FrameScheduler {
@@ -72,7 +105,9 @@ impl FrameScheduler {
 
 #[cfg(test)]
 mod tests {
-    use super::FrameScheduler;
+    use std::time::{Duration, Instant};
+
+    use super::{FrameScheduler, ResizeCoalescer};
 
     #[test]
     fn stale_deltas_are_dropped_until_a_complete_repaint() {
@@ -97,5 +132,21 @@ mod tests {
         assert!(scheduler.take_next().is_some());
         assert!(scheduler.take_next().is_none());
         assert!(scheduler.has_in_flight_write());
+    }
+
+    #[test]
+    fn resize_coalescer_emits_only_final_geometry() {
+        let start = Instant::now();
+        let mut resize = ResizeCoalescer::new(Duration::from_millis(100));
+        resize.push(80, 24, start);
+        resize.push(90, 30, start + Duration::from_millis(50));
+        assert_eq!(
+            resize.take_settled(start + Duration::from_millis(149)),
+            None
+        );
+        assert_eq!(
+            resize.take_settled(start + Duration::from_millis(150)),
+            Some((90, 30))
+        );
     }
 }
