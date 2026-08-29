@@ -7,7 +7,7 @@ use std::{
 };
 
 use codeswarm_adapters::{AcpAdapter, AdapterResult, AgentAdapter, AgyAdapter};
-use codeswarm_core::AgentEvent;
+use codeswarm_core::{AgentEvent, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{App, render};
 use crossterm::{
@@ -265,11 +265,17 @@ fn run_terminal(
     events: Option<Receiver<AdapterResult<AgentEvent>>>,
     controls: Option<tokio::sync::mpsc::UnboundedSender<AdapterControl>>,
 ) -> std::io::Result<()> {
+    let event_log = event_log().ok();
     loop {
         if let Some(events) = &events {
             while let Ok(event) = events.try_recv() {
                 match event {
-                    Ok(event) => app.apply_event(&event),
+                    Ok(event) => {
+                        if let Some(log) = &event_log {
+                            let _ = log.append(&event);
+                        }
+                        app.apply_event(&event);
+                    }
                     Err(error) => app.set_header("Agent", error.to_string()),
                 }
             }
@@ -324,6 +330,16 @@ fn run_terminal(
             }
         }
     }
+}
+
+fn event_log() -> std::io::Result<EventLog> {
+    let root = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
+        .unwrap_or_else(|| PathBuf::from(".codeswarm-state"));
+    let directory = root.join("codeswarm");
+    std::fs::create_dir_all(&directory)?;
+    Ok(EventLog::open(directory.join("rust-events.jsonl")))
 }
 
 #[cfg(test)]
