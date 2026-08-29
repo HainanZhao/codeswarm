@@ -136,6 +136,10 @@ Still required before cutover:
 - [ ] Complete real-agent dogfooding, preview release/rollback, and staged
   default cutover.
 
+Local preview and rollback usage is documented in docs/RUST_REWRITE.md. The
+Python executable remains the safe default until an authenticated real-agent
+run succeeds.
+
 Dogfood note: the installed \`gemini 0.29.5\` exposes ACP, but its cached
 credentials currently return \`IneligibleTierError\` because Gemini Code Assist
 for individuals is no longer supported and requires migration to Antigravity.
