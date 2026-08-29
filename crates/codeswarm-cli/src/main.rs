@@ -13,8 +13,10 @@ use codeswarm_adapters::{
 };
 use codeswarm_core::PermissionAnswer;
 use codeswarm_core::agents::{AdapterKind, AgentDefinition, catalog_from_settings};
+use codeswarm_core::history;
 use codeswarm_core::launcher::{LaunchDecision, launch_decision, parse_saved_roster};
 use codeswarm_core::relay::{CollaborationStrategy, RelayDecision};
+use codeswarm_core::settings;
 use codeswarm_core::{AgentEvent, BufferedEventLog, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{
@@ -117,11 +119,11 @@ enum Launch {
     Preview,
     Store,
     Agy {
-        prompt: String,
+        prompt: Option<String>,
     },
     Acp {
         program: String,
-        prompt: String,
+        prompt: Option<String>,
     },
     Roster {
         specs: Vec<AgentSpec>,
@@ -138,11 +140,27 @@ enum AgentSpec {
 }
 
 fn main() -> std::io::Result<()> {
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let arguments = normalize_arguments(std::env::args().skip(1).collect());
+    if arguments
+        .iter()
+        .any(|argument| argument == "-h" || argument == "--help")
+    {
+        print_help();
+        return Ok(());
+    }
+    if arguments
+        .iter()
+        .any(|argument| argument == "-v" || argument == "--version")
+    {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if let Some(path) = project_dir_argument(&arguments) {
         if !path.is_dir() {
-            eprintln!("project directory is not a directory: {}", path.display());
-            return Ok(());
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("project directory is not a directory: {}", path.display()),
+            ));
         }
         std::env::set_current_dir(path)?;
     } else if arguments.len() == 1
@@ -199,6 +217,43 @@ fn main() -> std::io::Result<()> {
     result
 }
 
+/// Keep the compact flag-based interface while accepting the two documented
+/// Python-era entry-point spellings (`run` and `acp COMMAND`).
+fn normalize_arguments(mut arguments: Vec<String>) -> Vec<String> {
+    match arguments.first().map(String::as_str) {
+        Some("run") => {
+            arguments.remove(0);
+            arguments
+        }
+        Some("acp") => {
+            arguments.remove(0);
+            let Some(command) = arguments.first().cloned() else {
+                return vec!["--acp".into()];
+            };
+            arguments.remove(0);
+            let mut normalized = vec!["--acp".into(), command];
+            // The legacy ACP subcommand's optional positional argument was a
+            // workspace path, not a prompt. Preserve that distinction.
+            if arguments
+                .first()
+                .is_some_and(|argument| !argument.starts_with('-'))
+            {
+                normalized.push("--project-dir".into());
+                normalized.push(arguments.remove(0));
+            }
+            normalized.extend(arguments);
+            normalized
+        }
+        _ => arguments,
+    }
+}
+
+fn print_help() {
+    println!(
+        "CodeSwarm — fast tmux-first terminal workspace\n\nUsage:\n  codeswarm [OPTIONS] [PROMPT]\n  codeswarm run [PATH] [OPTIONS] [PROMPT]\n  codeswarm acp COMMAND [PATH]\n\nOptions:\n  --demo                         Run the local UI preview\n  --agy PROMPT                   Run the native Agy adapter\n  --acp PROGRAM [PROMPT]         Run an ACP adapter\n  --roster KIND:COMMAND          Add a native/ACP roster member (repeatable)\n  --first N                      Select the first roster slot (zero-based)\n  --max-rounds N                 Limit automated relay turns\n  --project-dir PATH             Use PATH as the workspace\n  --alt-screen                   Use the alternate terminal screen\n  -h, --help                     Show this help\n  -v, --version                  Show the version\n\nPrompt commands include /config, /agents, /mode, /collab, /pause, /resume,\n/reload, /drop, /diff, /export, /clear, /close, and !command."
+    );
+}
+
 fn project_dir_argument(arguments: &[String]) -> Option<PathBuf> {
     let index = arguments
         .iter()
@@ -219,12 +274,11 @@ fn parse_launch(arguments: &[String]) -> Option<Launch> {
     if arguments.iter().any(|argument| argument == "--demo") {
         return Some(Launch::Preview);
     }
-    if let Some(index) = arguments.iter().position(|argument| argument == "--agy")
-        && let Some(prompt) = arguments
+    if let Some(index) = arguments.iter().position(|argument| argument == "--agy") {
+        let prompt = arguments
             .get(index + 1)
             .filter(|prompt| !prompt.starts_with('-'))
-            .cloned()
-    {
+            .cloned();
         return Some(Launch::Agy { prompt });
     }
     if arguments.iter().any(|argument| argument == "--roster") {
@@ -232,7 +286,10 @@ fn parse_launch(arguments: &[String]) -> Option<Launch> {
     }
     let index = arguments.iter().position(|argument| argument == "--acp")?;
     let program = arguments.get(index + 1)?.clone();
-    let prompt = arguments.get(index + 2)?.clone();
+    let prompt = arguments
+        .get(index + 2)
+        .filter(|prompt| !prompt.starts_with('-'))
+        .cloned();
     Some(Launch::Acp { program, prompt })
 }
 
@@ -386,7 +443,16 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
     let agents = launchable_catalog
         .iter()
         .map(|agent| {
-            let available = command_available(&agent.command);
+            // Availability follows the catalog's detection command, not the
+            // adapter launch command.  ACP bridges commonly launch through
+            // `npx`; treating `npx` as proof that Claude/Codex is installed
+            // made the store advertise agents that could not actually run.
+            let available = command_available(
+                agent
+                    .detect_command
+                    .as_deref()
+                    .unwrap_or(agent.command.as_str()),
+            );
             StoreAgent {
                 identity: agent.identity.clone(),
                 name: agent.name.clone(),
@@ -524,38 +590,15 @@ fn save_roster(identities: &[String]) -> std::io::Result<()> {
     let Some(path) = settings_path() else {
         return Ok(());
     };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut settings = if path.exists() {
-        let text = std::fs::read_to_string(&path)?;
-        let value = serde_json::from_str::<serde_json::Value>(&text).map_err(|error| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("settings file is not valid JSON: {error}"),
-            )
-        })?;
-        value.as_object().cloned().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "settings file must contain a JSON object",
-            )
-        })?
-    } else {
-        serde_json::Map::new()
-    };
-    let launcher = settings
-        .entry("launcher")
-        .or_insert_with(|| serde_json::json!({}));
-    if !launcher.is_object() {
-        *launcher = serde_json::json!({});
-    }
-    launcher["roster"] = serde_json::Value::String(identities.join("\n"));
-    let encoded = serde_json::to_vec_pretty(&serde_json::Value::Object(settings))
-        .map_err(std::io::Error::other)?;
-    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&temporary, encoded)?;
-    std::fs::rename(temporary, path)
+    settings::update(path, |settings| {
+        let launcher = settings
+            .entry("launcher")
+            .or_insert_with(|| serde_json::json!({}));
+        if !launcher.is_object() {
+            *launcher = serde_json::json!({});
+        }
+        launcher["roster"] = serde_json::Value::String(identities.join("\n"));
+    })
 }
 
 fn load_ui_preferences(app: &mut App) {
@@ -600,60 +643,37 @@ fn save_ui_preferences(app: &App) -> std::io::Result<()> {
     let Some(path) = settings_path() else {
         return Ok(());
     };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut settings = if path.exists() {
-        let text = std::fs::read_to_string(&path)?;
-        let value = serde_json::from_str::<serde_json::Value>(&text).map_err(|error| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("settings file is not valid JSON: {error}"),
-            )
-        })?;
-        value.as_object().cloned().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "settings file must contain a JSON object",
-            )
-        })?
-    } else {
-        serde_json::Map::new()
-    };
-    let ui = settings
-        .entry("ui")
-        .or_insert_with(|| serde_json::json!({}));
-    if !ui.is_object() {
-        *ui = serde_json::json!({});
-    }
-    ui["follow_output"] = serde_json::Value::Bool(app.follow_tail);
-    let transcript = settings
-        .entry("transcript")
-        .or_insert_with(|| serde_json::json!({}));
-    if !transcript.is_object() {
-        *transcript = serde_json::json!({});
-    }
-    transcript["collapse_details"] = serde_json::Value::Bool(app.collapse_details());
-    let notifications = settings
-        .entry("notifications")
-        .or_insert_with(|| serde_json::json!({}));
-    if !notifications.is_object() {
-        *notifications = serde_json::json!({});
-    }
-    notifications["enabled"] = serde_json::Value::Bool(app.notifications_enabled());
-    let diff = settings
-        .entry("diff")
-        .or_insert_with(|| serde_json::json!({}));
-    if !diff.is_object() {
-        *diff = serde_json::json!({});
-    }
-    diff["view"] =
-        serde_json::Value::String(if app.diff_split() { "split" } else { "unified" }.into());
-    let encoded = serde_json::to_vec_pretty(&serde_json::Value::Object(settings))
-        .map_err(std::io::Error::other)?;
-    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&temporary, encoded)?;
-    std::fs::rename(temporary, path)
+    settings::update(path, |settings| {
+        let ui = settings
+            .entry("ui")
+            .or_insert_with(|| serde_json::json!({}));
+        if !ui.is_object() {
+            *ui = serde_json::json!({});
+        }
+        ui["follow_output"] = serde_json::Value::Bool(app.follow_tail);
+        let transcript = settings
+            .entry("transcript")
+            .or_insert_with(|| serde_json::json!({}));
+        if !transcript.is_object() {
+            *transcript = serde_json::json!({});
+        }
+        transcript["collapse_details"] = serde_json::Value::Bool(app.collapse_details());
+        let notifications = settings
+            .entry("notifications")
+            .or_insert_with(|| serde_json::json!({}));
+        if !notifications.is_object() {
+            *notifications = serde_json::json!({});
+        }
+        notifications["enabled"] = serde_json::Value::Bool(app.notifications_enabled());
+        let diff = settings
+            .entry("diff")
+            .or_insert_with(|| serde_json::json!({}));
+        if !diff.is_object() {
+            *diff = serde_json::json!({});
+        }
+        diff["view"] =
+            serde_json::Value::String(if app.diff_split() { "split" } else { "unified" }.into());
+    })
 }
 
 fn run_preview(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
@@ -674,9 +694,9 @@ fn run_preview(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> st
 
 fn run_agy(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    prompt: String,
+    prompt: Option<String>,
 ) -> std::io::Result<()> {
-    run_agy_command(terminal, Some(prompt), "agy")
+    run_agy_command(terminal, prompt, "agy")
 }
 
 fn run_agy_command(
@@ -698,9 +718,9 @@ fn run_agy_command(
 fn run_acp(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     program: String,
-    prompt: String,
+    prompt: Option<String>,
 ) -> std::io::Result<()> {
-    run_acp_program(terminal, program, Some(prompt))
+    run_acp_program(terminal, program, prompt)
 }
 
 fn run_acp_program(
@@ -1059,6 +1079,12 @@ fn run_relay_task(
     };
     runtime.block_on(async move {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let roster_names = specs
+            .iter()
+            .map(|spec| match spec {
+                AgentSpec::Agy(command) | AgentSpec::Acp(command) => display_agent_name(command),
+            })
+            .collect::<Vec<_>>();
         let hosts = specs
             .into_iter()
             .enumerate()
@@ -1098,6 +1124,7 @@ fn run_relay_task(
                 return;
             }
         };
+        relay.set_roster_names(roster_names);
         let event_sender = sender.clone();
         relay.set_event_sink(move |event| {
             let _ = event_sender.send(Ok(event));
@@ -1564,14 +1591,18 @@ fn run_terminal(
                                 LocalCommand::Pause => {
                                     if let Some(controls) = &controls {
                                         let _ = controls.send(AdapterControl::Pause);
+                                        app.status = "relay paused".into();
+                                    } else {
+                                        app.status = "pause unavailable in solo session".into();
                                     }
-                                    app.status = "relay paused".into();
                                 }
                                 LocalCommand::Resume => {
                                     if let Some(controls) = &controls {
                                         let _ = controls.send(AdapterControl::Resume);
+                                        app.status = "relay resumed".into();
+                                    } else {
+                                        app.status = "resume unavailable in solo session".into();
                                     }
-                                    app.status = "relay resumed".into();
                                 }
                                 LocalCommand::Mode => {
                                     if let Some(mode) = app.take_requested_mode()
@@ -1808,40 +1839,14 @@ fn load_prompt_history() -> Vec<String> {
     let Some(path) = prompt_history_path() else {
         return Vec::new();
     };
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    text.lines()
-        .filter_map(|line| serde_json::from_str::<String>(line).ok())
-        .filter(|prompt| !prompt.trim().is_empty())
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .take(50)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect()
+    history::read(path).unwrap_or_default()
 }
 
 fn append_prompt_history(prompt: &str) {
     let Some(path) = prompt_history_path() else {
         return;
     };
-    let Some(parent) = path.parent() else { return };
-    if std::fs::create_dir_all(parent).is_err() {
-        return;
-    }
-    let Ok(encoded) = serde_json::to_string(prompt) else {
-        return;
-    };
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = file.write_all(format!("{encoded}\n").as_bytes());
-    }
+    let _ = history::append(path, prompt);
 }
 
 fn notify_turn_complete(agent: &str) {
@@ -1873,7 +1878,7 @@ fn notify_turn_complete(agent: &str) {
 mod tests {
     use super::{
         AdapterControl, AgentSpec, Launch, bare_launch_from_settings, dispatch_permission_action,
-        dispatch_queued_prompt, parse_launch, project_dir_argument,
+        dispatch_queued_prompt, normalize_arguments, parse_launch, project_dir_argument,
         run_relay_sequence_with_controls,
     };
     use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
@@ -1885,8 +1890,25 @@ mod tests {
     fn parses_native_agent_prompt_without_treating_it_as_acp() {
         assert!(matches!(
             parse_launch(&["--agy".into(), "summarize".into()]),
-            Some(Launch::Agy { prompt }) if prompt == "summarize"
+            Some(Launch::Agy { prompt: Some(prompt) }) if prompt == "summarize"
         ));
+    }
+
+    #[test]
+    fn accepts_help_era_entry_point_aliases_without_reinterpreting_arguments() {
+        assert_eq!(
+            normalize_arguments(vec!["run".into(), "/tmp".into()]),
+            vec![String::from("/tmp")]
+        );
+        assert_eq!(
+            normalize_arguments(vec!["acp".into(), "codex-acp".into(), "/tmp".into()]),
+            vec![
+                String::from("--acp"),
+                String::from("codex-acp"),
+                String::from("--project-dir"),
+                String::from("/tmp"),
+            ]
+        );
     }
 
     #[test]
@@ -1911,7 +1933,11 @@ mod tests {
     fn parses_acp_program_and_prompt() {
         assert!(matches!(
             parse_launch(&["--acp".into(), "codex-acp".into(), "summarize".into()]),
-            Some(Launch::Acp { program, prompt }) if program == "codex-acp" && prompt == "summarize"
+            Some(Launch::Acp { program, prompt: Some(prompt) }) if program == "codex-acp" && prompt == "summarize"
+        ));
+        assert!(matches!(
+            parse_launch(&["--acp".into(), "codex-acp".into()]),
+            Some(Launch::Acp { program, prompt: None }) if program == "codex-acp"
         ));
     }
 

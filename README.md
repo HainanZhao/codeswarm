@@ -32,6 +32,11 @@ codeswarm --acp "codex-acp" "review the current changes"
 codeswarm --project-dir ~/projects/example
 # A directory may also be supplied positionally.
 codeswarm ~/projects/example
+
+# Legacy entry-point spellings remain accepted:
+codeswarm run ~/projects/example
+codeswarm acp "codex-acp" ~/projects/example
+codeswarm --help
 ```
 
 Launch a mixed roster with repeated `--roster` arguments:
@@ -42,6 +47,10 @@ codeswarm --roster "acp:codex-acp" --roster "agy:agy" "review the patch"
 
 Adapters are intentionally not forced through ACP. Native adapters and custom
 ACP commands can coexist in one roster.
+
+ACP agents can request workspace file reads/writes and client-mediated
+terminals. CodeSwarm keeps those paths under the selected workspace, rejects
+escapes and symlinks, and caps file/terminal output to protect tmux latency.
 
 ### Configure custom agents
 

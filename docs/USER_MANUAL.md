@@ -18,6 +18,10 @@ the UI without an external agent.
 Use `--project-dir PATH` (or pass a directory positionally) to start the
 session in a different workspace.
 
+`codeswarm run PATH` and `codeswarm acp COMMAND [PATH]` remain accepted for
+compatibility with the previous launcher. `codeswarm --help` and
+`codeswarm --version` work before the terminal UI starts.
+
 The store reads custom agents from
 `$XDG_CONFIG_HOME/codeswarm/codeswarm.json` (default:
 `~/.config/codeswarm/codeswarm.json`). Add an `agents` array or object with
@@ -41,6 +45,10 @@ codeswarm --roster "agy:agy" --roster "acp:codex-acp" "review the patch"
 Agents in a roster run sequentially. Each agent receives public human and
 agent messages it has not seen since its previous turn. Tool calls, thoughts,
 terminal output, and UI history stay local to the producing agent.
+
+ACP workspace file and terminal requests are mediated by CodeSwarm. File paths
+are confined to the selected workspace, and file and terminal output are
+bounded to preserve tmux responsiveness.
 
 ## Prompt and keyboard controls
 

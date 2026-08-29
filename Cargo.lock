@@ -147,7 +147,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "codeswarm-adapters"
-version = "0.1.0"
+version = "0.6.43"
 dependencies = [
  "async-trait",
  "codeswarm-core",
@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "codeswarm-cli"
-version = "0.1.0"
+version = "0.6.43"
 dependencies = [
  "codeswarm-adapters",
  "codeswarm-core",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "codeswarm-core"
-version = "0.1.0"
+version = "0.6.43"
 dependencies = [
  "serde",
  "serde_json",
@@ -179,11 +179,11 @@ dependencies = [
 
 [[package]]
 name = "codeswarm-transcript"
-version = "0.1.0"
+version = "0.6.43"
 
 [[package]]
 name = "codeswarm-tui"
-version = "0.1.0"
+version = "0.6.43"
 dependencies = [
  "codeswarm-core",
  "codeswarm-transcript",

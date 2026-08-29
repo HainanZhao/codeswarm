@@ -9,7 +9,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.6.43"
 edition = "2024"
 license = "AGPL-3.0-only"
 authors = ["CodeSwarm contributors"]
@@ -23,7 +23,7 @@ missing_debug_implementations = "warn"
 async-trait = "0.1.89"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.149"
-tokio = { version = "1.49.0", features = ["io-util", "macros", "process", "rt-multi-thread", "sync"] }
+tokio = { version = "1.49.0", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 crossterm = "0.29.0"
 ratatui = "0.30.0"
 
