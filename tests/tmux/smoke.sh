@@ -25,6 +25,29 @@ done
 
 snapshot="$(tmux -L "$socket_name" capture-pane -p -t "$pane_target")"
 grep -q "CodeSwarm preview" <<<"$snapshot"
+
+# Exercise the compact renderer used by narrow tmux panes. It keeps the
+# status, transcript, and prompt available without letting auxiliary regions
+# overflow the pane.
+tmux -L "$socket_name" resize-window -t codeswarm-smoke -x 30 -y 6
+for _ in $(seq 1 50); do
+  if tmux -L "$socket_name" capture-pane -p -t "$pane_target" | grep -q ">"; then
+    break
+  fi
+  sleep 0.1
+done
+tmux -L "$socket_name" send-keys -t "$pane_target" x
+for _ in $(seq 1 50); do
+  if tmux -L "$socket_name" capture-pane -p -t "$pane_target" | grep -q "> x"; then
+    break
+  fi
+  sleep 0.1
+done
+snapshot="$(tmux -L "$socket_name" capture-pane -p -t "$pane_target")"
+grep -q "> x" <<<"$snapshot"
+# Do not discard an unsent prompt implicitly: clear the probe input before
+# exercising the clean quit path.
+tmux -L "$socket_name" send-keys -t "$pane_target" BSpace
 tmux -L "$socket_name" send-keys -t "$pane_target" q
 
 for _ in $(seq 1 50); do
