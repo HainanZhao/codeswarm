@@ -524,6 +524,7 @@ pub struct App {
     prompt_editor: PromptEditor,
     agent_names: BTreeMap<usize, String>,
     agent_states: BTreeMap<usize, String>,
+    agent_modes: BTreeMap<usize, (Vec<codeswarm_core::Mode>, Option<String>)>,
     failed_agent: Option<usize>,
     queued_prompts: VecDeque<QueuedPrompt>,
     next_queue_id: u64,
@@ -558,6 +559,7 @@ impl Default for App {
             prompt_editor: PromptEditor::default(),
             agent_names: BTreeMap::new(),
             agent_states: BTreeMap::new(),
+            agent_modes: BTreeMap::new(),
             failed_agent: None,
             queued_prompts: VecDeque::new(),
             next_queue_id: 0,
@@ -815,7 +817,16 @@ impl App {
                     0 => self.follow_tail = !self.follow_tail,
                     1 => self.collapse_details = !self.collapse_details,
                     2 => {
-                        if self.mode == "Auto pilot" {
+                        let options = self.mode_options();
+                        if !options.is_empty() {
+                            let index = options
+                                .iter()
+                                .position(|option| option.label == self.mode)
+                                .map_or(0, |index| (index + 1) % options.len());
+                            let next = &options[index];
+                            self.mode = next.label.clone();
+                            self.requested_mode = Some(next.id.clone());
+                        } else if self.mode == "Auto pilot" {
                             self.mode = "Chat".into();
                             self.requested_mode = None;
                         } else if self.mode == "Chat" {
@@ -867,6 +878,15 @@ impl App {
 
     pub fn set_mode(&mut self, mode: impl Into<String>) {
         self.mode = mode.into();
+    }
+
+    pub fn mode_options(&self) -> Vec<codeswarm_core::Mode> {
+        let sets = self
+            .agent_modes
+            .values()
+            .map(|(modes, _)| modes.clone())
+            .collect::<Vec<_>>();
+        codeswarm_core::policy::shared_modes(&sets)
     }
 
     pub fn set_collaboration(&mut self, collaboration: impl Into<String>) {
@@ -1005,6 +1025,8 @@ impl App {
                 modes,
                 current_mode,
             } => {
+                self.agent_modes
+                    .insert(*slot, (modes.clone(), current_mode.clone()));
                 if *slot == 0
                     && let Some(current) = current_mode
                     && let Some(mode) = modes.iter().find(|mode| mode.id == *current)
@@ -2468,6 +2490,37 @@ mod tests {
         assert_eq!(
             app.handle_local_command("/cd /tmp"),
             Some(LocalCommand::Directory("/tmp".into()))
+        );
+    }
+
+    #[test]
+    fn advertised_mode_catalog_drives_the_config_mode_cycle() {
+        let mut app = App::default();
+        app.apply_event(&codeswarm_core::AgentEvent::ModesReplaced {
+            slot: 0,
+            modes: vec![
+                codeswarm_core::Mode {
+                    id: "plan".into(),
+                    label: "Plan".into(),
+                },
+                codeswarm_core::Mode {
+                    id: "full-access".into(),
+                    label: "Auto pilot".into(),
+                },
+            ],
+            current_mode: Some("full-access".into()),
+        });
+        app.handle_local_command("/config");
+        app.handle_config_key(ConfigKey::Down);
+        app.handle_config_key(ConfigKey::Down);
+        assert_eq!(
+            app.handle_config_key(ConfigKey::Confirm),
+            ConfigAction::Changed
+        );
+        assert_eq!(app.mode(), "Plan");
+        assert_eq!(
+            app.take_requested_mode(),
+            Some("codeswarm:mode:plan".into())
         );
     }
 

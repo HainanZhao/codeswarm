@@ -1212,6 +1212,7 @@ fn run_terminal(
     let event_log = event_log().ok();
     let (shell_sender, shell_receiver) = mpsc::channel::<AdapterResult<AgentEvent>>();
     let mut pending_permission: Option<(usize, String)> = None;
+    let mut synced_mode_slots = std::collections::BTreeSet::new();
     let mut turn_active = false;
     let mut cancel_requested_at: Option<Instant> = None;
     loop {
@@ -1229,9 +1230,16 @@ fn run_terminal(
                                 turn_active = false;
                                 cancel_requested_at = None;
                             }
-                            AgentEvent::Ready { .. }
-                            | AgentEvent::ModesReplaced { .. }
-                            | AgentEvent::Failed { .. } => {}
+                            AgentEvent::Ready { .. } | AgentEvent::Failed { .. } => {}
+                            AgentEvent::ModesReplaced { slot, .. } => {
+                                if app.mode() == "Auto pilot"
+                                    && synced_mode_slots.insert(*slot)
+                                    && let Some(controls) = &controls
+                                {
+                                    let _ = controls
+                                        .send(AdapterControl::SetMode("full-access".into()));
+                                }
+                            }
                         }
                         if let AgentEvent::Permission { slot, request } = &event {
                             pending_permission = Some((*slot, request.id.clone()));
