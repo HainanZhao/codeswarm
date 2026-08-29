@@ -6,7 +6,10 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use async_trait::async_trait;
 use codeswarm_core::{
@@ -17,7 +20,7 @@ use codeswarm_core::{
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdout, Command};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 pub type AdapterResult<T> = Result<T, AdapterError>;
 
@@ -181,6 +184,23 @@ pub struct RelayHost {
     relay: Relay,
     dispatches: Vec<(RosterSlot, String)>,
     event_sink: Option<Arc<dyn Fn(AgentEvent) + Send + Sync>>,
+    cancel_requested: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
+}
+
+/// A clonable signal used by a terminal control loop to interrupt the active
+/// relay turn without borrowing the relay while its adapter is being polled.
+#[derive(Clone, Debug)]
+pub struct RelayCancellation {
+    requested: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl RelayCancellation {
+    pub fn request(&self) {
+        self.requested.store(true, Ordering::Release);
+        self.notify.notify_one();
+    }
 }
 
 impl std::fmt::Debug for RelayHost {
@@ -191,6 +211,10 @@ impl std::fmt::Debug for RelayHost {
             .field("relay", &self.relay)
             .field("dispatches", &self.dispatches)
             .field("event_sink", &self.event_sink.is_some())
+            .field(
+                "cancel_requested",
+                &self.cancel_requested.load(Ordering::Acquire),
+            )
             .finish()
     }
 }
@@ -205,6 +229,8 @@ impl RelayHost {
             hosts,
             dispatches: Vec::new(),
             event_sink: None,
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            cancel_notify: Arc::new(Notify::new()),
         })
     }
 
@@ -263,6 +289,13 @@ impl RelayHost {
         &mut self.relay
     }
 
+    pub fn cancellation(&self) -> RelayCancellation {
+        RelayCancellation {
+            requested: Arc::clone(&self.cancel_requested),
+            notify: Arc::clone(&self.cancel_notify),
+        }
+    }
+
     /// Prompts sent to adapters, in causal dispatch order. This is useful to
     /// diagnostics and makes the context-routing boundary observable without
     /// exposing protocol-specific adapter internals.
@@ -303,16 +336,24 @@ impl RelayHost {
         self.dispatches.push((*slot, prompt));
         let mut response = String::new();
         loop {
-            let update = host
-                .next_update()
-                .await
-                .ok_or_else(|| AdapterError::Transport("adapter ended during turn".into()))??;
+            let update = tokio::select! {
+                update = host.next_update() => update
+                    .ok_or_else(|| AdapterError::Transport("adapter ended during turn".into()))??,
+                _ = self.cancel_notify.notified() => {
+                    self.cancel_requested.store(false, Ordering::Release);
+                    let _ = host.cancel().await?;
+                    return Err(AdapterError::Transport("relay turn cancelled".into()));
+                }
+            };
             if let Some(sink) = &self.event_sink {
                 sink(update.event.clone());
             }
             match &update.event {
                 AgentEvent::Text { text, .. } => response.push_str(text),
-                AgentEvent::TurnComplete { .. } => break,
+                AgentEvent::TurnComplete { .. } => {
+                    self.cancel_requested.store(false, Ordering::Release);
+                    break;
+                }
                 AgentEvent::Failed { detail, .. } => {
                     return Err(AdapterError::Transport(detail.clone()));
                 }
@@ -1187,6 +1228,7 @@ fn rpc_id_to_string(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use codeswarm_core::TerminalEvent;
     use codeswarm_core::{AgentCapabilities, AgentEvent, EventLog, PermissionAnswer, ToolStatus};
 
@@ -1195,6 +1237,61 @@ mod tests {
         parse_agy_line,
     };
     use serde_json::Value;
+
+    #[derive(Debug)]
+    struct PendingAdapter {
+        slot: usize,
+    }
+
+    #[async_trait]
+    impl AgentAdapter for PendingAdapter {
+        fn slot(&self) -> usize {
+            self.slot
+        }
+
+        fn capabilities(&self) -> AgentCapabilities {
+            AgentCapabilities {
+                supports_cancel: true,
+                ..AgentCapabilities::default()
+            }
+        }
+
+        async fn start(&mut self) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn send_prompt(&mut self, _prompt: String) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn cancel(&mut self) -> super::AdapterResult<bool> {
+            Ok(true)
+        }
+
+        async fn answer_permission(
+            &mut self,
+            _request_id: String,
+            _answer: PermissionAnswer,
+        ) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn set_mode(&mut self, _mode: String) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn reload(&mut self) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn stop(&mut self) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn next_event(&mut self) -> Option<super::AdapterResult<AgentEvent>> {
+            std::future::pending().await
+        }
+    }
 
     #[test]
     fn parses_acp_text_without_ui_dependency() {
@@ -1533,6 +1630,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             [0, 1]
         );
+    }
+
+    #[tokio::test]
+    async fn relay_cancellation_interrupts_a_waiting_adapter_turn() {
+        let first = AdapterHost::new(Box::new(PendingAdapter { slot: 0 }), None);
+        let second = AdapterHost::new(Box::new(PendingAdapter { slot: 1 }), None);
+        let mut relay = super::RelayHost::new(vec![first, second], 4).expect("relay");
+        relay.start().await.expect("start");
+        let cancellation = relay.cancellation();
+        let turn = relay.run_turn("task", 0);
+        tokio::pin!(turn);
+        cancellation.request();
+        let error = turn.await.expect_err("cancellation should stop turn");
+        assert!(error.to_string().contains("relay turn cancelled"));
     }
 
     #[tokio::test]

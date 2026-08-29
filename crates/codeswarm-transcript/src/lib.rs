@@ -34,6 +34,7 @@ pub enum BlockKind {
 pub struct RenderRow {
     pub block_id: u64,
     pub kind: BlockKind,
+    pub first_in_block: bool,
     pub text: String,
 }
 
@@ -158,10 +159,11 @@ impl Transcript {
         for block in &self.blocks {
             self.block_starts.insert(block.id, self.rows.len());
             let source = display_source(block);
-            for line in wrap(&source, width) {
+            for (line_index, line) in wrap(&source, width).into_iter().enumerate() {
                 self.rows.push(RenderRow {
                     block_id: block.id,
                     kind: block.kind,
+                    first_in_block: line_index == 0,
                     text: line,
                 });
             }

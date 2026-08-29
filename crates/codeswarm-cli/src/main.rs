@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     io::stdout,
     path::PathBuf,
     sync::mpsc::{self, Receiver, Sender},
@@ -13,7 +14,9 @@ use codeswarm_core::PermissionAnswer;
 use codeswarm_core::launcher::{LaunchDecision, launch_decision};
 use codeswarm_core::{AgentEvent, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
-use codeswarm_tui::{App, LocalCommand, QueuedPrompt, render};
+use codeswarm_tui::{
+    App, Input, LocalCommand, PermissionAction, PermissionKey, PromptAction, QueuedPrompt, render,
+};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
@@ -67,6 +70,31 @@ fn dispatch_queued_prompt(
         return false;
     };
     controls.is_some_and(|controls| controls.send(control).is_ok())
+}
+
+fn dispatch_permission_action(
+    controls: Option<&tokio::sync::mpsc::UnboundedSender<AdapterControl>>,
+    action: PermissionAction,
+) -> bool {
+    let command = match action {
+        PermissionAction::Answer {
+            slot,
+            request_id,
+            option,
+            ..
+        } => AdapterControl::Permission {
+            slot,
+            request_id,
+            answer: PermissionAnswer::Selected { option_id: option },
+        },
+        PermissionAction::Cancel { slot, request_id } => AdapterControl::Permission {
+            slot,
+            request_id,
+            answer: PermissionAnswer::Cancelled,
+        },
+        PermissionAction::Ignored | PermissionAction::SelectionChanged { .. } => return false,
+    };
+    controls.is_some_and(|controls| controls.send(command).is_ok())
 }
 
 enum Launch {
@@ -340,10 +368,14 @@ fn run_agy_command(
     prompt: Option<String>,
     command: &str,
 ) -> std::io::Result<()> {
+    let initial_prompt = prompt.clone();
     let (events, controls) = spawn_agy_command(prompt, command.to_owned());
     let mut app = App::default();
     app.set_agent_name(0, display_agent_name(command));
     app.set_header(command, "starting");
+    if let Some(prompt) = initial_prompt {
+        app.record_human_message(&prompt, false);
+    }
     run_terminal(terminal, &mut app, Some(events), Some(controls), None)
 }
 
@@ -360,10 +392,14 @@ fn run_acp_program(
     program: String,
     prompt: Option<String>,
 ) -> std::io::Result<()> {
+    let initial_prompt = prompt.clone();
     let (events, controls) = spawn_acp(program.clone(), prompt);
     let mut app = App::default();
     app.set_agent_name(0, display_agent_name(&program));
     app.set_header(program, "starting");
+    if let Some(prompt) = initial_prompt {
+        app.record_human_message(&prompt, false);
+    }
     run_terminal(terminal, &mut app, Some(events), Some(controls), None)
 }
 
@@ -386,6 +422,9 @@ fn run_roster(
             AgentSpec::Agy(command) | AgentSpec::Acp(command) => command,
         };
         app.set_agent_name(slot, display_agent_name(name));
+    }
+    if let Some(prompt) = prompt.as_ref() {
+        app.record_human_message(prompt, false);
     }
     let (events, controls) = spawn_relay(specs, prompt, first_slot, max_rounds);
     app.set_header("CodeSwarm roster", "starting");
@@ -580,6 +619,37 @@ fn spawn_relay(
     (receiver, controls)
 }
 
+async fn run_relay_turn_with_controls(
+    relay: &mut RelayHost,
+    controls: &mut tokio::sync::mpsc::UnboundedReceiver<AdapterControl>,
+    sender: &Sender<AdapterResult<AgentEvent>>,
+    task: String,
+    first_slot: usize,
+) -> (bool, Vec<AdapterControl>) {
+    let cancellation = relay.cancellation();
+    let turn = relay.run_turn(task, first_slot);
+    tokio::pin!(turn);
+    let mut deferred = Vec::new();
+    let mut stopping = false;
+    let result = loop {
+        tokio::select! {
+            result = &mut turn => break result,
+            command = controls.recv(), if !stopping => match command {
+                Some(AdapterControl::Cancel) => cancellation.request(),
+                Some(AdapterControl::Stop) | None => {
+                    stopping = true;
+                    cancellation.request();
+                }
+                Some(command) => deferred.push(command),
+            },
+        }
+    };
+    if let Err(error) = result {
+        let _ = sender.send(Err(error));
+    }
+    (stopping, deferred)
+}
+
 fn run_relay_task(
     sender: Sender<AdapterResult<AgentEvent>>,
     mut controls: tokio::sync::mpsc::UnboundedReceiver<AdapterControl>,
@@ -631,14 +701,28 @@ fn run_relay_task(
             let _ = sender.send(Err(error));
             return;
         }
-        if let Some(prompt) = prompt
-            && let Err(error) = relay.run_turn(prompt, first_slot).await
-        {
-            let _ = sender.send(Err(error));
-            return;
+        let mut pending_commands = VecDeque::new();
+        if let Some(prompt) = prompt {
+            let (stopping, deferred) = run_relay_turn_with_controls(
+                &mut relay,
+                &mut controls,
+                &sender,
+                prompt,
+                first_slot,
+            )
+            .await;
+            if stopping {
+                let _ = relay.stop().await;
+                return;
+            }
+            pending_commands.extend(deferred);
         }
         loop {
-            match controls.recv().await {
+            let command = match pending_commands.pop_front() {
+                Some(command) => Some(command),
+                None => controls.recv().await,
+            };
+            match command {
                 Some(AdapterControl::Prompt(prompt)) => {
                     let selected = first_slot;
                     if !relay.relay_mut().enqueue_human(prompt, Some(selected)) {
@@ -647,8 +731,17 @@ fn run_relay_task(
                         )));
                         continue;
                     }
-                    if let Err(error) = relay.run_turn("", selected).await {
-                        let _ = sender.send(Err(error));
+                    let (stopping, deferred) = run_relay_turn_with_controls(
+                        &mut relay,
+                        &mut controls,
+                        &sender,
+                        "".into(),
+                        selected,
+                    )
+                    .await;
+                    pending_commands.extend(deferred);
+                    if stopping {
+                        break;
                     }
                 }
                 Some(AdapterControl::Queue { slot, prompt }) => {
@@ -658,8 +751,17 @@ fn run_relay_task(
                         )));
                         continue;
                     }
-                    if let Err(error) = relay.run_turn("", slot).await {
-                        let _ = sender.send(Err(error));
+                    let (stopping, deferred) = run_relay_turn_with_controls(
+                        &mut relay,
+                        &mut controls,
+                        &sender,
+                        "".into(),
+                        slot,
+                    )
+                    .await;
+                    pending_commands.extend(deferred);
+                    if stopping {
+                        break;
                     }
                 }
                 Some(AdapterControl::Direct { slot, prompt }) => {
@@ -676,8 +778,17 @@ fn run_relay_task(
                             continue;
                         }
                     }
-                    if let Err(error) = relay.run_turn("", slot).await {
-                        let _ = sender.send(Err(error));
+                    let (stopping, deferred) = run_relay_turn_with_controls(
+                        &mut relay,
+                        &mut controls,
+                        &sender,
+                        "".into(),
+                        slot,
+                    )
+                    .await;
+                    pending_commands.extend(deferred);
+                    if stopping {
+                        break;
                     }
                 }
                 Some(AdapterControl::Permission {
@@ -692,7 +803,7 @@ fn run_relay_task(
                 Some(AdapterControl::Pause) => relay.pause(),
                 Some(AdapterControl::Resume) => relay.resume(),
                 Some(AdapterControl::Cancel) => {
-                    let _ = sender.send(Err(AdapterError::Unsupported("relay cancellation")));
+                    let _ = sender.send(Err(AdapterError::Unsupported("no active relay turn")));
                 }
                 Some(AdapterControl::Stop) | None => break,
             }
@@ -708,6 +819,9 @@ fn run_terminal(
     controls: Option<tokio::sync::mpsc::UnboundedSender<AdapterControl>>,
     selected_slot: Option<usize>,
 ) -> std::io::Result<()> {
+    app.set_prompt_completions([
+        "/cancel", "/clear", "/close", "/config", "/exit", "/help", "/pause", "/quit", "/resume",
+    ]);
     let mut selected_slot = selected_slot;
     let event_log = event_log().ok();
     let mut pending_permission: Option<(usize, String)> = None;
@@ -747,7 +861,12 @@ fn run_terminal(
                             app.status = "queued prompt dispatched".into();
                         }
                     }
-                    Err(error) => app.set_header("Agent", error.to_string()),
+                    Err(error) => {
+                        turn_active = false;
+                        pending_permission = None;
+                        let active_agent = app.active_agent.clone();
+                        app.set_header(active_agent, format!("error: {error}"));
+                    }
                 }
             }
         }
@@ -762,11 +881,35 @@ fn run_terminal(
             let size = terminal.size()?;
             let interaction_height = size.height.min(24) as usize;
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => {
+                KeyCode::Char('q') if controls.is_none() && app.prompt.is_empty() => {
                     if let Some(controls) = &controls {
                         let _ = controls.send(AdapterControl::Stop);
                     }
                     return Ok(());
+                }
+                KeyCode::Esc if pending_permission.is_none() => {
+                    if let Some(controls) = &controls {
+                        let _ = controls.send(AdapterControl::Stop);
+                    }
+                    return Ok(());
+                }
+                KeyCode::Esc if pending_permission.is_some() => {
+                    let action = app.handle_permission_key(PermissionKey::Cancel);
+                    if dispatch_permission_action(controls.as_ref(), action) {
+                        pending_permission = None;
+                    }
+                }
+                KeyCode::Up if pending_permission.is_some() => {
+                    let _ = app.handle_permission_key(PermissionKey::Up);
+                }
+                KeyCode::Down if pending_permission.is_some() => {
+                    let _ = app.handle_permission_key(PermissionKey::Down);
+                }
+                KeyCode::Enter if pending_permission.is_some() => {
+                    let action = app.handle_permission_key(PermissionKey::Confirm);
+                    if dispatch_permission_action(controls.as_ref(), action) {
+                        pending_permission = None;
+                    }
                 }
                 KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     if app.cancel_selected_queued().is_some() {
@@ -785,25 +928,53 @@ fn run_terminal(
                         app.status = "selected next queued prompt".into();
                     }
                 }
-                KeyCode::Down | KeyCode::Char('j') => app.scroll_by(
-                    1,
-                    size.width as usize,
-                    app.content_height(interaction_height),
-                ),
-                KeyCode::Up | KeyCode::Char('k') => app.scroll_by(
-                    -1,
-                    size.width as usize,
-                    app.content_height(interaction_height),
-                ),
+                KeyCode::Down => {
+                    if matches!(
+                        app.handle_prompt_input(Input::from(key)),
+                        PromptAction::Ignored
+                    ) {
+                        app.scroll_by(
+                            1,
+                            size.width as usize,
+                            app.content_height(interaction_height),
+                        );
+                    }
+                }
+                KeyCode::Up => {
+                    if matches!(
+                        app.handle_prompt_input(Input::from(key)),
+                        PromptAction::Ignored
+                    ) {
+                        app.scroll_by(
+                            -1,
+                            size.width as usize,
+                            app.content_height(interaction_height),
+                        );
+                    }
+                }
                 KeyCode::End => {
                     app.follow_tail(size.width as usize, app.content_height(interaction_height))
                 }
                 KeyCode::Tab => {
-                    if app.toggle_focused_detail().is_some() {
+                    if app.prompt.trim_start().starts_with('/') {
+                        if let PromptAction::Completion { index, total, .. } =
+                            app.handle_prompt_input(Input::from(key))
+                        {
+                            app.status = format!("command completion {}/{}", index + 1, total);
+                        }
+                    } else if app.toggle_focused_detail().is_some() {
                         app.status = "detail toggled".into();
                     }
                 }
-                KeyCode::Char('?') | KeyCode::F(1) => {
+                KeyCode::Char('?') if app.prompt.is_empty() => {
+                    let visible = app.toggle_keyboard_help();
+                    app.status = if visible {
+                        "keyboard help shown".into()
+                    } else {
+                        "keyboard help hidden".into()
+                    };
+                }
+                KeyCode::F(1) => {
                     let visible = app.toggle_keyboard_help();
                     app.status = if visible {
                         "keyboard help shown".into()
@@ -822,56 +993,6 @@ fn run_terminal(
                         app.status = format!("selected agent {}", slot - 1);
                     }
                 }
-                KeyCode::Enter if app.prompt.trim_start().starts_with('/') => {
-                    let command = std::mem::take(&mut app.prompt);
-                    if let Some(local) = app.handle_local_command(&command) {
-                        match local {
-                            LocalCommand::Handled => {}
-                            LocalCommand::Close => {
-                                if let Some(controls) = &controls {
-                                    let _ = controls.send(AdapterControl::Stop);
-                                }
-                                return Ok(());
-                            }
-                            LocalCommand::Cancel => {
-                                if let Some(controls) = &controls {
-                                    let _ = controls.send(AdapterControl::Cancel);
-                                }
-                            }
-                            LocalCommand::Pause => {
-                                if let Some(controls) = &controls {
-                                    let _ = controls.send(AdapterControl::Pause);
-                                }
-                            }
-                            LocalCommand::Resume => {
-                                if let Some(controls) = &controls {
-                                    let _ = controls.send(AdapterControl::Resume);
-                                }
-                            }
-                        }
-                    }
-                }
-                KeyCode::Enter if pending_permission.is_some() && !app.prompt.trim().is_empty() => {
-                    if let Some(controls) = &controls {
-                        let prompt = std::mem::take(&mut app.prompt);
-                        let answer = if prompt.eq_ignore_ascii_case("/cancel")
-                            || prompt.eq_ignore_ascii_case("/deny")
-                        {
-                            PermissionAnswer::Cancelled
-                        } else {
-                            PermissionAnswer::Selected { option_id: prompt }
-                        };
-                        let (slot, request_id) = pending_permission
-                            .take()
-                            .expect("permission guard ensures pending request");
-                        let _ = controls.send(AdapterControl::Permission {
-                            slot,
-                            request_id,
-                            answer,
-                        });
-                        app.status = "permission answered".into();
-                    }
-                }
                 KeyCode::Enter
                     if selected_slot.is_some()
                         && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -880,9 +1001,10 @@ fn run_terminal(
                     if let Some(controls) = &controls {
                         let prompt = app.prompt.clone();
                         let slot = selected_slot.expect("guarded selected slot");
+                        app.record_human_message(&prompt, true);
                         if turn_active {
                             if app.queue_prompt(prompt, Some(slot), true).is_some() {
-                                app.prompt.clear();
+                                let _ = app.take_prompt();
                                 app.status = "direct prompt queued".into();
                             } else {
                                 app.status = "queue full or prompt empty".into();
@@ -890,7 +1012,7 @@ fn run_terminal(
                         } else if controls
                             .send(AdapterControl::Direct {
                                 slot,
-                                prompt: std::mem::take(&mut app.prompt),
+                                prompt: app.take_prompt(),
                             })
                             .is_ok()
                         {
@@ -899,28 +1021,55 @@ fn run_terminal(
                         }
                     }
                 }
-                KeyCode::Enter if !app.prompt.trim().is_empty() => {
-                    if let Some(controls) = &controls {
-                        let prompt = app.prompt.clone();
-                        if turn_active {
-                            if app.queue_prompt(prompt, selected_slot, false).is_some() {
-                                app.prompt.clear();
-                                app.status = "prompt queued".into();
-                            } else {
-                                app.status = "queue full or prompt empty".into();
+                KeyCode::Enter => {
+                    if let PromptAction::Submit(prompt) = app.handle_prompt_input(Input::from(key))
+                    {
+                        if let Some(local) = app.handle_local_command(&prompt) {
+                            match local {
+                                LocalCommand::Handled => {}
+                                LocalCommand::Close => {
+                                    if let Some(controls) = &controls {
+                                        let _ = controls.send(AdapterControl::Stop);
+                                    }
+                                    return Ok(());
+                                }
+                                LocalCommand::Cancel => {
+                                    if let Some(controls) = &controls {
+                                        let _ = controls.send(AdapterControl::Cancel);
+                                    }
+                                    app.status = "cancelling".into();
+                                }
+                                LocalCommand::Pause => {
+                                    if let Some(controls) = &controls {
+                                        let _ = controls.send(AdapterControl::Pause);
+                                    }
+                                    app.status = "relay paused".into();
+                                }
+                                LocalCommand::Resume => {
+                                    if let Some(controls) = &controls {
+                                        let _ = controls.send(AdapterControl::Resume);
+                                    }
+                                    app.status = "relay resumed".into();
+                                }
                             }
-                        } else {
-                            let command = if let Some(slot) = selected_slot {
-                                AdapterControl::Queue {
-                                    slot,
-                                    prompt: std::mem::take(&mut app.prompt),
+                        } else if let Some(controls) = &controls {
+                            app.record_human_message(&prompt, false);
+                            if turn_active {
+                                if app.queue_prompt(prompt, selected_slot, false).is_some() {
+                                    app.status = "prompt queued".into();
+                                } else {
+                                    app.status = "queue full or prompt empty".into();
                                 }
                             } else {
-                                AdapterControl::Prompt(std::mem::take(&mut app.prompt))
-                            };
-                            if controls.send(command).is_ok() {
-                                turn_active = true;
-                                app.status = "queued".into();
+                                let command = if let Some(slot) = selected_slot {
+                                    AdapterControl::Queue { slot, prompt }
+                                } else {
+                                    AdapterControl::Prompt(prompt)
+                                };
+                                if controls.send(command).is_ok() {
+                                    turn_active = true;
+                                    app.status = "queued".into();
+                                }
                             }
                         }
                     }
@@ -947,11 +1096,12 @@ fn run_terminal(
                         app.status = "cancelling".into();
                     }
                 }
-                KeyCode::Char(character) => app.prompt.push(character),
-                KeyCode::Backspace => {
-                    app.prompt.pop();
-                }
-                _ => {}
+                _ => match app.handle_prompt_input(Input::from(key)) {
+                    PromptAction::Completion { index, total, .. } => {
+                        app.status = format!("command completion {}/{}", index + 1, total);
+                    }
+                    PromptAction::Changed | PromptAction::Ignored | PromptAction::Submit(_) => {}
+                },
             }
         }
     }
@@ -969,7 +1119,12 @@ fn event_log() -> std::io::Result<EventLog> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentSpec, Launch, bare_launch_from_settings, parse_launch};
+    use super::{
+        AdapterControl, AgentSpec, Launch, bare_launch_from_settings, dispatch_permission_action,
+        dispatch_queued_prompt, parse_launch,
+    };
+    use codeswarm_core::PermissionAnswer;
+    use codeswarm_tui::{PermissionAction, QueuedPrompt};
 
     #[test]
     fn parses_native_agent_prompt_without_treating_it_as_acp() {
@@ -1050,5 +1205,39 @@ mod tests {
             bare_launch_from_settings(r#"{"launcher":{"roster":"removed.ai"}}"#),
             Launch::Store
         ));
+    }
+
+    #[tokio::test]
+    async fn permission_selection_routes_the_selected_option_to_the_adapter() {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        assert!(dispatch_permission_action(
+            Some(&sender),
+            PermissionAction::Answer {
+                slot: 2,
+                request_id: "request-7".into(),
+                option_index: 1,
+                option: "allow-once".into(),
+            }
+        ));
+        assert!(matches!(
+            receiver.recv().await,
+            Some(AdapterControl::Permission {
+                slot: 2,
+                request_id,
+                answer: PermissionAnswer::Selected { option_id },
+            }) if request_id == "request-7" && option_id == "allow-once"
+        ));
+    }
+
+    #[test]
+    fn queued_direct_prompt_without_target_is_rejected_without_panic() {
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let prompt = QueuedPrompt {
+            id: 1,
+            prompt: "private check".into(),
+            target: None,
+            direct: true,
+        };
+        assert!(!dispatch_queued_prompt(Some(&sender), &prompt));
     }
 }

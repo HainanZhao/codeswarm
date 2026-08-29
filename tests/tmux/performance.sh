@@ -141,7 +141,7 @@ snapshot="$(capture)"
 grep -Fq "CodeSwarm preview" <<<"$snapshot"
 echo "resize storm: ${resize_elapsed_ms}ms (budget <=${resize_budget_ms}ms; final=${final_geometry})"
 
-tmux -L "$socket_name" send-keys -t "$pane_target" q
+tmux -L "$socket_name" send-keys -t "$pane_target" Escape
 for _ in $(seq 1 50); do
   if ! tmux -L "$socket_name" has-session -t "$session_name" 2>/dev/null; then
     echo "tmux performance harness passed"

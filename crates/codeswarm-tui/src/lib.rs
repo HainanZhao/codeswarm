@@ -517,6 +517,15 @@ impl App {
         self.agent_names.insert(slot, name.into());
     }
 
+    pub fn record_human_message(&mut self, prompt: &str, direct: bool) {
+        let prefix = if direct { "You → direct: " } else { "You: " };
+        self.transcript.append(
+            codeswarm_transcript::BlockKind::Human,
+            format!("{prefix}{prompt}"),
+            false,
+        );
+    }
+
     pub fn agent_name(&self, slot: usize) -> String {
         self.agent_names
             .get(&slot)
