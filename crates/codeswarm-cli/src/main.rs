@@ -1415,10 +1415,15 @@ fn run_terminal(
 ) -> std::io::Result<()> {
     load_ui_preferences(app);
     app.load_prompt_history(load_prompt_history());
-    app.set_prompt_completions([
+    let mut completion_candidates = [
         "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/diff", "/exit",
         "/export", "/help", "/mode", "/pause", "/quit", "/reload", "/drop", "/resume",
-    ]);
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<Vec<_>>();
+    completion_candidates.extend(workspace_completion_candidates());
+    app.set_prompt_completions(completion_candidates);
     let mut selected_slot = selected_slot;
     let event_log = event_log().ok();
     let (shell_sender, shell_receiver) = mpsc::channel::<AdapterResult<AgentEvent>>();
@@ -1648,7 +1653,8 @@ fn run_terminal(
                         app.follow_tail(size.width as usize, app.content_height(interaction_height))
                     }
                     KeyCode::Tab => {
-                        if app.prompt.trim_start().starts_with('/') {
+                        let completion_token = app.prompt.split_whitespace().last().unwrap_or("");
+                        if completion_token.starts_with('/') || completion_token.starts_with('@') {
                             if let PromptAction::Completion { index, total, .. } =
                                 app.handle_prompt_input(Input::from(key))
                             {
@@ -2003,6 +2009,46 @@ fn prompt_history_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .map(|root| root.join("codeswarm").join("prompt-history.jsonl"))
+}
+
+/// Collect a bounded, symlink-free candidate set for `@path` completion.
+/// Discovery is intentionally shallow and capped so startup remains cheap in
+/// large repositories; the existing editor performs prefix matching from its
+/// in-memory candidate cache.
+fn workspace_completion_candidates() -> Vec<String> {
+    let root = std::env::current_dir().ok();
+    let Some(root) = root else { return Vec::new() };
+    let mut pending = vec![(root.clone(), PathBuf::new(), 0_u8)];
+    let mut candidates = Vec::new();
+    while let Some((directory, relative, depth)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if candidates.len() >= 512 {
+                return candidates;
+            }
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            let name = entry.file_name();
+            if name == ".git" || name == "node_modules" || name == "target" {
+                continue;
+            }
+            let child_relative = relative.join(&name);
+            let display = child_relative.to_string_lossy().replace('\\', "/");
+            candidates.push(format!("@{display}"));
+            if file_type.is_dir() && depth < 3 {
+                pending.push((entry.path(), child_relative, depth + 1));
+            }
+        }
+    }
+    candidates.sort();
+    candidates
 }
 
 fn load_prompt_history() -> Vec<String> {

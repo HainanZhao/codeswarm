@@ -509,7 +509,7 @@ impl PromptEditor {
         let prefix = chars[start..col.min(chars.len())]
             .iter()
             .collect::<String>();
-        prefix.starts_with('/').then_some((start, prefix))
+        (prefix.starts_with('/') || prefix.starts_with('@')).then_some((start, prefix))
     }
 
     fn replace_token(&mut self, start: usize, replacement: &str) {
@@ -2782,6 +2782,18 @@ mod tests {
             PromptAction::Completion { value, .. } if value == "/help"
         ));
         assert_eq!(app.prompt, "/help");
+    }
+
+    #[test]
+    fn prompt_tab_completion_supports_workspace_at_paths() {
+        let mut app = App::default();
+        app.set_prompt_completions(["@src/main.rs", "@src/lib.rs"]);
+        app.handle_prompt_input(key(Key::Char('@')));
+        app.handle_prompt_input(key(Key::Char('s')));
+        assert!(matches!(
+            app.handle_prompt_input(key(Key::Tab)),
+            PromptAction::Completion { value, .. } if value == "@src/main.rs"
+        ));
     }
 
     #[test]

@@ -56,6 +56,7 @@ bounded to preserve tmux responsiveness.
 - `Up`/`Down` scroll the transcript; `End` follows the live tail.
 - On an empty single-line prompt, `Up`/`Down` browse the last 50 persisted prompts.
 - `Tab` completes a slash command; `F1` or `?` toggles help.
+- `Tab` also completes bounded workspace paths after `@`.
 - `Ctrl+Enter` sends to the selected roster agent.
 - `Ctrl+C` cancels active work; while idle it exits.
 - `Esc` closes the config panel or exits the terminal surface.
