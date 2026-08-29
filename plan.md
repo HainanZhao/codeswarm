@@ -71,6 +71,8 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 - [x] Added \`AdapterHost\`, which consumes ACP/native adapter events, reduces
   core session state, persists normalized events, and exposes reducer effects
   without coupling the UI to process I/O.
+- [x] Added a latest-state frame scheduler that drops stale terminal deltas
+  after backpressure and requires a complete repaint before deltas resume.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
   \`make rust-tmux\`.
 
