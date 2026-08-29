@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use codeswarm_adapters::{AdapterResult, AgentAdapter, AgyAdapter};
+use codeswarm_adapters::{AcpAdapter, AdapterResult, AgentAdapter, AgyAdapter};
 use codeswarm_core::AgentEvent;
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{App, render};
@@ -20,6 +20,7 @@ use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
 enum Launch {
     Preview,
     Agy { prompt: String },
+    Acp { program: String, prompt: String },
 }
 
 fn main() -> std::io::Result<()> {
@@ -27,7 +28,7 @@ fn main() -> std::io::Result<()> {
     let alternate_screen = arguments.iter().any(|argument| argument == "--alt-screen");
     let launch = parse_launch(&arguments);
     let Some(launch) = launch else {
-        println!("CodeSwarm Rust preview. Use --demo or --agy PROMPT.");
+        println!("CodeSwarm Rust preview. Use --demo, --agy PROMPT, or --acp PROGRAM PROMPT.");
         return Ok(());
     };
 
@@ -46,6 +47,7 @@ fn main() -> std::io::Result<()> {
     let result = match launch {
         Launch::Preview => run_preview(&mut terminal),
         Launch::Agy { prompt } => run_agy(&mut terminal, prompt),
+        Launch::Acp { program, prompt } => run_acp(&mut terminal, program, prompt),
     };
     disable_raw_mode()?;
     if alternate_screen {
@@ -59,12 +61,18 @@ fn parse_launch(arguments: &[String]) -> Option<Launch> {
     if arguments.iter().any(|argument| argument == "--demo") {
         return Some(Launch::Preview);
     }
-    let index = arguments.iter().position(|argument| argument == "--agy")?;
-    let prompt = arguments
-        .get(index + 1)
-        .filter(|prompt| !prompt.starts_with('-'))?
-        .clone();
-    Some(Launch::Agy { prompt })
+    if let Some(index) = arguments.iter().position(|argument| argument == "--agy")
+        && let Some(prompt) = arguments
+            .get(index + 1)
+            .filter(|prompt| !prompt.starts_with('-'))
+            .cloned()
+    {
+        return Some(Launch::Agy { prompt });
+    }
+    let index = arguments.iter().position(|argument| argument == "--acp")?;
+    let program = arguments.get(index + 1)?.clone();
+    let prompt = arguments.get(index + 2)?.clone();
+    Some(Launch::Acp { program, prompt })
 }
 
 fn run_preview(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
@@ -93,6 +101,17 @@ fn run_agy(
     run_terminal(terminal, &mut app, Some(events))
 }
 
+fn run_acp(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    program: String,
+    prompt: String,
+) -> std::io::Result<()> {
+    let events = spawn_acp(program.clone(), prompt);
+    let mut app = App::default();
+    app.set_header(program, "starting");
+    run_terminal(terminal, &mut app, Some(events))
+}
+
 fn spawn_agy(prompt: String) -> Receiver<AdapterResult<AgentEvent>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || run_agy_task(sender, prompt));
@@ -115,6 +134,46 @@ fn run_agy_task(sender: Sender<AdapterResult<AgentEvent>>, prompt: String) {
     runtime.block_on(async move {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let mut adapter = AgyAdapter::new(0, cwd, "agy");
+        if let Err(error) = adapter.start().await {
+            let _ = sender.send(Err(error));
+            return;
+        }
+        if let Err(error) = adapter.send_prompt(prompt).await {
+            let _ = sender.send(Err(error));
+            return;
+        }
+        while let Some(event) = adapter.next_event().await {
+            let complete = matches!(event, Ok(AgentEvent::TurnComplete { .. }));
+            if sender.send(event).is_err() || complete {
+                break;
+            }
+        }
+        let _ = adapter.stop().await;
+    });
+}
+
+fn spawn_acp(program: String, prompt: String) -> Receiver<AdapterResult<AgentEvent>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || run_acp_task(sender, program, prompt));
+    receiver
+}
+
+fn run_acp_task(sender: Sender<AdapterResult<AgentEvent>>, program: String, prompt: String) {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = sender.send(Err(codeswarm_adapters::AdapterError::Transport(
+                error.to_string(),
+            )));
+            return;
+        }
+    };
+    runtime.block_on(async move {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mut adapter = AcpAdapter::new(0, cwd, program, Vec::new());
         if let Err(error) = adapter.start().await {
             let _ = sender.send(Err(error));
             return;
@@ -190,6 +249,14 @@ mod tests {
         assert!(matches!(
             parse_launch(&["--agy".into(), "summarize".into()]),
             Some(Launch::Agy { prompt }) if prompt == "summarize"
+        ));
+    }
+
+    #[test]
+    fn parses_acp_program_and_prompt() {
+        assert!(matches!(
+            parse_launch(&["--acp".into(), "codex-acp".into(), "summarize".into()]),
+            Some(Launch::Acp { program, prompt }) if program == "codex-acp" && prompt == "summarize"
         ));
     }
 }
