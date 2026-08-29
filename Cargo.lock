@@ -159,10 +159,13 @@ dependencies = [
 name = "codeswarm-cli"
 version = "0.1.0"
 dependencies = [
+ "codeswarm-adapters",
+ "codeswarm-core",
  "codeswarm-transcript",
  "codeswarm-tui",
  "crossterm",
  "ratatui",
+ "tokio",
 ]
 
 [[package]]

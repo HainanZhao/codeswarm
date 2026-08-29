@@ -10,10 +10,13 @@ name = "codeswarm"
 path = "src/main.rs"
 
 [dependencies]
+codeswarm-adapters = { path = "../codeswarm-adapters" }
+codeswarm-core = { path = "../codeswarm-core" }
 codeswarm-transcript = { path = "../codeswarm-transcript" }
 codeswarm-tui = { path = "../codeswarm-tui" }
 crossterm.workspace = true
 ratatui.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true
