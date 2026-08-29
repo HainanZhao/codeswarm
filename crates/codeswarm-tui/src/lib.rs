@@ -505,6 +505,7 @@ pub struct App {
     store_status: String,
     prompt_editor: PromptEditor,
     agent_names: BTreeMap<usize, String>,
+    agent_states: BTreeMap<usize, String>,
     queued_prompts: VecDeque<QueuedPrompt>,
     next_queue_id: u64,
     selected_queue: Option<usize>,
@@ -534,6 +535,7 @@ impl Default for App {
             store_status: String::new(),
             prompt_editor: PromptEditor::default(),
             agent_names: BTreeMap::new(),
+            agent_states: BTreeMap::new(),
             queued_prompts: VecDeque::new(),
             next_queue_id: 0,
             selected_queue: None,
@@ -785,6 +787,9 @@ impl App {
 
     pub fn set_agent_name(&mut self, slot: usize, name: impl Into<String>) {
         self.agent_names.insert(slot, name.into());
+        self.agent_states
+            .entry(slot)
+            .or_insert_with(|| "starting".into());
     }
 
     pub fn record_human_message(&mut self, prompt: &str, direct: bool) {
@@ -816,6 +821,28 @@ impl App {
             return String::new();
         }
         compact_label(&names.join(" · "), 42)
+    }
+
+    pub fn active_agents_summary(&self) -> String {
+        let summary = self
+            .agent_names
+            .iter()
+            .map(|(slot, name)| {
+                let state = self
+                    .agent_states
+                    .get(slot)
+                    .map(String::as_str)
+                    .unwrap_or("starting");
+                format!(
+                    "{} {} · {}",
+                    if state == "working" { "●" } else { "○" },
+                    name,
+                    state
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("   ");
+        compact_label(&summary, 80)
     }
 
     pub fn set_header(&mut self, active_agent: impl Into<String>, status: impl Into<String>) {
@@ -865,6 +892,7 @@ impl App {
         match event {
             AgentEvent::Ready { slot, .. } => {
                 self.active_agent = self.agent_name(*slot);
+                self.agent_states.insert(*slot, "ready".into());
                 self.status = "ready".into();
             }
             AgentEvent::ModesReplaced { .. } => {}
@@ -881,6 +909,7 @@ impl App {
                 });
                 self.transcript.extend(block, text);
                 self.active_agent = self.agent_name(*slot);
+                self.agent_states.insert(*slot, "working".into());
                 self.status = "streaming".into();
             }
             AgentEvent::Thought { slot, text } => {
@@ -896,6 +925,7 @@ impl App {
                 });
                 self.transcript.extend(id, text);
                 self.active_agent = self.agent_name(*slot);
+                self.agent_states.insert(*slot, "working".into());
                 self.status = "thinking".into();
                 self.focused_detail = Some(id);
             }
@@ -915,6 +945,7 @@ impl App {
             }
             AgentEvent::Permission { slot, request } => {
                 self.active_agent = self.agent_name(*slot);
+                self.agent_states.insert(*slot, "working".into());
                 self.status = format!("permission: {}", request.title);
                 self.permission = Some(PermissionPrompt::new(
                     *slot,
@@ -943,6 +974,7 @@ impl App {
                     text,
                     true,
                 ));
+                self.agent_states.insert(*slot, "working".into());
             }
             AgentEvent::TurnComplete { slot } => {
                 self.streaming_blocks
@@ -957,6 +989,7 @@ impl App {
                     self.permission = None;
                 }
                 self.status = "idle".into();
+                self.agent_states.insert(*slot, "ready".into());
             }
             AgentEvent::Failed {
                 slot,
@@ -975,6 +1008,7 @@ impl App {
                     self.permission = None;
                 }
                 self.active_agent = self.agent_name(*slot);
+                self.agent_states.insert(*slot, "error".into());
                 self.status = if *started {
                     format!("crashed: {detail}")
                 } else {
@@ -1197,7 +1231,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
     let total_height = usize::from(area.height);
-    let status_height = usize::from(area.height > 0);
+    let status_height = if area.height == 0 {
+        0
+    } else {
+        1 + usize::from(app.agent_names.len() > 1)
+    };
     let minimum_prompt_height = total_height.saturating_sub(status_height).min(2);
     let reserve_content =
         usize::from(total_height > status_height.saturating_add(minimum_prompt_height));
@@ -1283,7 +1321,33 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ]);
     Paragraph::new(status_line)
         .style(Style::default().bg(STATUS_BG))
-        .render(rows[1], frame.buffer_mut());
+        .render(
+            Rect::new(rows[1].x, rows[1].y, rows[1].width, 1),
+            frame.buffer_mut(),
+        );
+    if app.agent_names.len() > 1 && rows[1].height > 1 {
+        let mut active_spans = vec![Span::styled(" active: ", Style::default().fg(Color::Gray))];
+        for (index, (slot, name)) in app.agent_names.iter().enumerate() {
+            let state = app
+                .agent_states
+                .get(slot)
+                .map(String::as_str)
+                .unwrap_or("starting");
+            let marker = if state == "working" { "●" } else { "○" };
+            let separator = if index == 0 { "" } else { "   " };
+            active_spans.push(Span::styled(
+                format!("{separator}{marker} {name} · {state}"),
+                Style::default().fg(agent_header_color(name)),
+            ));
+        }
+        let active_line = Line::from(active_spans);
+        Paragraph::new(active_line)
+            .style(Style::default().bg(STATUS_BG))
+            .render(
+                Rect::new(rows[1].x, rows[1].y.saturating_add(1), rows[1].width, 1),
+                frame.buffer_mut(),
+            );
+    }
     if app.queued_count() > 0 {
         render_queue(frame.buffer_mut(), rows[2], app);
     }
@@ -1708,18 +1772,7 @@ fn render_permission(buffer: &mut Buffer, area: Rect, request: &PermissionPrompt
 
 fn render_transcript(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>) {
     let lines = if rows.is_empty() {
-        vec![
-            Line::styled(
-                "  No messages yet",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Line::styled(
-                "  Type a prompt below to start a conversation.",
-                Style::default().fg(Color::Gray),
-            ),
-        ]
+        Vec::new()
     } else {
         rows.into_iter()
             .map(|row| {
@@ -1735,6 +1788,17 @@ fn render_transcript(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>) {
                 } else {
                     "  "
                 };
+                if row.kind == codeswarm_transcript::BlockKind::Agent
+                    && row.first_in_block
+                    && let Some((speaker, body)) = row.text.split_once(": ")
+                {
+                    let color = agent_header_color(speaker);
+                    return Line::from(vec![
+                        Span::styled(marker, Style::default().fg(color).bold()),
+                        Span::styled(format!("{speaker}:"), Style::default().fg(color).bold()),
+                        Span::styled(format!(" {body}"), block_style(row.kind)),
+                    ]);
+                }
                 Line::from(vec![
                     Span::styled(marker, block_style(row.kind).add_modifier(Modifier::BOLD)),
                     Span::styled(row.text, block_style(row.kind)),
@@ -1752,6 +1816,21 @@ fn render_transcript(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>) {
                 .border_style(Style::default().fg(Color::Rgb(75, 95, 110))),
         )
         .render(area, buffer);
+}
+
+fn agent_header_color(name: &str) -> Color {
+    const COLORS: [Color; 6] = [
+        Color::LightBlue,
+        Color::LightGreen,
+        Color::LightYellow,
+        Color::LightMagenta,
+        Color::LightCyan,
+        Color::Magenta,
+    ];
+    let hash = name.bytes().fold(0usize, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(byte as usize)
+    });
+    COLORS[hash % COLORS.len()]
 }
 
 fn block_style(kind: codeswarm_transcript::BlockKind) -> Style {
@@ -1775,7 +1854,7 @@ mod tests {
 
     use super::{
         App, ConfigAction, ConfigKey, LocalCommand, PermissionAction, PermissionKey, PromptAction,
-        PromptEditor, StoreAction, StoreAgent, StoreKey, render,
+        PromptEditor, StoreAction, StoreAgent, StoreKey, agent_header_color, render,
     };
 
     fn key(key: Key) -> Input {
@@ -2008,7 +2087,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_transcript_explains_how_to_start() {
+    fn empty_transcript_stays_quiet() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut app = App::default();
@@ -2022,8 +2101,8 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("No messages yet"));
-        assert!(rendered.contains("Type a prompt below"));
+        assert!(!rendered.contains("No messages yet"));
+        assert!(!rendered.contains("Type a prompt below"));
     }
 
     #[test]
@@ -2103,6 +2182,15 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("Claude Code"), "rendered={rendered:?}");
         assert!(rendered.contains("Codex CLI"), "rendered={rendered:?}");
+    }
+
+    #[test]
+    fn agent_headers_use_deterministic_distinct_identity_colors() {
+        assert_eq!(
+            agent_header_color("Claude Code"),
+            agent_header_color("Claude Code")
+        );
+        assert_ne!(agent_header_color("a"), agent_header_color("b"));
     }
 
     #[test]

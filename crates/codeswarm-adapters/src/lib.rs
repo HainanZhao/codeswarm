@@ -16,7 +16,8 @@ use codeswarm_core::{
     AgentCapabilities, AgentEvent, Effect, EventLog, Mode, PermissionAnswer, PermissionRequest,
     RosterSlot, SessionState, TerminalEvent, ToolStatus, ToolUpdate, reduce,
     relay::{
-        CollaborationStrategy, DEFAULT_STOP_ACKNOWLEDGMENT, Relay, RelayDecision, strip_stop_token,
+        CollaborationStrategy, DEFAULT_STOP_ACKNOWLEDGMENT, Relay, RelayDecision, STOP_TOKEN,
+        strip_stop_token,
     },
 };
 use serde_json::Value;
@@ -52,6 +53,14 @@ impl std::fmt::Display for AdapterError {
 }
 
 impl std::error::Error for AdapterError {}
+
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
 
 /// Uniform control plane for ACP and custom command-line adapters.
 #[async_trait]
@@ -340,6 +349,18 @@ impl RelayHost {
         } else {
             format!("{prompt}\n\nPublic updates:\n{unseen}")
         };
+        let prompt = format!(
+            "{prompt}\n\n{}",
+            if *can_stop {
+                format!(
+                    "You are reviewing another agent. If no meaningful correction is needed,\nreply with an optional emoji followed by {STOP_TOKEN} on the final line.\nCodeSwarm hides the token and ends this review batch."
+                )
+            } else {
+                format!(
+                    "Do not use {STOP_TOKEN} on this turn. Your response must be offered to another agent for review."
+                )
+            }
+        );
         let host = self
             .hosts
             .get_mut(*slot)
@@ -347,6 +368,7 @@ impl RelayHost {
         host.send_prompt(prompt.clone()).await?;
         self.dispatches.push((*slot, prompt));
         let mut response = String::new();
+        let mut emitted_text = 0usize;
         loop {
             let update = tokio::select! {
                 update = host.next_update() => update
@@ -357,12 +379,22 @@ impl RelayHost {
                     return Err(AdapterError::Transport("relay turn cancelled".into()));
                 }
             };
-            if let Some(sink) = &self.event_sink {
-                sink(update.event.clone());
-            }
             match &update.event {
                 AgentEvent::Text { text, .. } => response.push_str(text),
                 AgentEvent::TurnComplete { .. } => {
+                    let visible_end = response.find(STOP_TOKEN).unwrap_or(response.len());
+                    let visible_end = floor_char_boundary(&response, visible_end);
+                    if emitted_text < visible_end
+                        && let Some(sink) = &self.event_sink
+                    {
+                        sink(AgentEvent::Text {
+                            slot: *slot,
+                            text: response[emitted_text..visible_end].to_owned(),
+                        });
+                    }
+                    if let Some(sink) = &self.event_sink {
+                        sink(update.event.clone());
+                    }
                     self.cancel_requested.store(false, Ordering::Release);
                     break;
                 }
@@ -370,6 +402,25 @@ impl RelayHost {
                     return Err(AdapterError::Transport(detail.clone()));
                 }
                 _ => {}
+            }
+            if let AgentEvent::Text { .. } = &update.event {
+                // Hold a short suffix until the next chunk so a stop token
+                // split across stream messages never leaks into the UI.
+                let visible_end = response
+                    .find(STOP_TOKEN)
+                    .unwrap_or_else(|| response.len().saturating_sub(STOP_TOKEN.len() - 1));
+                let visible_end = floor_char_boundary(&response, visible_end);
+                if emitted_text < visible_end {
+                    if let Some(sink) = &self.event_sink {
+                        sink(AgentEvent::Text {
+                            slot: *slot,
+                            text: response[emitted_text..visible_end].to_owned(),
+                        });
+                    }
+                    emitted_text = visible_end;
+                }
+            } else if let Some(sink) = &self.event_sink {
+                sink(update.event.clone());
             }
         }
         let (response, requested_stop) = strip_stop_token(&response);
@@ -1242,11 +1293,14 @@ fn rpc_id_to_string(value: &Value) -> String {
 mod tests {
     use async_trait::async_trait;
     use codeswarm_core::TerminalEvent;
-    use codeswarm_core::{AgentCapabilities, AgentEvent, EventLog, PermissionAnswer, ToolStatus};
+    use codeswarm_core::{
+        AgentCapabilities, AgentEvent, EventLog, PermissionAnswer, ToolStatus,
+        relay::{RelayDecision, STOP_TOKEN},
+    };
 
     use super::{
-        AcpAdapter, AdapterHost, AgentAdapter, AgyAdapter, ScriptedAdapter, parse_acp_notification,
-        parse_agy_line,
+        AcpAdapter, AdapterHost, AgentAdapter, AgyAdapter, RelayHost, ScriptedAdapter,
+        parse_acp_notification, parse_agy_line,
     };
     use serde_json::Value;
 
@@ -1642,6 +1696,99 @@ mod tests {
                 .collect::<Vec<_>>(),
             [0, 1]
         );
+        assert!(relay.dispatches()[1].1.contains(STOP_TOKEN));
+        assert!(relay.dispatches()[0].1.contains("Do not use"));
+    }
+
+    #[tokio::test]
+    async fn reviewer_stop_token_ends_the_automatic_relay_sequence() {
+        let first = ScriptedAdapter::new(
+            0,
+            AgentCapabilities::default(),
+            [
+                AgentEvent::Text {
+                    slot: 0,
+                    text: "done".into(),
+                },
+                AgentEvent::TurnComplete { slot: 0 },
+            ],
+        );
+        let reviewer = ScriptedAdapter::new(
+            1,
+            AgentCapabilities::default(),
+            [
+                AgentEvent::Text {
+                    slot: 1,
+                    text: STOP_TOKEN.into(),
+                },
+                AgentEvent::TurnComplete { slot: 1 },
+            ],
+        );
+        let mut relay = RelayHost::new(
+            vec![
+                AdapterHost::new(Box::new(first), None),
+                AdapterHost::new(Box::new(reviewer), None),
+            ],
+            10,
+        )
+        .expect("relay");
+        relay.start().await.expect("start");
+        let first_decision = relay.run_turn("task", 0).await.expect("first");
+        assert!(matches!(
+            first_decision,
+            RelayDecision::Dispatch { slot: 0, .. }
+        ));
+        let reviewer_decision = relay.run_turn("", 0).await.expect("reviewer");
+        assert!(matches!(
+            reviewer_decision,
+            RelayDecision::Dispatch {
+                slot: 1,
+                can_stop: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            relay.run_turn("", 0).await.expect("complete"),
+            RelayDecision::Complete
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_token_is_filtered_from_streamed_ui_events() {
+        let first = ScriptedAdapter::new(
+            0,
+            AgentCapabilities::default(),
+            [
+                AgentEvent::Text {
+                    slot: 0,
+                    text: format!("visible {STOP_TOKEN}"),
+                },
+                AgentEvent::TurnComplete { slot: 0 },
+            ],
+        );
+        let reviewer = ScriptedAdapter::new(
+            1,
+            AgentCapabilities::default(),
+            [AgentEvent::TurnComplete { slot: 1 }],
+        );
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = std::sync::Arc::clone(&events);
+        let mut relay = RelayHost::new(
+            vec![
+                AdapterHost::new(Box::new(first), None),
+                AdapterHost::new(Box::new(reviewer), None),
+            ],
+            2,
+        )
+        .expect("relay");
+        relay.set_event_sink(move |event| captured.lock().expect("lock").push(event));
+        relay.start().await.expect("start");
+        relay.run_turn("task", 0).await.expect("turn");
+        let captured = events.lock().expect("lock");
+        assert!(captured.iter().all(|event| match event {
+            AgentEvent::Text { text, .. } => !text.contains(STOP_TOKEN),
+            _ => true,
+        }));
     }
 
     #[tokio::test]
@@ -1729,7 +1876,8 @@ mod tests {
         relay.run_turn("review this", 0).await.expect("review turn");
 
         assert_eq!(relay.dispatches().len(), 2);
-        assert_eq!(relay.dispatches()[0], (0, "task".into()));
+        assert_eq!(relay.dispatches()[0].0, 0);
+        assert!(relay.dispatches()[0].1.starts_with("task"));
         assert_eq!(relay.dispatches()[1].0, 1);
         assert!(relay.dispatches()[1].1.contains("review this"));
         assert!(
