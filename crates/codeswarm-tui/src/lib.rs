@@ -957,10 +957,26 @@ impl App {
     }
 
     pub fn agent_name(&self, slot: usize) -> String {
-        self.agent_names
+        let name = self
+            .agent_names
             .get(&slot)
             .cloned()
-            .unwrap_or_else(|| format!("Agent {slot}"))
+            .unwrap_or_else(|| format!("Agent {slot}"));
+        let duplicate_slots = self
+            .agent_names
+            .iter()
+            .filter_map(|(candidate_slot, candidate_name)| {
+                (candidate_name == &name).then_some(*candidate_slot)
+            })
+            .collect::<Vec<_>>();
+        if duplicate_slots.len() <= 1 {
+            return name;
+        }
+        let roster_number = duplicate_slots
+            .iter()
+            .position(|candidate_slot| *candidate_slot == slot)
+            .map_or(slot, |position| position + 1);
+        format!("{name} #{roster_number}")
     }
 
     /// Return a bounded, stable roster label for the status HUD. This keeps
@@ -969,8 +985,8 @@ impl App {
     pub fn roster_summary(&self) -> String {
         let names = self
             .agent_names
-            .values()
-            .map(String::as_str)
+            .keys()
+            .map(|slot| self.agent_name(*slot))
             .collect::<Vec<_>>();
         if names.is_empty() {
             return String::new();
@@ -981,8 +997,9 @@ impl App {
     pub fn active_agents_summary(&self) -> String {
         let summary = self
             .agent_names
-            .iter()
-            .map(|(slot, name)| {
+            .keys()
+            .map(|slot| {
+                let name = self.agent_name(*slot);
                 let state = self
                     .agent_states
                     .get(slot)
@@ -1487,7 +1504,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let visible = app
         .transcript
         .viewport(content_width, app.scroll_y, content_height, 0);
-    render_transcript(frame.buffer_mut(), rows[0], visible, app.diff_split);
+    render_transcript(frame.buffer_mut(), rows[0], visible, app, app.diff_split);
 
     let follow_label = if app.follow_tail {
         "FOLLOWING"
@@ -1498,7 +1515,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Span::styled(" ✈ ", Style::default().fg(Color::Cyan).bold()),
         Span::styled(
             app.active_agent.as_str(),
-            Style::default().fg(Color::White).bold(),
+            Style::default()
+                .fg(agent_color_for_name(app, &app.active_agent))
+                .bold(),
         ),
         Span::styled("  ·  ", Style::default().fg(Color::Gray)),
         Span::styled(
@@ -1539,7 +1558,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         );
     if app.agent_names.len() > 1 && rows[1].height > 1 {
         let mut active_spans = vec![Span::styled(" active: ", Style::default().fg(Color::Gray))];
-        for (index, (slot, name)) in app.agent_names.iter().enumerate() {
+        for (index, (slot, _)) in app.agent_names.iter().enumerate() {
+            let name = app.agent_name(*slot);
             let state = app
                 .agent_states
                 .get(slot)
@@ -1549,7 +1569,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             let separator = if index == 0 { "" } else { "   " };
             active_spans.push(Span::styled(
                 format!("{separator}{marker} {name} · {state}"),
-                Style::default().fg(agent_header_color(name)),
+                Style::default()
+                    .fg(agent_color_for_slot(app, *slot, &name))
+                    .bold(),
             ));
         }
         let active_line = Line::from(active_spans);
@@ -1597,7 +1619,9 @@ fn render_compact(frame: &mut Frame, app: &mut App, area: Rect) {
         Span::styled(" · ", Style::default().fg(Color::Gray)),
         Span::styled(
             compact_label(&agent_text, label_width),
-            Style::default().fg(Color::White).bold(),
+            Style::default()
+                .fg(agent_color_for_name(app, &app.active_agent))
+                .bold(),
         ),
     ]);
     Paragraph::new(status)
@@ -1617,7 +1641,13 @@ fn render_compact(frame: &mut Frame, app: &mut App, area: Rect) {
             app.follow_tail(transcript_area.width as usize, height);
         }
         let visible = app.transcript.viewport(width, app.scroll_y, height, 0);
-        render_transcript(frame.buffer_mut(), transcript_area, visible, app.diff_split);
+        render_transcript(
+            frame.buffer_mut(),
+            transcript_area,
+            visible,
+            app,
+            app.diff_split,
+        );
     }
 
     if area.height > 1 {
@@ -2036,7 +2066,13 @@ fn render_permission(buffer: &mut Buffer, area: Rect, request: &PermissionPrompt
         .render(area, buffer);
 }
 
-fn render_transcript(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>, diff_split: bool) {
+fn render_transcript(
+    buffer: &mut Buffer,
+    area: Rect,
+    rows: Vec<RenderRow>,
+    app: &App,
+    diff_split: bool,
+) {
     if diff_split
         && rows
             .iter()
@@ -2066,7 +2102,7 @@ fn render_transcript(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>, diff
                     && row.first_in_block
                     && let Some((speaker, body)) = row.text.split_once(": ")
                 {
-                    let color = agent_header_color(speaker);
+                    let color = agent_color_for_name(app, speaker);
                     return Line::from(vec![
                         Span::styled(marker, Style::default().fg(color).bold()),
                         Span::styled(format!("{speaker}:"), Style::default().fg(color).bold()),
@@ -2139,19 +2175,55 @@ fn render_split_diff(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>) {
         .render(columns[1], buffer);
 }
 
+const AGENT_COLORS: [Color; 8] = [
+    Color::LightBlue,
+    Color::LightGreen,
+    Color::LightYellow,
+    Color::LightMagenta,
+    Color::LightCyan,
+    Color::Magenta,
+    Color::LightRed,
+    Color::Blue,
+];
+
+fn agent_slot_color(slot: usize) -> Color {
+    AGENT_COLORS[slot % AGENT_COLORS.len()]
+}
+
 fn agent_header_color(name: &str) -> Color {
-    const COLORS: [Color; 6] = [
+    const COLORS: [Color; 8] = [
         Color::LightBlue,
         Color::LightGreen,
         Color::LightYellow,
         Color::LightMagenta,
         Color::LightCyan,
+        Color::LightRed,
         Color::Magenta,
+        Color::Blue,
     ];
     let hash = name.bytes().fold(0usize, |hash, byte| {
         hash.wrapping_mul(31).wrapping_add(byte as usize)
     });
     COLORS[hash % COLORS.len()]
+}
+
+/// Resolve a transcript/footer identity to its roster slot whenever possible.
+/// Slot-based colors keep similarly named agents (for example Codex and
+/// Gemini) visually distinct; the hash fallback keeps standalone or replayed
+/// rows deterministic when no roster metadata is available.
+fn agent_color_for_name(app: &App, name: &str) -> Color {
+    app.agent_names
+        .keys()
+        .find_map(|slot| (app.agent_name(*slot) == name).then_some(agent_slot_color(*slot)))
+        .unwrap_or_else(|| agent_header_color(name))
+}
+
+fn agent_color_for_slot(app: &App, slot: usize, name: &str) -> Color {
+    if app.agent_names.contains_key(&slot) {
+        agent_slot_color(slot)
+    } else {
+        agent_header_color(name)
+    }
 }
 
 fn block_style(kind: codeswarm_transcript::BlockKind) -> Style {
@@ -2211,8 +2283,8 @@ mod tests {
 
     use super::{
         App, ConfigAction, ConfigKey, LocalCommand, PermissionAction, PermissionKey, PromptAction,
-        PromptEditor, StoreAction, StoreAgent, StoreKey, agent_header_color, markdown_style,
-        render, row_style,
+        PromptEditor, StoreAction, StoreAgent, StoreKey, agent_header_color, agent_slot_color,
+        markdown_style, render, row_style,
     };
 
     fn key(key: Key) -> Input {
@@ -2635,6 +2707,46 @@ mod tests {
             agent_header_color("Claude Code")
         );
         assert_ne!(agent_header_color("a"), agent_header_color("b"));
+    }
+
+    #[test]
+    fn duplicate_agent_names_are_numbered_and_keep_distinct_colors() {
+        let mut app = App::default();
+        app.set_agent_name(0, "Claude Code");
+        app.set_agent_name(1, "Claude Code");
+
+        assert_eq!(app.agent_name(0), "Claude Code #1");
+        assert_eq!(app.agent_name(1), "Claude Code #2");
+        assert_ne!(
+            agent_header_color(&app.agent_name(0)),
+            agent_header_color(&app.agent_name(1))
+        );
+        assert!(app.roster_summary().contains("Claude Code #1"));
+        assert!(app.roster_summary().contains("Claude Code #2"));
+    }
+
+    #[test]
+    fn footer_and_transcript_use_the_same_slot_color_for_each_agent() {
+        let backend = TestBackend::new(96, 14);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        app.set_agent_name(0, "Codex CLI");
+        app.set_agent_name(1, "Gemini CLI");
+        app.apply_event(&codeswarm_core::AgentEvent::Text {
+            slot: 1,
+            text: "review".into(),
+        });
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw colored roster");
+        let cells = terminal.backend().buffer().content();
+        let footer_color = cells
+            .iter()
+            .find(|cell| cell.symbol() == "G")
+            .map(|cell| cell.fg)
+            .expect("Gemini footer/header cell");
+        assert_eq!(footer_color, agent_slot_color(1));
+        assert_ne!(footer_color, agent_slot_color(0));
     }
 
     #[test]

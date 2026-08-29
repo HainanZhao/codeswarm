@@ -71,6 +71,7 @@ pub struct Relay {
     active: Vec<bool>,
     max_rounds: usize,
     rounds: usize,
+    stopped: bool,
     paused: bool,
     last_active: RosterSlot,
     next: Option<RosterSlot>,
@@ -90,6 +91,7 @@ impl Relay {
             active: vec![true; roster_size],
             max_rounds,
             rounds: 0,
+            stopped: false,
             paused: false,
             last_active: 0,
             next: None,
@@ -231,11 +233,26 @@ impl Relay {
         if self.active_slots().count() < 2 {
             return RelayDecision::Collapsed;
         }
-        if self.rounds >= self.max_rounds {
-            return RelayDecision::Complete;
-        }
         let queued = Self::pop_active(&self.active, &mut self.direct)
             .or_else(|| Self::pop_active(&self.active, &mut self.steering));
+        // A reviewer stop ends only the current automatic batch. A later
+        // queued/user prompt starts a fresh batch without rebuilding the
+        // relay, while an unprompted handoff remains complete.
+        if self.stopped {
+            if queued.is_none() {
+                return RelayDecision::Complete;
+            }
+            self.stopped = false;
+            self.rounds = 0;
+        }
+        if self.rounds >= self.max_rounds {
+            // A queued human/direct prompt is a new batch; do not strand it
+            // behind the safety limit reached by the previous batch.
+            if queued.is_none() {
+                return RelayDecision::Complete;
+            }
+            self.rounds = 0;
+        }
         // Manual mode is deliberately input-driven. A queued prompt (which
         // includes a newly submitted human prompt) is still dispatched, but
         // an unprompted call after a completed turn must not silently hand the
@@ -246,18 +263,25 @@ impl Relay {
         {
             return RelayDecision::Complete;
         }
-        let (slot, prompt, direct) = match queued {
+        let (slot, prompt, direct, human_prompt) = match queued {
             Some(queued) => (
                 queued.slot,
                 queued.prompt,
                 queued.kind == QueuedKind::Direct,
+                queued.kind == QueuedKind::Steering,
             ),
             None => {
                 let slot = self.next_automatic_slot(first);
-                (slot, initial_prompt.into(), false)
+                (slot, initial_prompt.into(), false, false)
             }
         };
-        let can_stop = !direct && self.previous_slot.is_some_and(|previous| previous != slot);
+        // A human steering prompt starts a fresh review batch. Even when it
+        // targets a different slot from the preceding relay turn, that first
+        // responder must not be allowed to terminate the batch with the safe
+        // word. Only an automatic handoff after another agent's response is
+        // eligible to review-stop.
+        let can_stop =
+            !direct && !human_prompt && self.previous_slot.is_some_and(|previous| previous != slot);
         self.last_active = slot;
         self.rounds += 1;
         RelayDecision::Dispatch {
@@ -276,7 +300,7 @@ impl Relay {
             self.previous_slot = Some(slot);
         }
         if accepted_stop && self.direct.is_empty() && self.steering.is_empty() {
-            self.rounds = self.max_rounds;
+            self.stopped = true;
         }
     }
 
@@ -372,7 +396,43 @@ mod tests {
         relay.finish(0, false, false);
         assert!(matches!(
             relay.begin("response", 0),
-            RelayDecision::Dispatch { slot: 2, prompt, direct: false, .. } if prompt == "correction"
+            RelayDecision::Dispatch { slot: 2, prompt, direct: false, can_stop: false } if prompt == "correction"
+        ));
+    }
+
+    #[test]
+    fn human_prompt_cannot_stop_even_after_a_previous_relay_batch() {
+        let mut relay = Relay::new(2, 10);
+        assert!(matches!(
+            relay.begin("first task", 0),
+            RelayDecision::Dispatch {
+                slot: 0,
+                can_stop: false,
+                ..
+            }
+        ));
+        relay.finish(0, false, false);
+        assert!(matches!(
+            relay.begin("review", 0),
+            RelayDecision::Dispatch {
+                slot: 1,
+                can_stop: true,
+                ..
+            }
+        ));
+        relay.finish(1, false, false);
+
+        // The next user prompt targets the owner, which differs from the
+        // previous reviewer. It is still the first response to a human turn,
+        // so it must not receive reviewer stop permission.
+        assert!(relay.enqueue_human("new task", Some(0)));
+        assert!(matches!(
+            relay.begin("", 0),
+            RelayDecision::Dispatch {
+                slot: 0,
+                can_stop: false,
+                ..
+            }
         ));
     }
 
@@ -413,6 +473,53 @@ mod tests {
         let (visible, requested) = strip_stop_token("ordinary response");
         assert_eq!(visible, "ordinary response");
         assert!(!requested);
+    }
+
+    #[test]
+    fn accepted_stop_ends_the_batch_but_a_new_prompt_can_start_one() {
+        let mut relay = Relay::new(2, 10);
+        assert!(matches!(
+            relay.begin("task", 0),
+            RelayDecision::Dispatch { slot: 0, .. }
+        ));
+        relay.finish(0, false, false);
+        assert!(matches!(
+            relay.begin("review", 0),
+            RelayDecision::Dispatch {
+                slot: 1,
+                can_stop: true,
+                ..
+            }
+        ));
+        relay.finish(1, false, true);
+        assert_eq!(relay.begin("", 0), RelayDecision::Complete);
+
+        assert!(relay.enqueue_human("new task", Some(0)));
+        assert!(matches!(
+            relay.begin("", 0),
+            RelayDecision::Dispatch { slot: 0, prompt, .. } if prompt == "new task"
+        ));
+    }
+
+    #[test]
+    fn stop_token_is_not_allowed_on_the_first_response() {
+        let mut relay = Relay::new(2, 10);
+        assert!(matches!(
+            relay.begin("task", 0),
+            RelayDecision::Dispatch {
+                slot: 0,
+                can_stop: false,
+                ..
+            }
+        ));
+        // RelayHost validates the token against `can_stop`; the first turn
+        // therefore finalizes as a normal response even if the agent tried
+        // to include the token.
+        relay.finish(0, false, false);
+        assert!(matches!(
+            relay.begin("", 0),
+            RelayDecision::Dispatch { slot: 1, .. }
+        ));
     }
 
     #[test]

@@ -2058,6 +2058,67 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn reviewer_stop_token_stops_the_roster_sequence() {
+        let hosts = vec![
+            AdapterHost::new(
+                Box::new(ScriptedAdapter::new(
+                    0,
+                    AgentCapabilities::default(),
+                    [
+                        AgentEvent::Text {
+                            slot: 0,
+                            text: "done".into(),
+                        },
+                        AgentEvent::TurnComplete { slot: 0 },
+                    ],
+                )),
+                None,
+            ),
+            AdapterHost::new(
+                Box::new(ScriptedAdapter::new(
+                    1,
+                    AgentCapabilities::default(),
+                    [
+                        AgentEvent::Text {
+                            slot: 1,
+                            text: codeswarm_core::relay::STOP_TOKEN.into(),
+                        },
+                        AgentEvent::TurnComplete { slot: 1 },
+                    ],
+                )),
+                None,
+            ),
+        ];
+        let mut relay = RelayHost::new(hosts, 10).expect("two-agent relay");
+        relay.start().await.expect("scripted adapters start");
+        let (sender, _events) = std::sync::mpsc::channel::<AdapterResult<AgentEvent>>();
+        let (_control_sender, mut controls) = tokio::sync::mpsc::unbounded_channel();
+        let (stopping, deferred) = run_relay_sequence_with_controls(
+            &mut relay,
+            &mut controls,
+            &sender,
+            "initial task".into(),
+            0,
+        )
+        .await;
+
+        assert!(!stopping);
+        assert!(deferred.is_empty());
+        assert_eq!(
+            relay
+                .dispatches()
+                .iter()
+                .map(|(slot, _)| *slot)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            relay.run_turn("", 0).await.expect("stopped batch"),
+            codeswarm_core::relay::RelayDecision::Complete
+        );
+    }
+
     #[test]
     fn queued_direct_prompt_without_target_is_rejected_without_panic() {
         let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();

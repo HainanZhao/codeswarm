@@ -594,6 +594,19 @@ impl RelayHost {
         } else {
             response
         };
+        // A token-only reviewer response is intentionally hidden, but the
+        // UI still needs the documented visible acknowledgement. Streamed
+        // text is normally emitted above; this synthetic acknowledgement is
+        // the one case where there was no visible adapter chunk to forward.
+        if accepted_stop
+            && response == DEFAULT_STOP_ACKNOWLEDGMENT
+            && let Some(sink) = &self.event_sink
+        {
+            sink(AgentEvent::Text {
+                slot: *slot,
+                text: response.clone(),
+            });
+        }
         if !*direct && !response.is_empty() {
             self.relay.record_public(format!("Agent {slot}"), response);
         }
@@ -1630,7 +1643,7 @@ mod tests {
     use codeswarm_core::TerminalEvent;
     use codeswarm_core::{
         AgentCapabilities, AgentEvent, EventLog, PermissionAnswer, ToolStatus,
-        relay::{RelayDecision, STOP_TOKEN},
+        relay::{DEFAULT_STOP_ACKNOWLEDGMENT, RelayDecision, STOP_TOKEN},
     };
 
     use super::{
@@ -2186,6 +2199,57 @@ mod tests {
         relay.start().await.expect("start");
         relay.run_turn("task", 0).await.expect("turn");
         let captured = events.lock().expect("lock");
+        assert!(captured.iter().all(|event| match event {
+            AgentEvent::Text { text, .. } => !text.contains(STOP_TOKEN),
+            _ => true,
+        }));
+    }
+
+    #[tokio::test]
+    async fn token_only_reviewer_response_emits_visible_acknowledgment() {
+        let first = ScriptedAdapter::new(
+            0,
+            AgentCapabilities::default(),
+            [
+                AgentEvent::Text {
+                    slot: 0,
+                    text: "done".into(),
+                },
+                AgentEvent::TurnComplete { slot: 0 },
+            ],
+        );
+        let reviewer = ScriptedAdapter::new(
+            1,
+            AgentCapabilities::default(),
+            [
+                AgentEvent::Text {
+                    slot: 1,
+                    text: STOP_TOKEN.into(),
+                },
+                AgentEvent::TurnComplete { slot: 1 },
+            ],
+        );
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = std::sync::Arc::clone(&events);
+        let mut relay = RelayHost::new(
+            vec![
+                AdapterHost::new(Box::new(first), None),
+                AdapterHost::new(Box::new(reviewer), None),
+            ],
+            4,
+        )
+        .expect("relay");
+        relay.set_event_sink(move |event| captured.lock().expect("lock").push(event));
+        relay.start().await.expect("start");
+        relay.run_turn("task", 0).await.expect("first turn");
+        relay.run_turn("", 0).await.expect("review turn");
+        let captured = events.lock().expect("lock");
+        assert!(captured.iter().any(|event| {
+            matches!(
+                event,
+                AgentEvent::Text { slot: 1, text } if text == DEFAULT_STOP_ACKNOWLEDGMENT
+            )
+        }));
         assert!(captured.iter().all(|event| match event {
             AgentEvent::Text { text, .. } => !text.contains(STOP_TOKEN),
             _ => true,
