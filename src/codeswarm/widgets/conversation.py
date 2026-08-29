@@ -174,6 +174,7 @@ class Contents(containers.VerticalGroup, can_focus=False):
         self._block_metrics: dict[Widget, tuple[int, int, int]] = {}
         self._positions_cache: tuple[list[int], int] | None = None
         self._mounted_indices: frozenset[int] = frozenset()
+        self._window_block_count = 0
         self._virtualized = False
         self._virtualize_lock = asyncio.Lock()
         self._requested_scroll_y: float | None = None
@@ -203,7 +204,8 @@ class Contents(containers.VerticalGroup, can_focus=False):
                 (*self._mounted_indices, len(self._transcript_blocks) - 1)
             )
 
-    def _measure_mounted_blocks(self) -> None:
+    def _measure_mounted_blocks(self) -> bool:
+        changed = False
         for block in self.mounted_blocks:
             top, _right, bottom, _left = block.styles.margin
             metrics = (
@@ -214,6 +216,8 @@ class Contents(containers.VerticalGroup, can_focus=False):
             if self._block_metrics.get(block) != metrics:
                 self._block_metrics[block] = metrics
                 self._positions_cache = None
+                changed = True
+        return changed
 
     def _block_positions(self) -> tuple[list[int], int]:
         """Return each block's virtual row and the complete transcript height."""
@@ -272,7 +276,7 @@ class Contents(containers.VerticalGroup, can_focus=False):
         *,
         follow_tail: bool,
     ) -> None:
-        self._measure_mounted_blocks()
+        metrics_changed = self._measure_mounted_blocks()
         starts, total_rows = self._block_positions()
         block_count = len(self._transcript_blocks)
         if not block_count:
@@ -297,7 +301,12 @@ class Contents(containers.VerticalGroup, can_focus=False):
         # The mounted window already covers this viewport. Rebuilding the
         # identical widget tree is expensive, especially for tall Markdown
         # replies, and does not reduce the retained window's size.
-        if guard_indices.issubset(self._mounted_indices):
+        appended_since_rebuild = block_count - self._window_block_count
+        if (
+            guard_indices.issubset(self._mounted_indices)
+            and appended_since_rebuild <= TRANSCRIPT_PINNED_TAIL_BLOCKS
+            and not metrics_changed
+        ):
             return
 
         window_top = max(0, int(scroll_y) - TRANSCRIPT_BUFFER_ROWS)
@@ -339,6 +348,7 @@ class Contents(containers.VerticalGroup, can_focus=False):
             await self.remove_children(list(self.children))
             await self.mount(*sequence)
         self._mounted_indices = selected_set
+        self._window_block_count = block_count
         self.refresh(layout=True)
         if follow_tail:
             self.call_after_refresh(conversation.window.scroll_end_for_output)
@@ -391,6 +401,7 @@ class Contents(containers.VerticalGroup, can_focus=False):
         for block in forgotten:
             self._block_metrics.pop(block, None)
         self._mounted_indices = frozenset()
+        self._window_block_count = len(self._transcript_blocks)
         if not self._transcript_blocks:
             await self.remove_children(list(self.children))
             self._virtualized = False

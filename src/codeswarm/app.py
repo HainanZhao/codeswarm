@@ -170,6 +170,8 @@ CODESWARM_BLACK_THEME = Theme(
     },
 )
 
+RESIZE_SETTLE_SECONDS = 0.1
+
 
 def get_store_screen() -> StoreScreen:
     """Get the store screen (lazily loaded)."""
@@ -248,6 +250,40 @@ class CodeSwarmApp(App, inherit_bindings=False):
             return ResponsiveLinuxDriver
         return driver_class
 
+    async def _on_resize(self, event: events.Resize) -> None:
+        """Deliver only the final geometry from a terminal resize burst."""
+        event.stop()
+        self._resize_event = event
+        if self._size is None:
+            self._size = event.size
+            self._check_resize()
+            return
+        if self._size == event.size:
+            return
+        self._size = event.size
+        if self._resize_timer is not None:
+            self._resize_timer.stop()
+        self._resize_timer = self.set_timer(
+            RESIZE_SETTLE_SECONDS,
+            self._check_resize,
+        )
+
+    def _begin_update(self) -> None:
+        """Mark the start of one atomic compositor frame for the driver."""
+        begin_frame = getattr(self._driver, "begin_frame", None)
+        if begin_frame is not None:
+            begin_frame()
+        super()._begin_update()
+
+    def _end_update(self) -> None:
+        """Flush one complete compositor frame to the driver scheduler."""
+        try:
+            super()._end_update()
+        finally:
+            end_frame = getattr(self._driver, "end_frame", None)
+            if end_frame is not None:
+                end_frame()
+
     def __init__(
         self,
         agent_data: AgentData | None = None,
@@ -285,6 +321,7 @@ class CodeSwarmApp(App, inherit_bindings=False):
         self._terminal_title_flash_timer: Timer | None = None
         self._interrupt_requested_at: float | None = None
         self._terminal_refresh_pending = False
+        self._terminal_refresh_again = False
 
         self._session_tracker = SessionTracker()
 
@@ -374,12 +411,18 @@ class CodeSwarmApp(App, inherit_bindings=False):
 
     def _request_full_terminal_refresh(self) -> None:
         """Resync a slow terminal after intermediate output frames are dropped."""
-        if self._terminal_refresh_pending or self._closed:
+        if self._closed:
+            return
+        if self._terminal_refresh_pending:
+            self._terminal_refresh_again = True
             return
         screen = self.screen
         if not screen.size:
             return
         self._terminal_refresh_pending = True
+        prepare_full_refresh = getattr(self._driver, "prepare_full_refresh", None)
+        if prepare_full_refresh is not None:
+            prepare_full_refresh()
         # Textual's compositor normally emits diffs. Marking the whole screen
         # dirty makes its next refresh a LayoutUpdate, restoring the terminal
         # after the writer discarded stale diffs under backpressure.
@@ -389,6 +432,9 @@ class CodeSwarmApp(App, inherit_bindings=False):
 
     def _clear_terminal_refresh_pending(self) -> None:
         self._terminal_refresh_pending = False
+        if self._terminal_refresh_again:
+            self._terminal_refresh_again = False
+            self.call_later(self._request_full_terminal_refresh)
 
     def watch_terminal_title_blink(self) -> None:
         self.update_terminal_title()

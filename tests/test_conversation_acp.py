@@ -2530,6 +2530,46 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_hundred_turn_transcript_keeps_a_bounded_live_window(self) -> None:
+        async def scenario() -> None:
+            words = " ".join(f"word{index}" for index in range(300))
+            async with CodeSwarmApp(setup_prompt=False).run_test(
+                size=(80, 24)
+            ) as pilot:
+                conversation = pilot.app.screen.query_one(Conversation)
+                for index in range(50):
+                    await conversation.post(UserInput(f"User {index} {words}"))
+                    conversation.new_block()
+                    await conversation.post_agent_response(
+                        f"Agent {index} {words}"
+                    )
+                    await pilot.pause()
+
+                await pilot.pause(0.5)
+
+                self.assertEqual(len(conversation.contents.transcript_blocks), 100)
+                self.assertLess(len(conversation.contents.mounted_blocks), 25)
+
+                conversation.window.scroll_home(animate=False, immediate=True)
+                await pilot.pause(0.3)
+                remounts = 0
+                original_remove_children = conversation.contents.remove_children
+
+                async def record_remount(children):
+                    nonlocal remounts
+                    if children:
+                        remounts += 1
+                    return await original_remove_children(children)
+
+                conversation.contents.remove_children = record_remount  # type: ignore[method-assign]
+                for scroll_y in range(1, 20):
+                    conversation.contents.request_window(scroll_y)
+                    await pilot.pause(0.03)
+                await pilot.pause(0.1)
+                self.assertEqual(remounts, 0)
+
+        asyncio.run(scenario())
+
     def test_rapid_scroll_requests_rebuild_the_virtual_window_at_a_bounded_rate(
         self,
     ) -> None:

@@ -7,11 +7,12 @@ import signal
 import sys
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 from typing import cast
 
 from textual import events
 from textual.color import Color
+from textual.geometry import Size
 
 from codeswarm.acp.agent import Agent, LOG_TRUNCATED_MESSAGE, MAX_INFLIGHT_AGENT_REQUESTS
 from codeswarm.agent import AgentFail, AgentReady
@@ -128,6 +129,60 @@ class _StoppingSession:
 
 
 class AgentLifecycleTests(unittest.TestCase):
+    def test_app_marks_driver_compositor_frame_boundaries_without_sync_mode(
+        self,
+    ) -> None:
+        app = CodeSwarmApp(mode="store")
+        driver = Mock()
+        app._driver = driver
+        app._sync_available = False
+
+        app._begin_update()
+        app._end_update()
+
+        self.assertEqual(
+            driver.method_calls,
+            [
+                call.begin_frame(),
+                call.end_frame(),
+            ],
+        )
+
+    def test_terminal_refresh_requested_during_repaint_runs_after_current_frame(
+        self,
+    ) -> None:
+        app = CodeSwarmApp(mode="store")
+        app._terminal_refresh_pending = True
+        app._request_full_terminal_refresh()
+        app.call_later = Mock()  # type: ignore[method-assign]
+
+        app._clear_terminal_refresh_pending()
+
+        app.call_later.assert_called_once_with(app._request_full_terminal_refresh)
+
+    def test_resize_storm_delivers_only_final_geometry(self) -> None:
+        async def scenario() -> None:
+            async with CodeSwarmApp(mode="store").run_test(size=(80, 24)) as pilot:
+                resize_calls = 0
+                original_check_resize = pilot.app._check_resize
+
+                def record_resize() -> None:
+                    nonlocal resize_calls
+                    resize_calls += 1
+                    original_check_resize()
+
+                pilot.app._check_resize = record_resize  # type: ignore[method-assign]
+                for index in range(10):
+                    size = Size(70 + index, 20)
+                    await pilot.app._on_resize(events.Resize(size, size))
+                    await pilot.pause(0.02)
+
+                self.assertEqual(resize_calls, 0)
+                await pilot.pause(0.12)
+                self.assertEqual(resize_calls, 1)
+
+        asyncio.run(scenario())
+
     def test_agent_eof_rejects_its_outstanding_protocol_calls(self) -> None:
         """A dead transport must unwind the turn waiting for its response."""
 
