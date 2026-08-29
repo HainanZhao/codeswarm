@@ -599,6 +599,8 @@ impl App {
             "/clear" => {
                 self.transcript.clear();
                 self.scroll_y = 0;
+                self.streaming_blocks.clear();
+                self.focused_detail = None;
                 self.status = "conversation cleared".into();
                 LocalCommand::Handled
             }
@@ -710,7 +712,21 @@ impl App {
                 match self.config_selected {
                     0 => self.follow_tail = !self.follow_tail,
                     1 => self.collapse_details = !self.collapse_details,
-                    2..=5 => {}
+                    2 => {
+                        self.mode = if self.mode == "Auto pilot" {
+                            "Chat".into()
+                        } else {
+                            "Auto pilot".into()
+                        };
+                    }
+                    3 => {
+                        self.collaboration = match self.collaboration.as_str() {
+                            "Roster relay" => "Manual routing".into(),
+                            "Manual routing" => "Pair review".into(),
+                            _ => "Roster relay".into(),
+                        };
+                    }
+                    4..=5 => {}
                     _ => return ConfigAction::Ignored,
                 }
                 self.status = "configuration updated".into();
@@ -2004,6 +2020,30 @@ mod tests {
         assert_eq!(
             app.handle_local_command("/agents"),
             Some(LocalCommand::Agents)
+        );
+    }
+
+    #[test]
+    fn clear_command_resets_streaming_detail_state() {
+        let mut app = App::default();
+        app.apply_event(&codeswarm_core::AgentEvent::Text {
+            slot: 0,
+            text: "in progress".into(),
+        });
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(
+            app.handle_local_command("/clear"),
+            Some(LocalCommand::Handled)
+        );
+        assert!(app.transcript.is_empty());
+        app.apply_event(&codeswarm_core::AgentEvent::Text {
+            slot: 0,
+            text: "fresh".into(),
+        });
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(
+            app.transcript.viewport(80, 0, 10, 0)[0].text,
+            "Agent 0: fresh"
         );
     }
 

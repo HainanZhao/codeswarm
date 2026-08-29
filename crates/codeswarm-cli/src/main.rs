@@ -13,7 +13,7 @@ use codeswarm_adapters::{
 use codeswarm_core::PermissionAnswer;
 use codeswarm_core::agents::{AdapterKind, AgentDefinition, catalog_from_settings};
 use codeswarm_core::launcher::{LaunchDecision, launch_decision};
-use codeswarm_core::relay::RelayDecision;
+use codeswarm_core::relay::{CollaborationStrategy, RelayDecision};
 use codeswarm_core::{AgentEvent, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{
@@ -45,6 +45,7 @@ enum AdapterControl {
     },
     Pause,
     Resume,
+    SetStrategy(CollaborationStrategy),
     Cancel,
     Stop,
 }
@@ -98,6 +99,14 @@ fn dispatch_permission_action(
         PermissionAction::Ignored | PermissionAction::SelectionChanged { .. } => return false,
     };
     controls.is_some_and(|controls| controls.send(command).is_ok())
+}
+
+fn collaboration_strategy(label: &str) -> CollaborationStrategy {
+    match label {
+        "Manual routing" => CollaborationStrategy::Manual,
+        "Pair review" => CollaborationStrategy::Pair,
+        _ => CollaborationStrategy::Roster,
+    }
 }
 
 enum Launch {
@@ -603,7 +612,8 @@ fn run_agy_task(
                     | Some(AdapterControl::Direct { .. })
                     | Some(AdapterControl::Permission { .. })
                     | Some(AdapterControl::Pause)
-                    | Some(AdapterControl::Resume) => {}
+                    | Some(AdapterControl::Resume)
+                    | Some(AdapterControl::SetStrategy(_)) => {}
                     Some(AdapterControl::Stop) | None => break,
                 },
             }
@@ -683,7 +693,8 @@ fn run_acp_task(
                     | Some(AdapterControl::Direct { .. })
                     | Some(AdapterControl::Permission { .. })
                     | Some(AdapterControl::Pause)
-                    | Some(AdapterControl::Resume) => {}
+                    | Some(AdapterControl::Resume)
+                    | Some(AdapterControl::SetStrategy(_)) => {}
                     Some(AdapterControl::Stop) | None => break,
                 },
             }
@@ -932,6 +943,7 @@ fn run_relay_task(
                 }
                 Some(AdapterControl::Pause) => relay.pause(),
                 Some(AdapterControl::Resume) => relay.resume(),
+                Some(AdapterControl::SetStrategy(strategy)) => relay.set_strategy(strategy),
                 Some(AdapterControl::Cancel) => {
                     let _ = sender.send(Err(AdapterError::Unsupported("no active relay turn")));
                 }
@@ -1018,7 +1030,15 @@ fn run_terminal(
                     _ => None,
                 };
                 if let Some(config_key) = config_key {
+                    let previous_collaboration = app.collaboration().to_owned();
                     let _ = app.handle_config_key(config_key);
+                    if previous_collaboration != app.collaboration()
+                        && let Some(controls) = &controls
+                    {
+                        let _ = controls.send(AdapterControl::SetStrategy(collaboration_strategy(
+                            app.collaboration(),
+                        )));
+                    }
                 }
                 continue;
             }
@@ -1195,7 +1215,14 @@ fn run_terminal(
                                     }
                                     app.status = "relay resumed".into();
                                 }
-                                LocalCommand::Mode | LocalCommand::Collaboration => {}
+                                LocalCommand::Mode => {}
+                                LocalCommand::Collaboration => {
+                                    if let Some(controls) = &controls {
+                                        let _ = controls.send(AdapterControl::SetStrategy(
+                                            collaboration_strategy(app.collaboration()),
+                                        ));
+                                    }
+                                }
                                 LocalCommand::Agents => {
                                     if let Some(controls) = &controls {
                                         let _ = controls.send(AdapterControl::Stop);
