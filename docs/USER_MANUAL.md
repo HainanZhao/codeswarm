@@ -21,9 +21,14 @@ conversation, tool activity, approvals, and sequential hand-offs in one place.
 Install CodeSwarm and open the current directory:
 
 ```bash
-uv tool install codeswarm
+uv tool install --python 3.14 codeswarm
 codeswarm
 ```
+
+`uv` downloads Python 3.14 automatically when it is not already available. If
+a supported Python (3.14 or later) is already selected as `python`, you can
+instead run `python -m pip install codeswarm`. Replace `python` with that
+interpreter's command if your system uses a different name.
 
 On the agent selection screen, use the arrow keys to highlight an agent,
 `Space` to add or remove it from the roster, and `Enter` to start. Selected

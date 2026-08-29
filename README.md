@@ -17,12 +17,22 @@ agent and let them work through a task sequentially in one shared conversation.
 
 ## Install
 
+The recommended installation uses `uv`, which downloads Python 3.14
+automatically when it is not already available:
+
 ```bash
-uv tool install codeswarm
-# or: pip install codeswarm
+uv tool install --python 3.14 codeswarm
 ```
 
-CodeSwarm requires Python 3.14 or later on macOS or Linux.
+If a supported Python (3.14 or later) is already selected as `python`, install
+CodeSwarm with `pip` instead. Replace `python` with that interpreter's command
+if your system uses a different name:
+
+```bash
+python -m pip install codeswarm
+```
+
+CodeSwarm supports macOS and Linux.
 
 ## Run
 
