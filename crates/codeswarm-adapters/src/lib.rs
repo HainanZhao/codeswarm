@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use codeswarm_core::{AgentCapabilities, AgentEvent, Mode, RosterSlot, ToolStatus, ToolUpdate};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStdout, Command};
 use tokio::sync::mpsc;
 
 pub type AdapterResult<T> = Result<T, AdapterError>;
@@ -365,8 +365,11 @@ pub struct AcpAdapter {
     args: Vec<String>,
     cwd: PathBuf,
     child: Option<Child>,
-    sender: mpsc::Sender<AdapterResult<AgentEvent>>,
-    receiver: mpsc::Receiver<AdapterResult<AgentEvent>>,
+    reader: Option<tokio::io::Lines<BufReader<ChildStdout>>>,
+    capabilities: AgentCapabilities,
+    session_id: Option<String>,
+    next_request_id: u64,
+    queued_events: VecDeque<AdapterResult<AgentEvent>>,
 }
 
 impl AcpAdapter {
@@ -376,16 +379,76 @@ impl AcpAdapter {
         program: impl Into<String>,
         args: Vec<String>,
     ) -> Self {
-        let (sender, receiver) = mpsc::channel(256);
         Self {
             slot,
             program: program.into(),
             args,
             cwd,
             child: None,
-            sender,
-            receiver,
+            reader: None,
+            capabilities: AgentCapabilities::default(),
+            session_id: None,
+            next_request_id: 1,
+            queued_events: VecDeque::new(),
         }
+    }
+
+    async fn request(&mut self, method: &str, params: Value) -> AdapterResult<Value> {
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        self.write_json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params,
+        }))
+        .await?;
+        loop {
+            let line = self.read_line().await?;
+            let value: Value = serde_json::from_str(&line)
+                .map_err(|error| AdapterError::Protocol(error.to_string()))?;
+            if value.get("id").and_then(Value::as_u64) == Some(request_id) {
+                if let Some(error) = value.get("error") {
+                    return Err(AdapterError::Protocol(error.to_string()));
+                }
+                return value
+                    .get("result")
+                    .cloned()
+                    .ok_or_else(|| AdapterError::Protocol("response has no result".into()));
+            }
+            if let Some(event) = parse_acp_notification(self.slot, &line)? {
+                self.queued_events.push_back(Ok(event));
+            }
+        }
+    }
+
+    async fn write_json(&mut self, value: Value) -> AdapterResult<()> {
+        let child = self
+            .child
+            .as_mut()
+            .ok_or_else(|| AdapterError::Transport("ACP agent is not running".into()))?;
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| AdapterError::Transport("ACP agent has no stdin".into()))?;
+        stdin
+            .write_all(value.to_string().as_bytes())
+            .await
+            .map_err(|error| AdapterError::Transport(error.to_string()))?;
+        stdin
+            .write_all(b"\n")
+            .await
+            .map_err(|error| AdapterError::Transport(error.to_string()))
+    }
+
+    async fn read_line(&mut self) -> AdapterResult<String> {
+        self.reader
+            .as_mut()
+            .ok_or_else(|| AdapterError::Transport("ACP agent has no stdout".into()))?
+            .next_line()
+            .await
+            .map_err(|error| AdapterError::Transport(error.to_string()))?
+            .ok_or_else(|| AdapterError::Transport("ACP stream closed".into()))
     }
 }
 
@@ -396,7 +459,7 @@ impl AgentAdapter for AcpAdapter {
     }
 
     fn capabilities(&self) -> AgentCapabilities {
-        AgentCapabilities::default()
+        self.capabilities.clone()
     }
 
     async fn start(&mut self) -> AdapterResult<()> {
@@ -412,72 +475,131 @@ impl AgentAdapter for AcpAdapter {
             .stdout
             .take()
             .ok_or_else(|| AdapterError::Transport("agent has no stdout".into()))?;
-        let sender = self.sender.clone();
-        let slot = self.slot;
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                match parse_acp_notification(slot, &line) {
-                    Ok(Some(event)) => {
-                        if sender.send(Ok(event)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        let _ = sender.send(Err(error)).await;
-                    }
-                }
-            }
-            let _ = sender
-                .send(Ok(AgentEvent::Failed {
-                    slot,
-                    started: true,
-                    detail: "ACP stream closed".into(),
-                }))
-                .await;
-        });
         self.child = Some(child);
-        self.sender
-            .send(Ok(AgentEvent::Ready {
+        self.reader = Some(BufReader::new(stdout).lines());
+
+        let initialize = self
+            .request(
+                "initialize",
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": {
+                        "fs": {"readTextFile": true, "writeTextFile": true},
+                        "terminal": true,
+                    },
+                    "clientInfo": {
+                        "name": "CodeSwarm",
+                        "title": "CodeSwarm",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    },
+                }),
+            )
+            .await?;
+        let agent_capabilities = initialize
+            .get("agentCapabilities")
+            .cloned()
+            .unwrap_or(Value::Null);
+        self.capabilities = AgentCapabilities {
+            supports_cancel: true,
+            supports_modes: true,
+            supports_permissions: true,
+            supports_terminals: true,
+            supports_session_load: agent_capabilities
+                .get("loadSession")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+        let session = self
+            .request(
+                "session/new",
+                serde_json::json!({"cwd": self.cwd, "mcpServers": []}),
+            )
+            .await?;
+        self.session_id = session
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if self.session_id.is_none() {
+            return Err(AdapterError::Protocol(
+                "session/new returned no sessionId".into(),
+            ));
+        }
+        if let Some(modes) = session.get("modes") {
+            let available = modes
+                .get("availableModes")
+                .and_then(Value::as_array)
+                .map(|modes| {
+                    modes
+                        .iter()
+                        .filter_map(|mode| {
+                            Some(Mode {
+                                id: mode.get("id")?.as_str()?.to_owned(),
+                                label: mode.get("name")?.as_str()?.to_owned(),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            self.queued_events.push_back(Ok(AgentEvent::ModesReplaced {
                 slot: self.slot,
-                capabilities: self.capabilities(),
-            }))
-            .await
-            .map_err(|error| AdapterError::Transport(error.to_string()))
+                modes: available,
+                current_mode: modes
+                    .get("currentModeId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            }));
+        }
+        self.queued_events.push_back(Ok(AgentEvent::Ready {
+            slot: self.slot,
+            capabilities: self.capabilities(),
+        }));
+        Ok(())
     }
 
     async fn send_prompt(&mut self, prompt: String) -> AdapterResult<()> {
-        let child = self
-            .child
-            .as_mut()
-            .ok_or_else(|| AdapterError::Transport("ACP agent is not running".into()))?;
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| AdapterError::Transport("ACP agent has no stdin".into()))?;
-        let request = serde_json::json!({
+        let session_id = self
+            .session_id
+            .as_ref()
+            .ok_or_else(|| AdapterError::Transport("ACP session is not initialized".into()))?;
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        self.write_json(serde_json::json!({
             "jsonrpc": "2.0",
-            "id": 1,
+            "id": request_id,
             "method": "session/prompt",
-            "params": {"prompt": [{"type": "text", "text": prompt}]},
-        });
-        stdin
-            .write_all(request.to_string().as_bytes())
-            .await
-            .map_err(|error| AdapterError::Transport(error.to_string()))?;
-        stdin
-            .write_all(b"\n")
-            .await
-            .map_err(|error| AdapterError::Transport(error.to_string()))
+            "params": {
+                "sessionId": session_id,
+                "prompt": [{"type": "text", "text": prompt}],
+            },
+        }))
+        .await
     }
 
     async fn cancel(&mut self) -> AdapterResult<bool> {
-        Ok(false)
+        let Some(session_id) = &self.session_id else {
+            return Ok(false);
+        };
+        self.write_json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/cancel",
+            "params": {"sessionId": session_id, "_meta": {}},
+        }))
+        .await?;
+        Ok(true)
     }
 
-    async fn set_mode(&mut self, _mode: String) -> AdapterResult<()> {
-        Err(AdapterError::Unsupported("set_mode"))
+    async fn set_mode(&mut self, mode: String) -> AdapterResult<()> {
+        let session_id = self
+            .session_id
+            .as_ref()
+            .ok_or_else(|| AdapterError::Transport("ACP session is not initialized".into()))?;
+        let _ = self
+            .request(
+                "session/set_mode",
+                serde_json::json!({"sessionId": session_id, "modeId": mode}),
+            )
+            .await?;
+        Ok(())
     }
 
     async fn reload(&mut self) -> AdapterResult<()> {
@@ -489,11 +611,33 @@ impl AgentAdapter for AcpAdapter {
         if let Some(mut child) = self.child.take() {
             let _ = child.start_kill();
         }
+        self.reader = None;
+        self.session_id = None;
         Ok(())
     }
 
     async fn next_event(&mut self) -> Option<AdapterResult<AgentEvent>> {
-        self.receiver.recv().await
+        if let Some(event) = self.queued_events.pop_front() {
+            return Some(event);
+        }
+        loop {
+            let line = match self.read_line().await {
+                Ok(line) => line,
+                Err(error) => return Some(Err(error)),
+            };
+            let value: Value = match serde_json::from_str(&line) {
+                Ok(value) => value,
+                Err(error) => return Some(Err(AdapterError::Protocol(error.to_string()))),
+            };
+            if value.get("id").is_some() {
+                return Some(Ok(AgentEvent::TurnComplete { slot: self.slot }));
+            }
+            match parse_acp_notification(self.slot, &line) {
+                Ok(Some(event)) => return Some(Ok(event)),
+                Ok(None) => {}
+                Err(error) => return Some(Err(error)),
+            }
+        }
     }
 }
 
@@ -554,7 +698,7 @@ fn parse_acp_notification(slot: RosterSlot, line: &str) -> AdapterResult<Option<
 mod tests {
     use codeswarm_core::{AgentEvent, ToolStatus};
 
-    use super::{parse_acp_notification, parse_agy_line};
+    use super::{AcpAdapter, AgentAdapter, parse_acp_notification, parse_agy_line};
 
     #[test]
     fn parses_acp_text_without_ui_dependency() {
@@ -624,6 +768,31 @@ mod tests {
                 },
                 ..
             }
+        ));
+    }
+
+    #[tokio::test]
+    async fn acp_adapter_initializes_session_and_completes_a_prompt() {
+        let script = r#"read _; echo '{"jsonrpc":"2.0","id":1,"result":{"agentCapabilities":{"loadSession":true}}}'; read _; echo '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"session-1","modes":{"currentModeId":"plan","availableModes":[{"id":"plan","name":"Plan"}]}}}'; read _; echo '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}}}'; echo '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'"#;
+        let cwd = std::env::current_dir().expect("cwd");
+        let mut adapter = AcpAdapter::new(0, cwd, "sh", vec!["-c".into(), script.into()]);
+        adapter.start().await.expect("initialize");
+        assert!(matches!(
+            adapter.next_event().await,
+            Some(Ok(AgentEvent::ModesReplaced { .. }))
+        ));
+        assert!(matches!(
+            adapter.next_event().await,
+            Some(Ok(AgentEvent::Ready { .. }))
+        ));
+        adapter.send_prompt("hello".into()).await.expect("prompt");
+        assert!(matches!(
+            adapter.next_event().await,
+            Some(Ok(AgentEvent::Text { text, .. })) if text == "hello"
+        ));
+        assert!(matches!(
+            adapter.next_event().await,
+            Some(Ok(AgentEvent::TurnComplete { .. }))
         ));
     }
 }
