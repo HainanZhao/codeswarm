@@ -108,12 +108,34 @@ fn compact(text: String) -> String {
     if text.len() <= LIMIT {
         return text;
     }
-    let head = LIMIT / 2;
+    // `String::len` is a byte count, but responses can contain arbitrary
+    // Unicode. Find split points on character boundaries before slicing;
+    // otherwise a long non-ASCII response can panic the relay while it is
+    // compacting public context.
+    let head = floor_char_boundary(&text, LIMIT / 2);
+    let tail_budget = LIMIT - head;
+    let tail_start = ceil_char_boundary(&text, text.len().saturating_sub(tail_budget));
     format!(
         "{}\n\n[CodeSwarm omitted the middle of this response to protect context.]\n\n{}",
         &text[..head],
-        &text[text.len() - (LIMIT - head)..],
+        &text[tail_start..],
     )
+}
+
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn ceil_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index < text.len() && !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index
 }
 
 fn limit(mut updates: Vec<String>, limit: usize) -> String {
@@ -158,5 +180,15 @@ mod tests {
         let unseen = context.unseen(0);
         assert!(unseen.contains("reply 249"));
         assert!(unseen.len() <= 24_000);
+    }
+
+    #[test]
+    fn long_unicode_response_is_compacted_without_slicing_panic() {
+        let mut context = CollaborationContext::new(1);
+        context.record("Agent", "🚀漢字".repeat(5_000), &[true]);
+        let unseen = context.unseen(0);
+        assert!(unseen.contains("omitted the middle"));
+        assert!(unseen.contains("🚀"));
+        assert!(unseen.is_char_boundary(0));
     }
 }

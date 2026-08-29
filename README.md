@@ -61,8 +61,9 @@ entries replace built-ins with the same identity or add a new agent:
 ```
 
 Use `adapter: "native"` for a native command. Bare `codeswarm` displays these
-entries in the store; `Space` selects them, `Alt+↑/↓` changes roster order, and
-`Enter` launches the selection. The store writes the selected identities back
+entries in the store; `Space` selects them, `Alt+↑/↓` changes roster order,
+`Ctrl+S` saves without launching, and `Enter` saves and launches the selection.
+The store writes the selected identities back
 to `launcher.roster` without overwriting other settings.
 
 ## Commands

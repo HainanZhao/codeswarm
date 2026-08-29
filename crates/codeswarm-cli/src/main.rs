@@ -12,7 +12,7 @@ use codeswarm_adapters::{
 };
 use codeswarm_core::PermissionAnswer;
 use codeswarm_core::agents::{AdapterKind, AgentDefinition, catalog_from_settings};
-use codeswarm_core::launcher::{LaunchDecision, launch_decision};
+use codeswarm_core::launcher::{LaunchDecision, launch_decision, parse_saved_roster};
 use codeswarm_core::relay::{CollaborationStrategy, RelayDecision};
 use codeswarm_core::{AgentEvent, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
@@ -340,7 +340,14 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
         .and_then(|path| std::fs::read_to_string(path).ok())
         .unwrap_or_default();
     let catalog = catalog_from_settings(&settings);
-    let launchable_catalog = codeswarm_core::agents::active_catalog(catalog);
+    let saved_roster = parse_saved_roster(&settings);
+    let mut launchable_catalog = codeswarm_core::agents::active_catalog(catalog);
+    launchable_catalog.sort_by_key(|agent| {
+        saved_roster
+            .iter()
+            .position(|saved| saved.eq_ignore_ascii_case(&agent.identity))
+            .unwrap_or(usize::MAX)
+    });
     let agents = launchable_catalog
         .iter()
         .map(|agent| StoreAgent {
@@ -352,7 +359,9 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
             },
             command: agent.command.clone(),
             available: command_available(&agent.command),
-            selected: false,
+            selected: saved_roster
+                .iter()
+                .any(|saved| saved.eq_ignore_ascii_case(&agent.identity)),
         })
         .collect();
     app.show_store(agents);
@@ -373,12 +382,25 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
             KeyCode::Up => Some(StoreKey::Up),
             KeyCode::Down => Some(StoreKey::Down),
             KeyCode::Char(' ') => Some(StoreKey::Toggle),
+            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(StoreKey::Save)
+            }
             KeyCode::Enter => Some(StoreKey::Confirm),
             KeyCode::Esc | KeyCode::Char('q') => Some(StoreKey::Cancel),
             _ => None,
         };
         let Some(store_key) = store_key else { continue };
         match app.handle_store_key(store_key) {
+            StoreAction::Save(indices) => {
+                let identities = indices
+                    .into_iter()
+                    .filter_map(|index| app.store_agents().get(index))
+                    .map(|agent| agent.identity.clone())
+                    .collect::<Vec<_>>();
+                if let Err(error) = save_roster(&identities) {
+                    app.set_store_status(format!("Save failed: {error}"));
+                }
+            }
             StoreAction::Launch(indices) => {
                 let selected = indices
                     .into_iter()
@@ -425,13 +447,23 @@ fn save_roster(identities: &[String]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut settings = path
-        .exists()
-        .then(|| std::fs::read_to_string(&path).ok())
-        .flatten()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|value| value.as_object().cloned())
-        .unwrap_or_default();
+    let mut settings = if path.exists() {
+        let text = std::fs::read_to_string(&path)?;
+        let value = serde_json::from_str::<serde_json::Value>(&text).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("settings file is not valid JSON: {error}"),
+            )
+        })?;
+        value.as_object().cloned().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "settings file must contain a JSON object",
+            )
+        })?
+    } else {
+        serde_json::Map::new()
+    };
     let launcher = settings
         .entry("launcher")
         .or_insert_with(|| serde_json::json!({}));

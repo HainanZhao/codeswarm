@@ -20,8 +20,9 @@ The store reads custom agents from
 `~/.config/codeswarm/codeswarm.json`). Add an `agents` array or object with
 `identity`, `name`, `short_name`, `adapter` (`native` or `acp`), and `command`.
 Entries may override a built-in identity or add a new one. In the store,
-`Space` toggles membership, `Alt+Up`/`Alt+Down` changes order, and `Enter`
-launches the selected roster (or the highlighted agent when none is selected).
+`Space` toggles membership, `Alt+Up`/`Alt+Down` changes order, `Ctrl+S` saves
+without launching, and `Enter` saves and launches the selected roster (or the
+highlighted agent when none is selected).
 
 ## Agent adapters
 

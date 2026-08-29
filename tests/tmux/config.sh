@@ -14,8 +14,11 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+if [[ "${CODESWARM_TMUX_SKIP_BUILD:-0}" != "1" ]]; then
+  cargo build -q --release -p codeswarm-cli
+fi
 if [[ ! -x "$binary" ]]; then
-  echo "missing release binary: $binary (run cargo build --release -p codeswarm-cli)" >&2
+  echo "missing release binary: $binary" >&2
   exit 1
 fi
 

@@ -10,14 +10,20 @@ pane_target="${session_name}:0.0"
 config_dir="$(mktemp -d "${TMPDIR:-/tmp}/codeswarm-store.XXXXXX")"
 binary="$project_root/target/release/codeswarm"
 
+mkdir -p "$config_dir/codeswarm"
+printf '%s\n' '{"agents":[{"identity":"custom.example","name":"Custom Agent","short_name":"custom","adapter":"acp","command":"codeswarm-test-agent --acp"}]}' > "$config_dir/codeswarm/codeswarm.json"
+
 cleanup() {
   tmux -L "$socket_name" kill-server 2>/dev/null || true
   rmdir "$config_dir" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
+if [[ "${CODESWARM_TMUX_SKIP_BUILD:-0}" != "1" ]]; then
+  cargo build -q --release -p codeswarm-cli
+fi
 if [[ ! -x "$binary" ]]; then
-  echo "missing release binary: $binary (run cargo build --release -p codeswarm-cli)" >&2
+  echo "missing release binary: $binary" >&2
   exit 1
 fi
 
@@ -40,11 +46,26 @@ wait_for() {
 }
 
 wait_for "Choose your agents"
-wait_for "Claude Code"
+wait_for "Custom Agent"
 wait_for "Space select"
+tmux -L "$socket_name" send-keys -t "$pane_target" -N 6 Down
+wait_for "▶ ☐ Custom Agent"
 tmux -L "$socket_name" send-keys -t "$pane_target" Space
-wait_for "☑"
-tmux -L "$socket_name" send-keys -t "$pane_target" q
+wait_for "▶ ☑ Custom Agent"
+tmux -L "$socket_name" send-keys -t "$pane_target" C-s
+for _ in $(seq 1 100); do
+  if grep -Fq '"roster": "custom.example"' "$config_dir/codeswarm/codeswarm.json"; then
+    break
+  fi
+  sleep 0.05
+done
+if ! grep -Fq '"roster": "custom.example"' "$config_dir/codeswarm/codeswarm.json"; then
+  echo "Ctrl+S did not persist the selected roster" >&2
+  capture >&2 || true
+  exit 1
+fi
+tmux -L "$socket_name" send-keys -t "$pane_target" Enter
+tmux -L "$socket_name" send-keys -t "$pane_target" Escape
 for _ in $(seq 1 50); do
   if ! tmux -L "$socket_name" has-session -t "$session_name" 2>/dev/null; then
     echo "store command harness passed"

@@ -91,6 +91,7 @@ pub enum StoreKey {
     Up,
     Down,
     Toggle,
+    Save,
     MoveUp,
     MoveDown,
     Confirm,
@@ -111,6 +112,7 @@ pub struct StoreAgent {
 pub enum StoreAction {
     Ignored,
     Changed,
+    Save(Vec<usize>),
     Launch(Vec<usize>),
     Close,
 }
@@ -500,6 +502,7 @@ pub struct App {
     store_visible: bool,
     store_selected: usize,
     store_agents: Vec<StoreAgent>,
+    store_status: String,
     prompt_editor: PromptEditor,
     agent_names: BTreeMap<usize, String>,
     queued_prompts: VecDeque<QueuedPrompt>,
@@ -528,6 +531,7 @@ impl Default for App {
             store_visible: false,
             store_selected: 0,
             store_agents: Vec::new(),
+            store_status: String::new(),
             prompt_editor: PromptEditor::default(),
             agent_names: BTreeMap::new(),
             queued_prompts: VecDeque::new(),
@@ -627,6 +631,7 @@ impl App {
         self.store_agents = agents;
         self.store_selected = 0;
         self.store_visible = true;
+        self.store_status.clear();
     }
 
     pub fn store_visible(&self) -> bool {
@@ -635,6 +640,10 @@ impl App {
 
     pub fn store_agents(&self) -> &[StoreAgent] {
         &self.store_agents
+    }
+
+    pub fn set_store_status(&mut self, status: impl Into<String>) {
+        self.store_status = status.into();
     }
 
     pub fn handle_store_key(&mut self, key: StoreKey) -> StoreAction {
@@ -658,6 +667,21 @@ impl App {
                 self.store_agents[self.store_selected].selected =
                     !self.store_agents[self.store_selected].selected;
                 StoreAction::Changed
+            }
+            StoreKey::Save => {
+                let selected = self
+                    .store_agents
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, agent)| agent.selected.then_some(index))
+                    .collect::<Vec<_>>();
+                let selected = if selected.is_empty() {
+                    vec![self.store_selected]
+                } else {
+                    selected
+                };
+                self.store_status = "Roster saved".into();
+                StoreAction::Save(selected)
             }
             StoreKey::MoveUp if self.store_selected > 0 => {
                 self.store_agents
@@ -1411,6 +1435,7 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
     let y = area.y + area.height.saturating_sub(height) / 2;
     let modal = Rect::new(x, y, width.min(area.width), height.min(area.height));
     frame.render_widget(Clear, modal);
+    let compact = modal.width < 60;
 
     let rows = [
         (
@@ -1452,10 +1477,25 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             Style::default().fg(Color::White)
         };
+        let label = if compact {
+            match *label {
+                "Follow output" => "Follow",
+                "Collapse details" => "Details",
+                "Collaboration" => "Collab",
+                "Renderer" => "Render",
+                "Agent store" => "Agents",
+                other => other,
+            }
+        } else {
+            *label
+        };
+        let label_width = if compact { 11 } else { 20 };
+        let value_width =
+            usize::from(modal.width).saturating_sub(label_width + if compact { 7 } else { 9 });
         lines.push(Line::from(vec![
             Span::styled(format!(" {marker} "), line_style),
-            Span::styled(format!("{label:<20}"), line_style),
-            Span::styled(*value, value_style),
+            Span::styled(format!("{label:<label_width$}"), line_style),
+            Span::styled(compact_label(value, value_width), value_style),
         ]));
     }
     lines.push(Line::raw(""));
@@ -1488,19 +1528,36 @@ fn render_store(frame: &mut Frame, app: &App, area: Rect) {
         height.min(area.height),
     );
     frame.render_widget(Clear, modal);
+    let compact = modal.width < 60;
     let mut lines = vec![
         Line::styled(
-            "Choose your agents",
+            if compact {
+                "Agents"
+            } else {
+                "Choose your agents"
+            },
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
         Line::styled(
-            "Space select · Alt+↑/↓ reorder · Enter launch · Esc quit",
+            if compact {
+                "Space select · Ctrl+S save · Enter run"
+            } else {
+                "Space select · Ctrl+S save · Enter save + launch · Esc quit"
+            },
             Style::default().fg(Color::Gray),
         ),
-        Line::raw(""),
     ];
+    if !compact {
+        lines.push(Line::raw(""));
+    }
+    if !app.store_status.is_empty() {
+        lines.push(Line::styled(
+            format!(" {}", app.store_status),
+            Style::default().fg(Color::Green),
+        ));
+    }
     for (index, agent) in app.store_agents.iter().enumerate() {
         let marker = if index == app.store_selected {
             "▶"
@@ -1521,21 +1578,43 @@ fn render_store(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             Style::default().fg(Color::White)
         };
-        lines.push(Line::from(vec![
-            Span::styled(format!(" {marker} {checked} "), style),
-            Span::styled(format!("{:<20}", agent.name), style),
-            Span::styled(
-                format!(" {:<9} {}", availability, agent.adapter),
-                if agent.available {
-                    Style::default().fg(Color::Green)
-                } else {
-                    Style::default().fg(Color::Yellow)
-                },
-            ),
-        ]));
+        if compact {
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {marker} {checked} "), style),
+                Span::styled(compact_label(&agent.name, 18), style),
+                Span::styled(
+                    if agent.available { "ready" } else { "missing" },
+                    if agent.available {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::Yellow)
+                    },
+                ),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {marker} {checked} "), style),
+                Span::styled(format!("{:<20}", agent.name), style),
+                Span::styled(
+                    format!(" {:<9} {}", availability, agent.adapter),
+                    if agent.available {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::Yellow)
+                    },
+                ),
+            ]));
+        }
         if index == app.store_selected {
             lines.push(Line::styled(
-                format!("     {} · {}", agent.identity, agent.command),
+                if compact {
+                    format!(
+                        "   {}",
+                        compact_label(&agent.identity, usize::from(modal.width).saturating_sub(6))
+                    )
+                } else {
+                    format!("     {} · {}", agent.identity, agent.command)
+                },
                 Style::default().fg(Color::Gray),
             ));
         }
@@ -2122,6 +2201,10 @@ mod tests {
             },
         ]);
         assert_eq!(app.handle_store_key(StoreKey::Toggle), StoreAction::Changed);
+        assert_eq!(
+            app.handle_store_key(StoreKey::Save),
+            StoreAction::Save(vec![0])
+        );
         assert_eq!(app.handle_store_key(StoreKey::Down), StoreAction::Changed);
         assert_eq!(app.handle_store_key(StoreKey::Toggle), StoreAction::Changed);
         assert_eq!(app.handle_store_key(StoreKey::MoveUp), StoreAction::Changed);
@@ -2166,6 +2249,46 @@ mod tests {
             rendered.contains("custom-agent --acp"),
             "rendered={rendered:?}"
         );
+    }
+
+    #[test]
+    fn compact_config_and_store_surfaces_fit_a_mobile_sized_pane() {
+        let backend = TestBackend::new(32, 8);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        app.handle_local_command("/config");
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw compact config");
+        let config = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(config.contains("Follow"), "rendered={config:?}");
+        app.handle_config_key(ConfigKey::Cancel);
+        app.show_store(vec![StoreAgent {
+            identity: "mobile.example".into(),
+            name: "Mobile Agent".into(),
+            adapter: "ACP".into(),
+            command: "mobile-agent".into(),
+            available: true,
+            selected: false,
+        }]);
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw compact store");
+        let store = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(store.contains("Mobile Agent"), "rendered={store:?}");
+        assert!(store.contains("save"), "rendered={store:?}");
     }
 
     #[test]
