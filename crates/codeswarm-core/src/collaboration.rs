@@ -8,6 +8,7 @@ pub struct PublicEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CollaborationContext {
+    shared_task: Option<String>,
     events: Vec<PublicEvent>,
     seen: Vec<usize>,
     truncated: Vec<bool>,
@@ -16,10 +17,24 @@ pub struct CollaborationContext {
 impl CollaborationContext {
     pub fn new(agent_count: usize) -> Self {
         Self {
+            shared_task: None,
             events: Vec::new(),
             seen: vec![0; agent_count],
             truncated: vec![false; agent_count],
         }
+    }
+
+    pub fn set_shared_task(&mut self, task: impl Into<String>) {
+        self.shared_task = Some(task.into());
+    }
+
+    pub fn shared_task(&self) -> Option<&str> {
+        self.shared_task.as_deref()
+    }
+
+    pub fn add_agent(&mut self) {
+        self.seen.push(0);
+        self.truncated.push(false);
     }
 
     pub fn record(&mut self, speaker: impl Into<String>, text: impl Into<String>, active: &[bool]) {

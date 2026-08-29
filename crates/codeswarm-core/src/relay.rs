@@ -6,6 +6,7 @@
 use std::collections::VecDeque;
 
 use crate::RosterSlot;
+use crate::collaboration::CollaborationContext;
 
 pub const MAX_QUEUED_PROMPTS: usize = 100;
 
@@ -46,6 +47,7 @@ pub struct Relay {
     steering: VecDeque<QueuedPrompt>,
     direct: VecDeque<QueuedPrompt>,
     previous_slot: Option<RosterSlot>,
+    context: CollaborationContext,
 }
 
 impl Relay {
@@ -62,6 +64,7 @@ impl Relay {
             steering: VecDeque::new(),
             direct: VecDeque::new(),
             previous_slot: None,
+            context: CollaborationContext::new(roster_size),
         }
     }
 
@@ -139,6 +142,31 @@ impl Relay {
 
     pub fn queued_count(&self) -> usize {
         self.direct.len() + self.steering.len()
+    }
+
+    pub fn set_shared_task(&mut self, task: impl Into<String>) {
+        self.context.set_shared_task(task);
+    }
+
+    pub fn shared_task(&self) -> Option<&str> {
+        self.context.shared_task()
+    }
+
+    pub fn record_public(&mut self, speaker: impl Into<String>, text: impl Into<String>) {
+        self.context.record(speaker, text, &self.active);
+    }
+
+    pub fn mark_context_seen(&mut self, slot: RosterSlot) {
+        self.context.mark_seen(slot);
+    }
+
+    pub fn unseen_context(&mut self, slot: RosterSlot) -> String {
+        self.context.unseen(slot)
+    }
+
+    pub fn add_agent(&mut self) {
+        self.active.push(true);
+        self.context.add_agent();
     }
 
     /// Select the next causal turn. Direct work always precedes steering work.
@@ -267,5 +295,18 @@ mod tests {
             }
         ));
         assert_eq!(relay.drop_agent(0), Err("owner cannot be dropped"));
+    }
+
+    #[test]
+    fn relay_context_tracks_public_updates_per_slot() {
+        let mut relay = Relay::new(2, 10);
+        relay.set_shared_task("refactor");
+        relay.record_public("Agent 0", "first answer");
+        relay.mark_context_seen(0);
+        assert_eq!(relay.unseen_context(0), "");
+        assert_eq!(relay.unseen_context(1), "Agent 0:\nfirst answer");
+        assert_eq!(relay.shared_task(), Some("refactor"));
+        relay.add_agent();
+        assert_eq!(relay.active_slots().count(), 3);
     }
 }
