@@ -2028,13 +2028,13 @@ fn render_transcript(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>) {
                     return Line::from(vec![
                         Span::styled(marker, Style::default().fg(color).bold()),
                         Span::styled(format!("{speaker}:"), Style::default().fg(color).bold()),
-                        Span::styled(format!(" {body}"), block_style(row.kind)),
+                        Span::styled(format!(" {body}"), markdown_style(row.kind, body)),
                     ]);
                 }
                 let style = row_style(row.kind, &row.text);
                 Line::from(vec![
                     Span::styled(marker, style.add_modifier(Modifier::BOLD)),
-                    Span::styled(row.text, style),
+                    Span::styled(row.text.clone(), markdown_style(row.kind, &row.text)),
                 ])
             })
             .collect::<Vec<_>>()
@@ -2094,6 +2094,17 @@ fn row_style(kind: codeswarm_transcript::BlockKind, text: &str) -> Style {
     }
 }
 
+fn markdown_style(kind: codeswarm_transcript::BlockKind, text: &str) -> Style {
+    let base = block_style(kind);
+    if text.starts_with("#") {
+        base.fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else if text.starts_with("```") {
+        base.fg(Color::Gray)
+    } else {
+        base
+    }
+}
+
 fn looks_like_unified_diff(text: &str) -> bool {
     let mut has_hunk = false;
     let mut has_file_header = false;
@@ -2112,7 +2123,8 @@ mod tests {
 
     use super::{
         App, ConfigAction, ConfigKey, LocalCommand, PermissionAction, PermissionKey, PromptAction,
-        PromptEditor, StoreAction, StoreAgent, StoreKey, agent_header_color, render, row_style,
+        PromptEditor, StoreAction, StoreAgent, StoreKey, agent_header_color, markdown_style,
+        render, row_style,
     };
 
     fn key(key: Key) -> Input {
@@ -2399,6 +2411,18 @@ mod tests {
         assert_eq!(
             row_style(BlockKind::Diff, "+++ file").fg,
             Some(Color::Magenta)
+        );
+    }
+
+    #[test]
+    fn markdown_headings_keep_lightweight_visual_hierarchy() {
+        assert_eq!(
+            markdown_style(BlockKind::Agent, "## Summary").fg,
+            Some(Color::Cyan)
+        );
+        assert_eq!(
+            markdown_style(BlockKind::Agent, "normal text").fg,
+            Some(Color::White)
         );
     }
 
