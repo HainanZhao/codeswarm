@@ -364,6 +364,7 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
         .unwrap_or_default();
     let catalog = catalog_from_settings(&settings);
     let saved_roster = parse_saved_roster(&settings);
+    let has_saved_roster = !saved_roster.is_empty();
     let mut launchable_catalog = codeswarm_core::agents::active_catalog(catalog);
     launchable_catalog.sort_by_key(|agent| {
         saved_roster
@@ -373,18 +374,28 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
     });
     let agents = launchable_catalog
         .iter()
-        .map(|agent| StoreAgent {
-            identity: agent.identity.clone(),
-            name: agent.name.clone(),
-            adapter: match agent.adapter {
-                AdapterKind::Native => "native".into(),
-                AdapterKind::Acp => "ACP".into(),
-            },
-            command: agent.command.clone(),
-            available: command_available(&agent.command),
-            selected: saved_roster
-                .iter()
-                .any(|saved| saved.eq_ignore_ascii_case(&agent.identity)),
+        .map(|agent| {
+            let available = command_available(&agent.command);
+            StoreAgent {
+                identity: agent.identity.clone(),
+                name: agent.name.clone(),
+                adapter: match agent.adapter {
+                    AdapterKind::Native => "native".into(),
+                    AdapterKind::Acp => "ACP".into(),
+                },
+                command: agent.command.clone(),
+                available,
+                selected: if has_saved_roster {
+                    saved_roster
+                        .iter()
+                        .any(|saved| saved.eq_ignore_ascii_case(&agent.identity))
+                } else {
+                    matches!(
+                        agent.short_name.as_str(),
+                        "claude" | "codex" | "gemini" | "antigravity"
+                    ) && available
+                },
+            }
         })
         .collect();
     app.show_store(agents);
