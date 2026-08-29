@@ -111,6 +111,9 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 - [x] Visual tmux smoke coverage exercises inline layout, scroll/follow-tail,
   keyboard help, prompt/status regions, and clean quit behavior; fixed inline
   viewport geometry so scrolling no longer snaps back to the tail.
+- [x] Coalesced streamed thought chunks into one per-turn collapsed detail,
+  preventing token-level reasoning output from creating a new line/card for
+  every stream event.
 - [x] Added terminal queue/help interaction state: queued and direct prompts,
   target selection, cancellation, follow-tail behavior, and inline keyboard
   help rendering.
