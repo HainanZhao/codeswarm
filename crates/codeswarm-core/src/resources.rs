@@ -94,17 +94,33 @@ fn mime_type(path: &Path) -> String {
         .unwrap_or_default()
         .to_ascii_lowercase();
     let mime = match extension.as_str() {
+        "txt" | "text" => "text/plain",
+        "log" => "text/plain",
         "json" => "application/json",
         "html" | "htm" => "text/html",
         "css" => "text/css",
         "csv" => "text/csv",
         "md" => "text/markdown",
+        "markdown" => "text/markdown",
         "rs" => "text/rust",
         "py" => "text/x-python",
-        "js" | "mjs" => "text/javascript",
+        "js" | "mjs" | "cjs" => "text/javascript",
+        "ts" | "tsx" => "text/typescript",
+        "c" => "text/x-c",
+        "h" => "text/x-c",
+        "cc" | "cpp" | "cxx" | "hpp" => "text/x-c++",
+        "go" => "text/x-go",
+        "java" => "text/x-java-source",
+        "rb" => "text/x-ruby",
+        "php" => "text/x-php",
+        "sh" | "bash" | "zsh" | "fish" => "application/x-sh",
+        "sql" => "application/sql",
         "toml" => "application/toml",
         "yaml" | "yml" => "application/yaml",
         "xml" => "application/xml",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "wasm" => "application/wasm",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -162,6 +178,22 @@ mod tests {
             load(&root, "large.bin"),
             Err(ResourceError::TooLarge { .. })
         ));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn reports_common_text_and_source_mime_types() {
+        let root = temp_root();
+        std::fs::write(root.join("notes.txt"), "hello").expect("text");
+        std::fs::write(root.join("run.sh"), "#!/bin/sh\n").expect("shell");
+        assert_eq!(
+            load(&root, "notes.txt").expect("text resource").mime_type,
+            "text/plain"
+        );
+        assert_eq!(
+            load(&root, "run.sh").expect("shell resource").mime_type,
+            "application/x-sh"
+        );
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 

@@ -480,20 +480,30 @@ impl PromptEditor {
         };
         if self.completion_matches.is_empty() {
             self.completion_matches = if prefix.starts_with('@') {
-                let mut matches = self
-                    .completion_candidates
-                    .iter()
-                    .filter_map(|candidate| {
-                        fuzzy_completion_score(&prefix, candidate)
-                            .map(|score| (score, candidate.clone()))
-                    })
-                    .collect::<Vec<_>>();
-                matches
-                    .sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
-                matches
-                    .into_iter()
-                    .map(|(_, candidate)| candidate)
-                    .collect()
+                // The Python path picker deliberately waits for three
+                // characters before searching.  Keeping that guard in the
+                // editor avoids cycling through a large repository-wide
+                // candidate set after typing a bare `@`, while still keeping
+                // slash-command completion immediate.
+                if prefix[1..].chars().count() < 3 {
+                    Vec::new()
+                } else {
+                    let mut matches = self
+                        .completion_candidates
+                        .iter()
+                        .filter_map(|candidate| {
+                            fuzzy_completion_score(&prefix, candidate)
+                                .map(|score| (score, candidate.clone()))
+                        })
+                        .collect::<Vec<_>>();
+                    matches.sort_by(|left, right| {
+                        right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1))
+                    });
+                    matches
+                        .into_iter()
+                        .map(|(_, candidate)| candidate)
+                        .collect()
+                }
             } else {
                 self.completion_candidates
                     .iter()
@@ -2695,15 +2705,15 @@ fn markdown_spans(
             .filter_map(|delimiter| remaining.find(delimiter).map(|index| (index, *delimiter)))
             .min_by_key(|(index, _)| *index);
         let Some((start, delimiter)) = next else {
-            spans.push(Span::styled(remaining.to_owned(), base));
+            spans.extend(file_reference_spans(base, remaining));
             break;
         };
         if start > 0 {
-            spans.push(Span::styled(remaining[..start].to_owned(), base));
+            spans.extend(file_reference_spans(base, &remaining[..start]));
         }
         let content_start = start + delimiter.len();
         let Some(end_relative) = remaining[content_start..].find(delimiter) else {
-            spans.push(Span::styled(remaining[start..].to_owned(), base));
+            spans.extend(file_reference_spans(base, &remaining[start..]));
             break;
         };
         let end = content_start + end_relative;
@@ -2723,6 +2733,90 @@ fn markdown_spans(
     spans
 }
 
+const FILE_REFERENCE_EXTENSIONS: &[&str] = &[
+    "bash", "c", "cc", "cpp", "css", "go", "h", "hpp", "html", "ini", "java", "js", "json", "jsx",
+    "kotlin", "kt", "md", "php", "py", "pyi", "rb", "rs", "sh", "sql", "swift", "toml", "ts",
+    "tsx", "xml", "yaml", "yml",
+];
+
+/// Split prose into ordinary and source-file spans without a regex or a
+/// heavyweight Markdown parser.  The Python client highlights the same
+/// family of source references, including optional `:line` / `:line-line`
+/// suffixes.  This stays allocation-light and runs only for the visible
+/// transcript rows, never for the complete retained conversation.
+fn file_reference_spans(base: Style, text: &str) -> Vec<Span<'static>> {
+    let mut ranges = Vec::new();
+    let mut token_start = None;
+    for (index, character) in text.char_indices() {
+        if is_file_token_character(character) {
+            token_start.get_or_insert(index);
+        } else if let Some(start) = token_start.take() {
+            add_file_reference_range(text, start, index, &mut ranges);
+        }
+    }
+    if let Some(start) = token_start {
+        add_file_reference_range(text, start, text.len(), &mut ranges);
+    }
+
+    if ranges.is_empty() {
+        return vec![Span::styled(text.to_owned(), base)];
+    }
+    let reference_style = base.fg(Color::LightCyan).add_modifier(Modifier::UNDERLINED);
+    let mut spans = Vec::with_capacity(ranges.len() * 2 + 1);
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        if start > cursor {
+            spans.push(Span::styled(text[cursor..start].to_owned(), base));
+        }
+        spans.push(Span::styled(text[start..end].to_owned(), reference_style));
+        cursor = end;
+    }
+    if cursor < text.len() {
+        spans.push(Span::styled(text[cursor..].to_owned(), base));
+    }
+    spans
+}
+
+fn is_file_token_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '/' | '.' | '_' | '-' | ':' | '~')
+}
+
+fn add_file_reference_range(
+    text: &str,
+    start: usize,
+    end: usize,
+    ranges: &mut Vec<(usize, usize)>,
+) {
+    let token = &text[start..end];
+    let path_end = token
+        .rfind(':')
+        .filter(|colon| {
+            let suffix = &token[colon + 1..];
+            !suffix.is_empty()
+                && suffix.chars().any(|character| character.is_ascii_digit())
+                && suffix
+                    .chars()
+                    .all(|character| character.is_ascii_digit() || character == '-')
+        })
+        .unwrap_or(token.len());
+    let path = &token[..path_end];
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    let special_name = matches!(
+        filename,
+        "Dockerfile" | "Makefile" | "Justfile" | "Procfile"
+    ) || filename == ".env"
+        || filename.starts_with(".env.");
+    let extension = filename.rsplit_once('.').map(|(_, extension)| extension);
+    if (special_name
+        || extension.is_some_and(|extension| {
+            FILE_REFERENCE_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
+        }))
+        && !path.is_empty()
+    {
+        ranges.push((start, start + path_end));
+    }
+}
+
 fn looks_like_unified_diff(text: &str) -> bool {
     let mut has_hunk = false;
     let mut has_file_header = false;
@@ -2740,14 +2834,14 @@ mod tests {
         Terminal,
         backend::TestBackend,
         layout::Rect,
-        style::{Color, Modifier},
+        style::{Color, Modifier, Style},
     };
     use tui_textarea::{Input, Key};
 
     use super::{
         App, ConfigAction, ConfigKey, LocalCommand, PermissionAction, PermissionKey, PromptAction,
         PromptEditor, StoreAction, StoreAgent, StoreKey, agent_header_color, agent_slot_color,
-        markdown_spans, markdown_style, render, row_style,
+        file_reference_spans, markdown_spans, markdown_style, render, row_style,
     };
 
     fn key(key: Key) -> Input {
@@ -2902,6 +2996,8 @@ mod tests {
         app.set_prompt_completions(["@src/main.rs", "@src/lib.rs"]);
         app.handle_prompt_input(key(Key::Char('@')));
         app.handle_prompt_input(key(Key::Char('s')));
+        app.handle_prompt_input(key(Key::Char('r')));
+        app.handle_prompt_input(key(Key::Char('c')));
         app.handle_prompt_input(key(Key::Char('m')));
         assert!(matches!(
             app.handle_prompt_input(key(Key::Tab)),
@@ -2911,6 +3007,8 @@ mod tests {
         editor.set_completion_candidates(["@src/main.rs", "@README.md"]);
         editor.handle_input(key(Key::Char('@')));
         editor.handle_input(key(Key::Char('m')));
+        editor.handle_input(key(Key::Char('a')));
+        editor.handle_input(key(Key::Char('i')));
         assert!(matches!(
             editor.handle_input(key(Key::Tab)),
             PromptAction::Completion { value, .. } if value == "@src/main.rs"
@@ -3097,6 +3195,46 @@ mod tests {
         assert_eq!(quote[0].style.fg, Some(Color::Cyan));
         let numbered = markdown_spans(BlockKind::Agent, "1. step", &mut in_code);
         assert_eq!(numbered[0].content, "1. ");
+    }
+
+    #[test]
+    fn path_completion_waits_for_a_meaningful_query() {
+        let mut editor = PromptEditor::default();
+        editor.set_completion_candidates(["@src/main.rs", "@src/lib.rs"]);
+        editor.handle_input(key(Key::Char('@')));
+        assert!(matches!(
+            editor.handle_input(key(Key::Tab)),
+            PromptAction::Ignored
+        ));
+
+        editor.handle_input(key(Key::Char('s')));
+        editor.handle_input(key(Key::Char('r')));
+        editor.handle_input(key(Key::Char('c')));
+        assert!(matches!(
+            editor.handle_input(key(Key::Tab)),
+            PromptAction::Completion { .. }
+        ));
+    }
+
+    #[test]
+    fn file_references_are_accented_but_line_suffix_stays_together() {
+        let spans = file_reference_spans(
+            Style::default().fg(Color::White),
+            "see src/main.rs:42 and README",
+        );
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].content, "see ");
+        assert_eq!(spans[1].content, "src/main.rs");
+        assert!(spans[1].style.add_modifier == Modifier::UNDERLINED);
+        assert_eq!(spans[2].content, ":42 and README");
+    }
+
+    #[test]
+    fn file_references_inside_inline_code_are_not_restyled() {
+        let mut in_code = false;
+        let spans = markdown_spans(BlockKind::Agent, "`src/main.rs`", &mut in_code);
+        assert_eq!(spans.len(), 1);
+        assert_ne!(spans[0].style.add_modifier, Modifier::UNDERLINED);
     }
 
     #[test]
