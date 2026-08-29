@@ -102,6 +102,71 @@ pub enum ConfigAction {
     Close,
 }
 
+/// How much vertical space the conversation surface gives to editor text.
+/// The setting is intentionally binary to stay predictable in a small tmux
+/// pane while retaining the Python client's comfortable/compact contract.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Density {
+    #[default]
+    Comfortable,
+    Compact,
+}
+
+impl Density {
+    pub fn from_setting(value: &str) -> Self {
+        if value.eq_ignore_ascii_case("compact") {
+            Self::Compact
+        } else {
+            Self::Comfortable
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Comfortable => "comfortable",
+            Self::Compact => "compact",
+        }
+    }
+}
+
+/// Policy for materializing tool output details.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ToolExpandPolicy {
+    /// Expand failed tools, subject to the global collapsed-details toggle.
+    #[default]
+    Fail,
+    /// Expand every tool detail.
+    Always,
+    /// Keep every tool detail collapsed.
+    Never,
+}
+
+impl ToolExpandPolicy {
+    pub fn from_setting(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "always" => Self::Always,
+            "never" => Self::Never,
+            _ => Self::Fail,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fail => "fail",
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+
+    const fn next(self) -> Self {
+        match self {
+            Self::Fail => Self::Always,
+            Self::Always => Self::Never,
+            Self::Never => Self::Fail,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreKey {
     Up,
@@ -518,6 +583,10 @@ pub struct App {
     config_selected: usize,
     collapse_details: bool,
     notifications: bool,
+    show_thoughts: bool,
+    expand_tools: bool,
+    density: Density,
+    tool_expand_policy: ToolExpandPolicy,
     diff_split: bool,
     store_visible: bool,
     store_selected: usize,
@@ -555,6 +624,10 @@ impl Default for App {
             config_selected: 0,
             collapse_details: true,
             notifications: false,
+            show_thoughts: false,
+            expand_tools: false,
+            density: Density::Comfortable,
+            tool_expand_policy: ToolExpandPolicy::Fail,
             diff_split: false,
             store_visible: false,
             store_selected: 0,
@@ -832,7 +905,7 @@ impl App {
                 ConfigAction::Changed
             }
             ConfigKey::Down => {
-                self.config_selected = self.config_selected.saturating_add(1).min(7);
+                self.config_selected = self.config_selected.saturating_add(1).min(10);
                 ConfigAction::Changed
             }
             ConfigKey::Confirm => {
@@ -874,7 +947,18 @@ impl App {
                         };
                     }
                     5 => self.diff_split = !self.diff_split,
-                    6..=7 => {}
+                    6 => self.show_thoughts = !self.show_thoughts,
+                    7 => {
+                        self.tool_expand_policy = self.tool_expand_policy.next();
+                        self.expand_tools = self.tool_expand_policy == ToolExpandPolicy::Always;
+                    }
+                    8 => {
+                        self.density = match self.density {
+                            Density::Comfortable => Density::Compact,
+                            Density::Compact => Density::Comfortable,
+                        };
+                    }
+                    9..=10 => {}
                     _ => return ConfigAction::Ignored,
                 }
                 self.status = "configuration updated".into();
@@ -897,6 +981,44 @@ impl App {
 
     pub fn set_notifications_enabled(&mut self, enabled: bool) {
         self.notifications = enabled;
+    }
+
+    pub fn thoughts_enabled(&self) -> bool {
+        self.show_thoughts
+    }
+
+    pub fn set_thoughts_enabled(&mut self, enabled: bool) {
+        self.show_thoughts = enabled;
+    }
+
+    pub fn tools_expanded(&self) -> bool {
+        self.expand_tools
+    }
+
+    pub fn set_tools_expanded(&mut self, expanded: bool) {
+        self.tool_expand_policy = if expanded {
+            ToolExpandPolicy::Always
+        } else {
+            ToolExpandPolicy::Fail
+        };
+        self.expand_tools = expanded;
+    }
+
+    pub fn tool_expand_policy(&self) -> &'static str {
+        self.tool_expand_policy.as_str()
+    }
+
+    pub fn set_tool_expand_policy(&mut self, policy: &str) {
+        self.tool_expand_policy = ToolExpandPolicy::from_setting(policy);
+        self.expand_tools = self.tool_expand_policy == ToolExpandPolicy::Always;
+    }
+
+    pub fn density(&self) -> &'static str {
+        self.density.as_str()
+    }
+
+    pub fn set_density(&mut self, density: &str) {
+        self.density = Density::from_setting(density);
     }
 
     pub fn diff_split(&self) -> bool {
@@ -1126,7 +1248,7 @@ impl App {
                     let id = self.transcript.append(
                         codeswarm_transcript::BlockKind::Thought,
                         format!("{}: ", self.agent_name(*slot)),
-                        true,
+                        !self.show_thoughts,
                     );
                     self.streaming_blocks.insert(key, id);
                     id
@@ -1161,7 +1283,17 @@ impl App {
                         )
                     },
                 );
-                let id = self.transcript.append(kind, source, self.collapse_details);
+                let collapsed = match self.tool_expand_policy {
+                    ToolExpandPolicy::Always => false,
+                    ToolExpandPolicy::Never => true,
+                    // The legacy "fail" default expands failures when the
+                    // global detail setting is collapsed, while respecting a
+                    // user's explicit request to show all details.
+                    ToolExpandPolicy::Fail => {
+                        self.collapse_details && update.status != ToolStatus::Failed
+                    }
+                };
+                let id = self.transcript.append(kind, source, collapsed);
                 self.focused_detail = Some(id);
             }
             AgentEvent::Permission { slot, request } => {
@@ -1365,11 +1497,14 @@ impl App {
     }
 
     fn prompt_height_hint(&self) -> usize {
-        self.prompt_editor
-            .lines()
-            .len()
-            .saturating_add(1)
-            .clamp(2, 8)
+        self.prompt_editor.lines().len().saturating_add(1).clamp(
+            2,
+            if self.density == Density::Compact {
+                3
+            } else {
+                8
+            },
+        )
     }
 
     fn queue_height(&self) -> u16 {
@@ -1485,6 +1620,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .saturating_sub(help_height);
     let content_height = usize::from(available_for_prompt > minimum_prompt_height);
     let preferred_prompt_height = usize::from(app.prompt_editor.preferred_height(area.width));
+    let preferred_prompt_height = if app.density == Density::Compact {
+        preferred_prompt_height.min(3)
+    } else {
+        preferred_prompt_height
+    };
     let prompt_height =
         preferred_prompt_height.min(available_for_prompt.saturating_sub(content_height));
     let rows = Layout::vertical([
@@ -1765,7 +1905,7 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
     let width = area.width.clamp(36, 76);
-    let height = area.height.clamp(8, 16);
+    let height = area.height.clamp(10, 18);
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     let modal = Rect::new(x, y, width.min(area.width), height.min(area.height));
@@ -1793,6 +1933,32 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
         (
             "Diff view",
             if app.diff_split { "Split" } else { "Unified" },
+            true,
+        ),
+        (
+            "Thoughts",
+            if app.show_thoughts {
+                "Visible"
+            } else {
+                "Collapsed"
+            },
+            true,
+        ),
+        (
+            "Tool details",
+            match app.tool_expand_policy {
+                ToolExpandPolicy::Fail => "On failure",
+                ToolExpandPolicy::Always => "Always",
+                ToolExpandPolicy::Never => "Never",
+            },
+            true,
+        ),
+        (
+            "Density",
+            match app.density {
+                Density::Comfortable => "Comfortable",
+                Density::Compact => "Compact",
+            },
             true,
         ),
         ("Renderer", "Inline · tmux safe", false),
@@ -1828,6 +1994,9 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
                 "Collapse details" => "Details",
                 "Notifications" => "Notify",
                 "Diff view" => "Diff",
+                "Thoughts" => "Thoughts",
+                "Tool details" => "Tools",
+                "Density" => "Density",
                 "Collaboration" => "Collab",
                 "Renderer" => "Render",
                 "Agent store" => "Agents",
@@ -2851,6 +3020,86 @@ mod tests {
             ConfigAction::Changed
         );
         assert!(app.notifications_enabled());
+    }
+
+    #[test]
+    fn detail_preferences_control_thought_and_tool_initial_visibility() {
+        let mut app = App::default();
+        app.handle_local_command("/config");
+        for _ in 0..6 {
+            app.handle_config_key(ConfigKey::Down);
+        }
+        assert_eq!(
+            app.handle_config_key(ConfigKey::Confirm),
+            ConfigAction::Changed
+        );
+        app.handle_config_key(ConfigKey::Down);
+        assert_eq!(
+            app.handle_config_key(ConfigKey::Confirm),
+            ConfigAction::Changed
+        );
+        assert!(app.thoughts_enabled());
+        assert!(app.tools_expanded());
+        app.apply_event(&codeswarm_core::AgentEvent::Thought {
+            slot: 0,
+            text: "thinking".into(),
+        });
+        assert!(app.transcript.row_count(80) > 0);
+        app.apply_event(&codeswarm_core::AgentEvent::Tool {
+            slot: 0,
+            update: codeswarm_core::ToolUpdate {
+                id: "tool".into(),
+                title: "Run".into(),
+                status: codeswarm_core::ToolStatus::Completed,
+                detail: Some("detail".into()),
+            },
+        });
+        assert!(app.transcript.row_count(80) > 1);
+    }
+
+    #[test]
+    fn tool_expand_policy_matches_python_fail_always_never_choices() {
+        let tool = |status| codeswarm_core::AgentEvent::Tool {
+            slot: 0,
+            update: codeswarm_core::ToolUpdate {
+                id: "tool".into(),
+                title: "Run".into(),
+                status,
+                detail: Some("line one\nline two".into()),
+            },
+        };
+
+        // The default `fail` policy keeps successful details collapsed but
+        // surfaces a failed tool for immediate diagnosis.
+        let mut app = App::default();
+        app.apply_event(&tool(codeswarm_core::ToolStatus::Completed));
+        assert_eq!(app.transcript.row_count(80), 1);
+        let mut failed = App::default();
+        failed.apply_event(&tool(codeswarm_core::ToolStatus::Failed));
+        assert!(failed.transcript.row_count(80) > 1);
+
+        let mut always = App::default();
+        always.set_tool_expand_policy("always");
+        always.apply_event(&tool(codeswarm_core::ToolStatus::Completed));
+        assert!(always.transcript.row_count(80) > 1);
+
+        let mut never = App::default();
+        never.set_tool_expand_policy("never");
+        never.apply_event(&tool(codeswarm_core::ToolStatus::Failed));
+        assert_eq!(never.transcript.row_count(80), 1);
+    }
+
+    #[test]
+    fn density_is_a_stable_setting_and_compact_limits_prompt_height() {
+        let mut app = App::default();
+        app.prompt_editor.set_text("one\ntwo\nthree\nfour");
+        let comfortable_height = app.content_height(24);
+        assert_eq!(app.density(), "comfortable");
+        app.set_density("compact");
+        assert_eq!(app.density(), "compact");
+        assert!(app.content_height(24) > comfortable_height);
+        app.set_density("unknown-value");
+        assert_eq!(app.density(), "comfortable");
     }
 
     #[test]

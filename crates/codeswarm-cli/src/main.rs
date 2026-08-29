@@ -630,6 +630,27 @@ fn load_ui_preferences(app: &mut App) {
     {
         app.set_notifications_enabled(enabled);
     }
+    if let Some(enabled) = value
+        .get("agent")
+        .and_then(|agent| agent.get("thoughts"))
+        .and_then(serde_json::Value::as_bool)
+    {
+        app.set_thoughts_enabled(enabled);
+    }
+    if let Some(expand) = value
+        .get("tools")
+        .and_then(|tools| tools.get("expand"))
+        .and_then(serde_json::Value::as_str)
+    {
+        app.set_tool_expand_policy(expand);
+    }
+    if let Some(density) = value
+        .get("ui")
+        .and_then(|ui| ui.get("density"))
+        .and_then(serde_json::Value::as_str)
+    {
+        app.set_density(density);
+    }
     if let Some(split) = value
         .get("diff")
         .and_then(|diff| diff.get("view"))
@@ -644,13 +665,16 @@ fn save_ui_preferences(app: &App) -> std::io::Result<()> {
         return Ok(());
     };
     settings::update(path, |settings| {
-        let ui = settings
-            .entry("ui")
-            .or_insert_with(|| serde_json::json!({}));
-        if !ui.is_object() {
-            *ui = serde_json::json!({});
+        {
+            let ui = settings
+                .entry("ui")
+                .or_insert_with(|| serde_json::json!({}));
+            if !ui.is_object() {
+                *ui = serde_json::json!({});
+            }
+            ui["follow_output"] = serde_json::Value::Bool(app.follow_tail);
+            ui["density"] = serde_json::Value::String(app.density().into());
         }
-        ui["follow_output"] = serde_json::Value::Bool(app.follow_tail);
         let transcript = settings
             .entry("transcript")
             .or_insert_with(|| serde_json::json!({}));
@@ -665,6 +689,20 @@ fn save_ui_preferences(app: &App) -> std::io::Result<()> {
             *notifications = serde_json::json!({});
         }
         notifications["enabled"] = serde_json::Value::Bool(app.notifications_enabled());
+        let agent = settings
+            .entry("agent")
+            .or_insert_with(|| serde_json::json!({}));
+        if !agent.is_object() {
+            *agent = serde_json::json!({});
+        }
+        agent["thoughts"] = serde_json::Value::Bool(app.thoughts_enabled());
+        let tools = settings
+            .entry("tools")
+            .or_insert_with(|| serde_json::json!({}));
+        if !tools.is_object() {
+            *tools = serde_json::json!({});
+        }
+        tools["expand"] = serde_json::Value::String(app.tool_expand_policy().into());
         let diff = settings
             .entry("diff")
             .or_insert_with(|| serde_json::json!({}));
