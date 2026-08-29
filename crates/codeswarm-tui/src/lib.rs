@@ -482,28 +482,42 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .viewport(content_width, app.scroll_y, content_height, 4);
     render_transcript(frame.buffer_mut(), rows[0], visible);
 
-    let status = format!(
-        " {} · {} · {}{}{}",
-        app.active_agent,
-        app.status,
-        if app.follow_tail {
-            "following"
-        } else {
-            "scrolling"
-        },
-        if app.follow_tail {
-            ""
-        } else {
-            " · End to follow"
-        },
+    let follow_label = if app.follow_tail {
+        "FOLLOWING"
+    } else {
+        "SCROLLING"
+    };
+    let status_line = Line::from(vec![
+        Span::styled(" ✈ ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(
+            app.active_agent.as_str(),
+            Style::default().fg(Color::White).bold(),
+        ),
+        Span::styled("  ·  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            app.status.as_str(),
+            Style::default().fg(status_color(&app.status)),
+        ),
+        Span::styled("  ·  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            follow_label,
+            Style::default().fg(if app.follow_tail {
+                Color::Green
+            } else {
+                Color::Yellow
+            }),
+        ),
         if app.queued_count() > 0 {
-            " · queued"
+            Span::styled(
+                format!("  ·  {} queued", app.queued_count()),
+                Style::default().fg(Color::Yellow),
+            )
         } else {
-            ""
+            Span::raw("")
         },
-    );
-    Paragraph::new(status)
-        .style(Style::default().fg(Color::DarkGray))
+    ]);
+    Paragraph::new(status_line)
+        .style(Style::default().bg(Color::Rgb(22, 28, 38)))
         .render(rows[1], frame.buffer_mut());
     if app.queued_count() > 0 {
         render_queue(frame.buffer_mut(), rows[2], app);
@@ -514,9 +528,34 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.keyboard_help_visible() {
         render_keyboard_help(frame.buffer_mut(), rows[4]);
     }
-    Paragraph::new(format!("> {}", app.prompt))
-        .block(Block::default().borders(Borders::TOP))
-        .render(rows[5], frame.buffer_mut());
+    Paragraph::new(Line::from(vec![
+        Span::styled(" › ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(app.prompt.as_str(), Style::default().fg(Color::White)),
+    ]))
+    .style(Style::default().bg(Color::Rgb(18, 23, 32)))
+    .block(
+        Block::default()
+            .title(" Prompt ")
+            .title_style(Style::default().fg(Color::Cyan).bold())
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(Color::Rgb(55, 75, 95))),
+    )
+    .render(rows[5], frame.buffer_mut());
+}
+
+fn status_color(status: &str) -> Color {
+    let status = status.to_ascii_lowercase();
+    if status.contains("error") || status.contains("failed") || status.contains("crashed") {
+        Color::Red
+    } else if status.contains("permission") || status.contains("cancell") {
+        Color::Yellow
+    } else if status.contains("stream") || status.contains("think") || status.contains("running") {
+        Color::Cyan
+    } else if status == "ready" || status == "idle" {
+        Color::Green
+    } else {
+        Color::Gray
+    }
 }
 
 fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
@@ -599,11 +638,29 @@ fn render_permission(buffer: &mut Buffer, area: Rect, request: &PermissionPrompt
 fn render_transcript(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>) {
     let lines = rows
         .into_iter()
-        .map(|row| Line::raw(row.text))
+        .map(|row| Line::styled(row.text, block_style(row.kind)))
         .collect::<Vec<_>>();
     Paragraph::new(lines)
-        .block(Block::default().borders(Borders::LEFT))
+        .style(Style::default().bg(Color::Rgb(12, 16, 23)))
+        .block(
+            Block::default()
+                .title(" Conversation ")
+                .title_style(Style::default().fg(Color::Rgb(120, 145, 165)).bold())
+                .borders(Borders::LEFT | Borders::RIGHT)
+                .border_style(Style::default().fg(Color::Rgb(45, 60, 75))),
+        )
         .render(area, buffer);
+}
+
+fn block_style(kind: codeswarm_transcript::BlockKind) -> Style {
+    match kind {
+        codeswarm_transcript::BlockKind::Human => Style::default().fg(Color::Blue),
+        codeswarm_transcript::BlockKind::Agent => Style::default().fg(Color::White),
+        codeswarm_transcript::BlockKind::Thought => Style::default().fg(Color::DarkGray).italic(),
+        codeswarm_transcript::BlockKind::Tool => Style::default().fg(Color::Yellow),
+        codeswarm_transcript::BlockKind::Diff => Style::default().fg(Color::Magenta),
+        codeswarm_transcript::BlockKind::Notice => Style::default().fg(Color::Cyan),
+    }
 }
 
 #[cfg(test)]

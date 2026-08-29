@@ -60,7 +60,7 @@ wait_for_text() {
   local attempts="${2:-100}"
   local snapshot
   for _ in $(seq 1 "$attempts"); do
-    if snapshot="$(capture 2>/dev/null)" && grep -Fq "$expected" <<<"$snapshot"; then
+    if snapshot="$(capture 2>/dev/null)" && grep -Fiq "$expected" <<<"$snapshot"; then
       return 0
     fi
     sleep 0.05
@@ -83,7 +83,7 @@ tmux -L "$socket_name" send-keys -t "$pane_target" End
 wait_for_text "following" 80
 frame_start="$(date +%s%N)"
 tmux -L "$socket_name" send-keys -t "$pane_target" x
-wait_for_text "> x" 40
+wait_for_text "› x" 40
 frame_end="$(date +%s%N)"
 input_latency_ms=$(( (frame_end - frame_start) / 1000000 ))
 if (( input_latency_ms > frame_budget_ms )); then

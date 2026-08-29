@@ -33,6 +33,7 @@ pub enum BlockKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RenderRow {
     pub block_id: u64,
+    pub kind: BlockKind,
     pub text: String,
 }
 
@@ -154,6 +155,7 @@ impl Transcript {
             for line in wrap(&source, width) {
                 self.rows.push(RenderRow {
                     block_id: block.id,
+                    kind: block.kind,
                     text: line,
                 });
             }
