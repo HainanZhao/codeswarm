@@ -2238,6 +2238,12 @@ impl AcpAdapter {
             }
             session
         };
+        let supports_modes = session
+            .get("modes")
+            .and_then(|modes| modes.get("availableModes"))
+            .and_then(Value::as_array)
+            .is_some();
+        self.capabilities.supports_modes = supports_modes;
         if let Some(modes) = session.get("modes") {
             let available = modes
                 .get("availableModes")
@@ -2545,6 +2551,26 @@ fn parse_acp_notification(slot: RosterSlot, line: &str) -> AdapterResult<Option<
         .and_then(|content| content.get("text"))
         .and_then(Value::as_str)
         .map(str::to_owned);
+    if kind == Some("agent_message_chunk")
+        && let Some(mode) = text
+            .as_deref()
+            .and_then(|text| text.strip_prefix("[MODE_UPDATE]"))
+            .map(str::trim)
+            .filter(|mode| !mode.is_empty())
+    {
+        // Gemini's native ACP bridge historically encoded a mode change as a
+        // control marker in the message stream. It is state, not transcript
+        // content; expose it as a normalized catalog replacement instead of
+        // leaking the marker into the conversation.
+        return Ok(Some(AgentEvent::ModesReplaced {
+            slot,
+            modes: vec![Mode {
+                id: mode.to_owned(),
+                label: mode.to_owned(),
+            }],
+            current_mode: Some(mode.to_owned()),
+        }));
+    }
     match (kind, text) {
         (Some("agent_message_chunk"), Some(text)) if !text.is_empty() => {
             Ok(Some(AgentEvent::Text { slot, text }))
@@ -2931,6 +2957,21 @@ mod tests {
                 text: "hello".into(),
             }
         );
+    }
+
+    #[test]
+    fn parses_legacy_gemini_mode_marker_as_state_not_agent_text() {
+        let event = parse_acp_notification(
+            0,
+            r#"{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"[MODE_UPDATE] yolo"}}}}"#,
+        )
+        .expect("valid ACP")
+        .expect("mode event");
+        assert!(matches!(
+            event,
+            AgentEvent::ModesReplaced { current_mode: Some(mode), modes, .. }
+                if mode == "yolo" && modes[0].id == "yolo"
+        ));
     }
 
     #[test]
