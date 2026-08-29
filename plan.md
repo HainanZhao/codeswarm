@@ -114,6 +114,9 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 - [x] Coalesced streamed thought chunks into one per-turn collapsed detail,
   preventing token-level reasoning output from creating a new line/card for
   every stream event.
+- [x] Enhanced the production preview HUD with typed transcript colors,
+  conversation/prompt framing, status-state colors, and a tmux-verified
+  inline release build; styling remains on the cached viewport path.
 - [x] Added terminal queue/help interaction state: queued and direct prompts,
   target selection, cancellation, follow-tail behavior, and inline keyboard
   help rendering.
