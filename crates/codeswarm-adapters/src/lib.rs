@@ -6,6 +6,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use codeswarm_core::{
@@ -162,11 +163,23 @@ impl AdapterHost {
 
 /// Sequential multi-adapter runner. It intentionally never polls two
 /// adapters concurrently: the next prompt depends on the prior response.
-#[derive(Debug)]
 pub struct RelayHost {
     hosts: Vec<AdapterHost>,
     relay: Relay,
     dispatches: Vec<(RosterSlot, String)>,
+    event_sink: Option<Arc<dyn Fn(AgentEvent) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for RelayHost {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RelayHost")
+            .field("hosts", &self.hosts)
+            .field("relay", &self.relay)
+            .field("dispatches", &self.dispatches)
+            .field("event_sink", &self.event_sink.is_some())
+            .finish()
+    }
 }
 
 impl RelayHost {
@@ -178,12 +191,30 @@ impl RelayHost {
             relay: Relay::new(hosts.len(), max_rounds),
             hosts,
             dispatches: Vec::new(),
+            event_sink: None,
         })
+    }
+
+    /// Send each normalized event to a client while a turn is being drained.
+    /// The callback is synchronous and deliberately tiny: clients should
+    /// enqueue the event and return so adapter I/O never waits on rendering.
+    pub fn set_event_sink<F>(&mut self, sink: F)
+    where
+        F: Fn(AgentEvent) + Send + Sync + 'static,
+    {
+        self.event_sink = Some(Arc::new(sink));
     }
 
     pub async fn start(&mut self) -> AdapterResult<()> {
         for host in &mut self.hosts {
             host.start().await?;
+        }
+        Ok(())
+    }
+
+    pub async fn stop(&mut self) -> AdapterResult<()> {
+        for host in &mut self.hosts {
+            host.stop().await?;
         }
         Ok(())
     }
@@ -248,6 +279,9 @@ impl RelayHost {
                 .next_update()
                 .await
                 .ok_or_else(|| AdapterError::Transport("adapter ended during turn".into()))??;
+            if let Some(sink) = &self.event_sink {
+                sink(update.event.clone());
+            }
             match &update.event {
                 AgentEvent::Text { text, .. } => response.push_str(text),
                 AgentEvent::TurnComplete { .. } => break,
