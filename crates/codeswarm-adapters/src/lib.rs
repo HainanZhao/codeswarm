@@ -12,6 +12,7 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use codeswarm_core::{
     AgentCapabilities, AgentEvent, Effect, EventLog, Mode, PermissionAnswer, PermissionRequest,
     RosterSlot, SessionState, TerminalEvent, ToolStatus, ToolUpdate, reduce,
@@ -19,6 +20,7 @@ use codeswarm_core::{
         CollaborationStrategy, DEFAULT_STOP_ACKNOWLEDGMENT, Relay, RelayDecision, STOP_TOKEN,
         strip_stop_token,
     },
+    resources,
 };
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -1941,6 +1943,73 @@ impl AcpAdapter {
     }
 }
 
+fn prompt_resource_paths(prompt: &str) -> Vec<String> {
+    let characters = prompt.chars().collect::<Vec<_>>();
+    let mut paths = Vec::new();
+    let mut index = 0;
+    while index < characters.len() {
+        if characters[index] != '@' {
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let quoted = characters.get(index) == Some(&'"');
+        if quoted {
+            index += 1;
+        }
+        let start = index;
+        while index < characters.len()
+            && if quoted {
+                characters[index] != '"'
+            } else {
+                !characters[index].is_whitespace()
+            }
+        {
+            index += 1;
+        }
+        if index > start {
+            paths.push(characters[start..index].iter().collect());
+        }
+        if quoted && index < characters.len() {
+            index += 1;
+        }
+    }
+    paths
+}
+
+fn prompt_content_blocks(cwd: &Path, prompt: &str) -> Vec<Value> {
+    let mut blocks = vec![serde_json::json!({"type": "text", "text": prompt})];
+    for path in prompt_resource_paths(prompt) {
+        if path.ends_with('/') {
+            continue;
+        }
+        let Ok(resource) = resources::load(cwd, &path) else {
+            continue;
+        };
+        let uri = format!("file://{}", resource.path.display());
+        let resource_value = if let Some(text) = resource.text {
+            serde_json::json!({
+                "uri": uri,
+                "text": text,
+                "mimeType": resource.mime_type,
+            })
+        } else if let Some(data) = resource.data {
+            serde_json::json!({
+                "uri": uri,
+                "blob": BASE64.encode(data),
+                "mimeType": resource.mime_type,
+            })
+        } else {
+            continue;
+        };
+        blocks.push(serde_json::json!({
+            "type": "resource",
+            "resource": resource_value,
+        }));
+    }
+    blocks
+}
+
 #[async_trait]
 impl AgentAdapter for AcpAdapter {
     fn slot(&self) -> RosterSlot {
@@ -1964,13 +2033,14 @@ impl AgentAdapter for AcpAdapter {
             .ok_or_else(|| AdapterError::Transport("ACP session is not initialized".into()))?;
         let request_id = self.next_request_id;
         self.next_request_id += 1;
+        let prompt_blocks = prompt_content_blocks(&self.cwd, &prompt);
         self.write_json(serde_json::json!({
             "jsonrpc": "2.0",
             "id": request_id,
             "method": "session/prompt",
             "params": {
                 "sessionId": session_id,
-                "prompt": [{"type": "text", "text": prompt}],
+                "prompt": prompt_blocks,
             },
         }))
         .await?;
@@ -2267,7 +2337,7 @@ fn rpc_id_to_string(value: &Value) -> String {
 mod tests {
     use super::{
         AcpAdapter, AdapterHost, AgentAdapter, AgyAdapter, RelayHost, ScriptedAdapter,
-        parse_acp_notification, parse_agy_line, parse_command_line,
+        parse_acp_notification, parse_agy_line, parse_command_line, prompt_content_blocks,
     };
     use async_trait::async_trait;
     use codeswarm_core::TerminalEvent;
@@ -2303,6 +2373,20 @@ mod tests {
             parse_command_line(r#"agent "" escaped\ argument"#),
             Ok(("agent".into(), vec!["".into(), "escaped argument".into()],))
         );
+    }
+
+    #[test]
+    fn acp_prompt_expands_safe_at_path_resources() {
+        let root = unique_test_path("codeswarm-prompt-resource", "dir");
+        std::fs::create_dir_all(&root).expect("workspace");
+        std::fs::write(root.join("note.md"), "resource text").expect("resource");
+        let blocks = prompt_content_blocks(&root, "inspect @note.md");
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "inspect @note.md");
+        assert_eq!(blocks[1]["type"], "resource");
+        assert_eq!(blocks[1]["resource"]["text"], "resource text");
+        assert_eq!(blocks[1]["resource"]["mimeType"], "text/markdown");
+        std::fs::remove_dir_all(root).expect("cleanup workspace");
     }
 
     #[test]

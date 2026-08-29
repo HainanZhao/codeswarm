@@ -148,6 +148,8 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   group on cancellation and shutdown to avoid descendant leaks.
 - [x] Added a bounded, root/symlink-safe Rust workspace resource loader as the
   foundation for prompt attachments.
+- [x] Expanded ACP `@path` references into bounded text/binary resource blocks
+  before prompt dispatch, with prompt-level regression coverage.
 - [x] Integrated resize settling and latest-state frame recovery into a
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and

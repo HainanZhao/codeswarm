@@ -475,12 +475,28 @@ impl PromptEditor {
             return PromptAction::Ignored;
         };
         if self.completion_matches.is_empty() {
-            self.completion_matches = self
-                .completion_candidates
-                .iter()
-                .filter(|candidate| candidate.starts_with(&prefix))
-                .cloned()
-                .collect();
+            self.completion_matches = if prefix.starts_with('@') {
+                let mut matches = self
+                    .completion_candidates
+                    .iter()
+                    .filter_map(|candidate| {
+                        fuzzy_completion_score(&prefix, candidate)
+                            .map(|score| (score, candidate.clone()))
+                    })
+                    .collect::<Vec<_>>();
+                matches
+                    .sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+                matches
+                    .into_iter()
+                    .map(|(_, candidate)| candidate)
+                    .collect()
+            } else {
+                self.completion_candidates
+                    .iter()
+                    .filter(|candidate| candidate.starts_with(&prefix))
+                    .cloned()
+                    .collect()
+            };
         }
         if self.completion_matches.is_empty() {
             return PromptAction::Ignored;
@@ -527,6 +543,27 @@ impl PromptEditor {
         self.completion_matches.clear();
         self.completion_index = None;
     }
+}
+
+fn fuzzy_completion_score(query: &str, candidate: &str) -> Option<usize> {
+    let query = query.to_ascii_lowercase();
+    let candidate = candidate.to_ascii_lowercase();
+    let mut cursor = 0;
+    let mut score = 0;
+    let mut previous = None;
+    for character in query.chars() {
+        let position = candidate[cursor..].find(character)? + cursor;
+        score += if previous == Some(position.saturating_sub(1)) {
+            3
+        } else if position == 0 || candidate.as_bytes().get(position - 1) == Some(&b'/') {
+            2
+        } else {
+            1
+        };
+        previous = Some(position);
+        cursor = position + character.len_utf8();
+    }
+    Some(score)
 }
 
 impl PermissionPrompt {
@@ -2790,8 +2827,17 @@ mod tests {
         app.set_prompt_completions(["@src/main.rs", "@src/lib.rs"]);
         app.handle_prompt_input(key(Key::Char('@')));
         app.handle_prompt_input(key(Key::Char('s')));
+        app.handle_prompt_input(key(Key::Char('m')));
         assert!(matches!(
             app.handle_prompt_input(key(Key::Tab)),
+            PromptAction::Completion { value, .. } if value == "@src/main.rs"
+        ));
+        let mut editor = PromptEditor::default();
+        editor.set_completion_candidates(["@src/main.rs", "@README.md"]);
+        editor.handle_input(key(Key::Char('@')));
+        editor.handle_input(key(Key::Char('m')));
+        assert!(matches!(
+            editor.handle_input(key(Key::Tab)),
             PromptAction::Completion { value, .. } if value == "@src/main.rs"
         ));
     }

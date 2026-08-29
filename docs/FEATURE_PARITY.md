@@ -26,7 +26,7 @@ matrix records behavior, not widget-level implementation details.
 | Adapter crash attribution | Implemented | Native result failures, ACP transport errors, and relay EOFs tombstone their slot and emit a reloadable failure event; Unix children run in isolated process groups for descendant cleanup. |
 | Crash tombstone/reload UX | Implemented | Core tombstones failed slots and exposes `/reload` and `/drop` recovery actions. |
 | Project-directory selection | Implemented | Rust supports `--project-dir PATH`, positional paths, `/cd PATH`, and `Ctrl+D` in the agent store. |
-| Prompt path/resource completion | Partial | Rust has a shared bounded, root-safe resource loader and bounded `@path` prefix completion; the Python-style asynchronous fuzzy ranking and attachment preview remain unported. |
+| Prompt path/resource completion | Partial | Rust has a shared bounded, root-safe resource loader, ACP text/binary attachment expansion, and bounded `@path` fuzzy completion; the Python-style asynchronous index/preview UI remains unported. |
 | Live roster reconfiguration | Partial | Rust edits the saved roster through the store and can reload/drop failed peers; the Python conversation config could reconcile roster additions, removals, and owner transfer in place. |
 | Local `!command` shell execution | Implemented | Runs asynchronously in the workspace with bounded output and local transcript rendering. |
 | Persistent prompt/settings preferences | Partial | Roster, custom agents, Python-compatible prompt history, follow-tail, collapsed-details, notifications, thoughts, tool-expansion, density, scrollbar, and diff view persist; theme/focus preferences do not. |
