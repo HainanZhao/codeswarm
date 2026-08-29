@@ -220,12 +220,24 @@ class Contents(containers.VerticalGroup, can_focus=False):
         return changed
 
     def _has_unlaid_transcript_blocks(self) -> bool:
-        """Whether a mounted block still has no final layout height."""
-        return any(
-            block.outer_size.height <= 0
-            for block in self._transcript_blocks
-            if block in self.children
-        )
+        """Whether mounted blocks still need their first complete layout."""
+        for block in self._transcript_blocks:
+            if block not in self.children:
+                continue
+            # Markdown parses asynchronously. Do not detach a response that
+            # already has source text but has not produced its child blocks;
+            # otherwise a fast initial scroll can expose an empty response
+            # until a later remount finishes parsing it.
+            response = getattr(block, "response", None)
+            if (
+                response is not None
+                and getattr(response, "source", "")
+                and not response.children
+            ):
+                return True
+            if block.outer_size.height <= 0:
+                return True
+        return False
 
     def _block_positions(self) -> tuple[list[int], int]:
         """Return each block's virtual row and the complete transcript height."""
