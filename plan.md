@@ -79,6 +79,8 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   while preserving the stable roster slot and event log.
 - [x] Normalized ACP permission requests, including stable tool IDs, titles,
   and selectable option labels.
+- [x] ACP adapter loads an existing session when the agent advertises
+  \`loadSession\`, and rejects unsupported session restoration explicitly.
 - [x] Added lazy collapsed tool/thought/terminal details with explicit
   keyboard expansion, keeping expensive detail off the scroll path.
 - [x] Core reducer tracks active-turn boundaries across text, thought, tool,
