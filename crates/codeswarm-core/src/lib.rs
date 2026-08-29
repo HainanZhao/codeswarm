@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod collaboration;
 pub mod launcher;
+pub mod persistence;
 pub mod policy;
 pub mod relay;
 
