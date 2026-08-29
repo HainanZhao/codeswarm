@@ -291,6 +291,22 @@ agent reply; no optimization may rely only on having many small messages.
 **Exit criterion:** This path passes all Phase 0 budgets and is usable without
 any advanced panel or alternate-screen implementation.
 
+### Current implementation status (Rust rewrite)
+
+- The inline Ratatui client is the active `codeswarm` release binary and uses
+  the existing lightweight `ratatui`/`crossterm` stack plus `tui-textarea` for
+  bounded multiline editing.
+- `/help`, `/config`, `/export`, `/mode`, `/collab`, `/pause`, `/resume`,
+  `/clear`, `/cancel`, and `/close` are handled locally; local commands never
+  become adapter prompts.
+- `/config` is a keyboard-first inline modal with follow-tail and collapsed
+  detail toggles, plus read-only mode, collaboration, renderer, and keyboard
+  guidance. It is rendered without touching the transcript cache.
+- Markdown export reads logical transcript blocks directly, retaining hidden
+  thought/tool details without rewrapping the 5k-word viewport.
+- `tests/tmux/config.sh` exercises the release binary through a real tmux pane,
+  including opening, navigating, toggling, closing, and exporting.
+
 ## Phase 5 — Collaboration and Lazy Detail Views
 
 **Purpose:** Restore CodeSwarm's differentiators without taxing common use.

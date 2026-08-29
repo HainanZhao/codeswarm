@@ -15,7 +15,8 @@ use codeswarm_core::launcher::{LaunchDecision, launch_decision};
 use codeswarm_core::{AgentEvent, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{
-    App, Input, LocalCommand, PermissionAction, PermissionKey, PromptAction, QueuedPrompt, render,
+    App, ConfigKey, Input, LocalCommand, PermissionAction, PermissionKey, PromptAction,
+    QueuedPrompt, render,
 };
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -820,7 +821,8 @@ fn run_terminal(
     selected_slot: Option<usize>,
 ) -> std::io::Result<()> {
     app.set_prompt_completions([
-        "/cancel", "/clear", "/close", "/config", "/exit", "/help", "/pause", "/quit", "/resume",
+        "/cancel", "/clear", "/close", "/collab", "/config", "/exit", "/export", "/help", "/mode",
+        "/pause", "/quit", "/resume",
     ]);
     let mut selected_slot = selected_slot;
     let event_log = event_log().ok();
@@ -876,6 +878,19 @@ fn run_terminal(
         }
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            if app.config_visible() {
+                let config_key = match key.code {
+                    KeyCode::Up => Some(ConfigKey::Up),
+                    KeyCode::Down => Some(ConfigKey::Down),
+                    KeyCode::Enter => Some(ConfigKey::Confirm),
+                    KeyCode::Esc => Some(ConfigKey::Cancel),
+                    _ => None,
+                };
+                if let Some(config_key) = config_key {
+                    let _ = app.handle_config_key(config_key);
+                }
                 continue;
             }
             let size = terminal.size()?;
@@ -1051,6 +1066,14 @@ fn run_terminal(
                                     }
                                     app.status = "relay resumed".into();
                                 }
+                                LocalCommand::Mode | LocalCommand::Collaboration => {}
+                                LocalCommand::Export => match export_conversation(app) {
+                                    Ok(path) => {
+                                        app.status =
+                                            format!("conversation exported to {}", path.display())
+                                    }
+                                    Err(error) => app.status = format!("export failed: {error}"),
+                                },
                             }
                         } else if let Some(controls) = &controls {
                             app.record_human_message(&prompt, false);
@@ -1105,6 +1128,20 @@ fn run_terminal(
             }
         }
     }
+}
+
+fn export_conversation(app: &App) -> std::io::Result<PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let mut path = PathBuf::from(format!("codeswarm-conversation-{stamp}.md"));
+    let mut suffix = 2;
+    while path.exists() {
+        path = PathBuf::from(format!("codeswarm-conversation-{stamp}-{suffix}.md"));
+        suffix += 1;
+    }
+    std::fs::write(&path, app.export_markdown())?;
+    Ok(path)
 }
 
 fn event_log() -> std::io::Result<EventLog> {

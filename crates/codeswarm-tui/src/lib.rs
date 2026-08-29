@@ -14,7 +14,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Widget},
+    widgets::{Block, Borders, Clear, Paragraph, Widget},
 };
 pub use tui_textarea::{Input, Key};
 use tui_textarea::{TextArea, WrapMode};
@@ -65,6 +65,24 @@ pub enum LocalCommand {
     Cancel,
     Pause,
     Resume,
+    Mode,
+    Collaboration,
+    Export,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigKey {
+    Up,
+    Down,
+    Confirm,
+    Cancel,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigAction {
+    Ignored,
+    Changed,
+    Close,
 }
 
 /// One pending permission request owned by the TUI.
@@ -443,7 +461,12 @@ pub struct App {
     pub prompt: String,
     pub active_agent: String,
     pub status: String,
+    mode: String,
+    collaboration: String,
     pub permission: Option<PermissionPrompt>,
+    config_visible: bool,
+    config_selected: usize,
+    collapse_details: bool,
     prompt_editor: PromptEditor,
     agent_names: BTreeMap<usize, String>,
     queued_prompts: VecDeque<QueuedPrompt>,
@@ -463,7 +486,12 @@ impl Default for App {
             prompt: String::new(),
             active_agent: "Initializing".into(),
             status: "idle".into(),
+            mode: "Auto pilot".into(),
+            collaboration: "Roster relay".into(),
             permission: None,
+            config_visible: false,
+            config_selected: 0,
+            collapse_details: true,
             prompt_editor: PromptEditor::default(),
             agent_names: BTreeMap::new(),
             queued_prompts: VecDeque::new(),
@@ -478,12 +506,54 @@ impl Default for App {
 
 impl App {
     pub fn handle_local_command(&mut self, input: &str) -> Option<LocalCommand> {
-        let command = input.trim().to_ascii_lowercase();
+        let mut parts = input.split_whitespace();
+        let command = parts.next()?.to_ascii_lowercase();
+        let argument = parts.collect::<Vec<_>>().join(" ");
         let result = match command.as_str() {
             "/quit" | "/exit" | "/close" => LocalCommand::Close,
             "/cancel" => LocalCommand::Cancel,
             "/pause" => LocalCommand::Pause,
             "/resume" => LocalCommand::Resume,
+            "/mode" => {
+                if argument.is_empty() {
+                    self.config_visible = true;
+                    self.config_selected = 2;
+                    self.status = "mode configuration".into();
+                    LocalCommand::Handled
+                } else if matches!(
+                    argument.to_ascii_lowercase().as_str(),
+                    "chat" | "discuss" | "discussion"
+                ) {
+                    self.mode = "Chat".into();
+                    self.status = "mode set to Chat".into();
+                    LocalCommand::Mode
+                } else {
+                    self.status = "Use /mode to choose a mode".into();
+                    LocalCommand::Handled
+                }
+            }
+            "/collab" | "/collaboration" => {
+                if argument.is_empty() {
+                    self.config_visible = true;
+                    self.config_selected = 3;
+                    self.status = "collaboration configuration".into();
+                    LocalCommand::Handled
+                } else {
+                    match argument.to_ascii_lowercase().as_str() {
+                        "roster" => self.collaboration = "Roster relay".into(),
+                        "manual" => self.collaboration = "Manual routing".into(),
+                        "pair" => self.collaboration = "Pair review".into(),
+                        _ => {
+                            self.status =
+                                "Use /collab roster, /collab manual, or /collab pair".into();
+                            return Some(LocalCommand::Handled);
+                        }
+                    }
+                    self.status = format!("collaboration set to {}", self.collaboration);
+                    LocalCommand::Collaboration
+                }
+            }
+            "/export" => LocalCommand::Export,
             "/help" => {
                 self.keyboard_help = true;
                 self.status = "keyboard help shown".into();
@@ -496,11 +566,8 @@ impl App {
                 LocalCommand::Handled
             }
             "/config" => {
-                self.transcript.append(
-                    codeswarm_transcript::BlockKind::Notice,
-                    "Configuration: inline viewport, cached transcript, lazy details, and tmux-safe frame scheduling. Use /help for controls.",
-                    false,
-                );
+                self.config_visible = true;
+                self.config_selected = 0;
                 self.status = "configuration".into();
                 LocalCommand::Handled
             }
@@ -511,6 +578,65 @@ impl App {
             _ => return None,
         };
         Some(result)
+    }
+
+    pub fn config_visible(&self) -> bool {
+        self.config_visible
+    }
+
+    pub fn handle_config_key(&mut self, key: ConfigKey) -> ConfigAction {
+        if !self.config_visible {
+            return ConfigAction::Ignored;
+        }
+        match key {
+            ConfigKey::Cancel => {
+                self.config_visible = false;
+                self.status = "configuration closed".into();
+                ConfigAction::Close
+            }
+            ConfigKey::Up => {
+                self.config_selected = self.config_selected.saturating_sub(1);
+                ConfigAction::Changed
+            }
+            ConfigKey::Down => {
+                self.config_selected = self.config_selected.saturating_add(1).min(4);
+                ConfigAction::Changed
+            }
+            ConfigKey::Confirm => {
+                match self.config_selected {
+                    0 => self.follow_tail = !self.follow_tail,
+                    1 => self.collapse_details = !self.collapse_details,
+                    2..=4 => {}
+                    _ => return ConfigAction::Ignored,
+                }
+                self.status = "configuration updated".into();
+                ConfigAction::Changed
+            }
+        }
+    }
+
+    pub fn collapse_details(&self) -> bool {
+        self.collapse_details
+    }
+
+    pub fn mode(&self) -> &str {
+        &self.mode
+    }
+
+    pub fn collaboration(&self) -> &str {
+        &self.collaboration
+    }
+
+    pub fn set_mode(&mut self, mode: impl Into<String>) {
+        self.mode = mode.into();
+    }
+
+    pub fn set_collaboration(&mut self, collaboration: impl Into<String>) {
+        self.collaboration = collaboration.into();
+    }
+
+    pub fn export_markdown(&self) -> String {
+        self.transcript.markdown()
     }
 
     pub fn set_agent_name(&mut self, slot: usize, name: impl Into<String>) {
@@ -847,7 +973,7 @@ impl App {
     }
 
     fn help_height(&self) -> u16 {
-        if self.keyboard_help_visible() { 3 } else { 0 }
+        if self.keyboard_help_visible() { 8 } else { 0 }
     }
 
     /// Handle navigation or a response for the focused permission request.
@@ -899,6 +1025,10 @@ impl App {
 pub fn render(frame: &mut Frame, app: &mut App) {
     app.sync_prompt_editor();
     let area = frame.area();
+    if app.config_visible {
+        render_config(frame, app, area);
+        return;
+    }
     if area.width < 36 || area.height < 7 {
         render_compact(frame, app, area);
         return;
@@ -1131,12 +1261,93 @@ fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
 }
 
 fn render_keyboard_help(buffer: &mut Buffer, area: Rect) {
-    Paragraph::new(Line::raw(
+    let lines = [
         " keys: ↑/↓ scroll · End follow tail · Tab details · Ctrl+K cancel queue · ? hide help",
-    ))
-    .style(Style::default().fg(Color::Gray))
-    .block(Block::default().borders(Borders::TOP | Borders::BOTTOM))
-    .render(area, buffer);
+        " commands: /help  /config  /export  /mode  /collab",
+        " /mode chat · /collab roster|manual|pair · /pause · /resume",
+        " /clear clears the local transcript · /close exits the session",
+        " Ctrl+Enter sends to the selected agent · Ctrl+C cancels active work",
+        " Tab completes a slash command · Shift+Enter inserts a newline",
+        "",
+        " Press F1 or ? to hide this help",
+    ];
+    Paragraph::new(lines.into_iter().map(Line::raw).collect::<Vec<_>>())
+        .style(Style::default().fg(Color::Gray).bg(PANEL_BG))
+        .block(Block::default().borders(Borders::TOP | Borders::BOTTOM))
+        .render(area, buffer);
+}
+
+fn render_config(frame: &mut Frame, app: &App, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let width = area.width.clamp(36, 76);
+    let height = area.height.clamp(8, 16);
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let modal = Rect::new(x, y, width.min(area.width), height.min(area.height));
+    frame.render_widget(Clear, modal);
+
+    let rows = [
+        (
+            "Follow output",
+            if app.follow_tail { "On" } else { "Off" },
+            true,
+        ),
+        (
+            "Collapse details",
+            if app.collapse_details { "On" } else { "Off" },
+            true,
+        ),
+        ("Mode", app.mode(), false),
+        ("Collaboration", app.collaboration(), false),
+        ("Renderer", "Inline · tmux safe", false),
+    ];
+    let mut lines = Vec::with_capacity(rows.len() + 3);
+    lines.push(Line::styled(
+        "Configuration",
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    ));
+    lines.push(Line::raw(""));
+    for (index, (label, value, mutable)) in rows.iter().enumerate() {
+        let selected = index == app.config_selected;
+        let marker = if selected { "▶" } else { " " };
+        let value_style = if *mutable {
+            Style::default().fg(if selected { Color::Green } else { Color::Cyan })
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let line_style = if selected {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(38, 48, 65))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {marker} "), line_style),
+            Span::styled(format!("{label:<20}"), line_style),
+            Span::styled(*value, value_style),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        " ↑/↓ select · Enter change · Esc close",
+        Style::default().fg(Color::Gray),
+    ));
+    Paragraph::new(lines)
+        .style(Style::default().bg(PANEL_BG))
+        .block(
+            Block::default()
+                .title(" CodeSwarm settings ")
+                .title_style(Style::default().fg(Color::Cyan).bold())
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .render(modal, frame.buffer_mut());
 }
 
 fn render_permission(buffer: &mut Buffer, area: Rect, request: &PermissionPrompt) {
@@ -1253,7 +1464,8 @@ mod tests {
     use tui_textarea::{Input, Key};
 
     use super::{
-        App, LocalCommand, PermissionAction, PermissionKey, PromptAction, PromptEditor, render,
+        App, ConfigAction, ConfigKey, LocalCommand, PermissionAction, PermissionKey, PromptAction,
+        PromptEditor, render,
     };
 
     fn key(key: Key) -> Input {
@@ -1569,11 +1781,93 @@ mod tests {
             Some(LocalCommand::Handled)
         );
         assert_eq!(app.status, "configuration");
+        assert!(app.config_visible());
+        assert_eq!(
+            app.handle_config_key(ConfigKey::Confirm),
+            ConfigAction::Changed
+        );
+        assert!(!app.follow_tail);
+        assert_eq!(
+            app.handle_config_key(ConfigKey::Cancel),
+            ConfigAction::Close
+        );
         assert_eq!(
             app.handle_local_command("/close"),
             Some(LocalCommand::Close)
         );
         assert_eq!(app.handle_local_command("ordinary text"), None);
+    }
+
+    #[test]
+    fn commands_update_mode_and_collaboration_without_agent_dispatch() {
+        let mut app = App::default();
+        assert_eq!(
+            app.handle_local_command("/mode chat"),
+            Some(LocalCommand::Mode)
+        );
+        assert_eq!(app.mode(), "Chat");
+        assert_eq!(
+            app.handle_local_command("/collab manual"),
+            Some(LocalCommand::Collaboration)
+        );
+        assert_eq!(app.collaboration(), "Manual routing");
+        assert_eq!(
+            app.handle_local_command("/collab invalid"),
+            Some(LocalCommand::Handled)
+        );
+    }
+
+    #[test]
+    fn config_panel_is_readable_and_does_not_render_the_transcript() {
+        let backend = TestBackend::new(64, 16);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        app.handle_local_command("/config");
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw config");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Configuration"), "rendered={rendered:?}");
+        assert!(rendered.contains("Follow output"), "rendered={rendered:?}");
+        assert!(
+            rendered.contains("Collapse details"),
+            "rendered={rendered:?}"
+        );
+        assert!(rendered.contains("Renderer"), "rendered={rendered:?}");
+        assert!(
+            !rendered.contains("No messages yet"),
+            "rendered={rendered:?}"
+        );
+    }
+
+    #[test]
+    fn help_panel_lists_local_commands() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        assert_eq!(
+            app.handle_local_command("/help"),
+            Some(LocalCommand::Handled)
+        );
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw help");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("/export"), "rendered={rendered:?}");
+        assert!(rendered.contains("/collab"), "rendered={rendered:?}");
+        assert!(rendered.contains("/mode"), "rendered={rendered:?}");
     }
 
     #[test]

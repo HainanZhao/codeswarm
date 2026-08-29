@@ -73,6 +73,33 @@ impl Transcript {
         self.blocks.is_empty()
     }
 
+    /// Export the retained logical conversation without forcing the terminal
+    /// renderer to materialize or rewrap the transcript. Hidden details remain
+    /// available in the export even when their on-screen row is collapsed.
+    pub fn markdown(&self) -> String {
+        let mut output = String::from("# CodeSwarm Conversation\n\n");
+        for block in &self.blocks {
+            let heading = match block.kind {
+                BlockKind::Human => "User",
+                BlockKind::Agent => "Agent",
+                BlockKind::Thought => "Thought",
+                BlockKind::Tool => "Tool",
+                BlockKind::Diff => "Diff",
+                BlockKind::Notice => "CodeSwarm",
+            };
+            let source = block.source.trim();
+            if source.is_empty() {
+                continue;
+            }
+            output.push_str("## ");
+            output.push_str(heading);
+            output.push_str("\n\n");
+            output.push_str(source);
+            output.push_str("\n\n");
+        }
+        output
+    }
+
     pub fn clear(&mut self) {
         self.blocks.clear();
         self.next_id = 0;
@@ -305,6 +332,17 @@ mod tests {
         assert!(transcript.extend(id, " second"));
         assert_eq!(transcript.len(), 1);
         assert_eq!(transcript.viewport(80, 0, 10, 0)[0].text, "first second");
+    }
+
+    #[test]
+    fn markdown_export_preserves_logical_blocks_and_hidden_details() {
+        let mut transcript = Transcript::default();
+        transcript.append(BlockKind::Human, "review this", false);
+        transcript.append(BlockKind::Thought, "internal detail", true);
+        let markdown = transcript.markdown();
+        assert!(markdown.starts_with("# CodeSwarm Conversation"));
+        assert!(markdown.contains("## User\n\nreview this"));
+        assert!(markdown.contains("## Thought\n\ninternal detail"));
     }
 
     #[test]
