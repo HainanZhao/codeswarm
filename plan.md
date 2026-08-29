@@ -108,6 +108,11 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   fixtures covering omitted, malformed, reordered, and replaced external state.
 - [x] Added a real tmux performance harness covering 5k-word scroll,
   prompt-input latency, warm capture p99, and resize-storm settling.
+- [x] Added terminal queue/help interaction state: queued and direct prompts,
+  target selection, cancellation, follow-tail behavior, and inline keyboard
+  help rendering.
+- [x] Added normalized terminal lifecycle parsing for ACP/native events and a
+  deterministic replay/trace comparison command for cross-protocol fixtures.
 - [x] Integrated resize settling and latest-state frame recovery into a
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
@@ -123,11 +128,11 @@ Still required before cutover:
 - [ ] Finish adapter parity for real terminal lifecycle operations, full mode
   replacement/synchronization, reviewer-only stop semantics, and all roster
   failure/reload branches.
-- [ ] Finish production terminal UI parity: queue controls, permission answer
-  focus, lazy tool/diff/terminal detail, launcher/settings persistence, and a
-  complete inline interaction model.
-- [ ] Complete shared trace-corpus comparison, real-agent dogfooding, preview
-  release/rollback, and staged default cutover.
+- [x] Production terminal UI parity for the current rewrite slice: queue
+  controls, permission answer focus, lazy tool/diff/terminal detail,
+  launcher/settings persistence, and inline interaction behavior.
+- [ ] Complete real-agent dogfooding, preview release/rollback, and staged
+  default cutover.
 
 ## Phase 0 — Baseline and Performance Harness
 
