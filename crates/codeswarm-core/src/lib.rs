@@ -21,6 +21,7 @@ pub mod launcher;
 pub mod persistence;
 pub mod policy;
 pub mod relay;
+pub mod resources;
 pub mod settings;
 pub mod trace;
 

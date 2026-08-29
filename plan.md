@@ -146,6 +146,8 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   tmux performance state so prompt history cannot steal scroll input.
 - [x] Isolated Unix agent/terminal process groups and terminated/reaped the
   group on cancellation and shutdown to avoid descendant leaks.
+- [x] Added a bounded, root/symlink-safe Rust workspace resource loader as the
+  foundation for prompt attachments.
 - [x] Integrated resize settling and latest-state frame recovery into a
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
