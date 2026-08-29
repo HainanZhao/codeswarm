@@ -1989,9 +1989,10 @@ fn render_transcript(buffer: &mut Buffer, area: Rect, rows: Vec<RenderRow>) {
                         Span::styled(format!(" {body}"), block_style(row.kind)),
                     ]);
                 }
+                let style = row_style(row.kind, &row.text);
                 Line::from(vec![
-                    Span::styled(marker, block_style(row.kind).add_modifier(Modifier::BOLD)),
-                    Span::styled(row.text, block_style(row.kind)),
+                    Span::styled(marker, style.add_modifier(Modifier::BOLD)),
+                    Span::styled(row.text, style),
                 ])
             })
             .collect::<Vec<_>>()
@@ -2036,15 +2037,30 @@ fn block_style(kind: codeswarm_transcript::BlockKind) -> Style {
     }
 }
 
+fn row_style(kind: codeswarm_transcript::BlockKind, text: &str) -> Style {
+    if kind != codeswarm_transcript::BlockKind::Diff {
+        return block_style(kind);
+    }
+    if text.starts_with('+') && !text.starts_with("+++") {
+        Style::default().fg(Color::Green)
+    } else if text.starts_with('-') && !text.starts_with("---") {
+        Style::default().fg(Color::Red)
+    } else if text.starts_with("@@") {
+        Style::default().fg(Color::Cyan)
+    } else {
+        block_style(kind)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use codeswarm_transcript::BlockKind;
-    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect, style::Color};
     use tui_textarea::{Input, Key};
 
     use super::{
         App, ConfigAction, ConfigKey, LocalCommand, PermissionAction, PermissionKey, PromptAction,
-        PromptEditor, StoreAction, StoreAgent, StoreKey, agent_header_color, render,
+        PromptEditor, StoreAction, StoreAgent, StoreKey, agent_header_color, render, row_style,
     };
 
     fn key(key: Key) -> Input {
@@ -2318,6 +2334,20 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("shell-ok"), "rendered={rendered:?}");
+    }
+
+    #[test]
+    fn unified_diff_lines_use_add_delete_and_hunk_colors() {
+        assert_eq!(row_style(BlockKind::Diff, "+added").fg, Some(Color::Green));
+        assert_eq!(row_style(BlockKind::Diff, "-removed").fg, Some(Color::Red));
+        assert_eq!(
+            row_style(BlockKind::Diff, "@@ -1 +1 @@").fg,
+            Some(Color::Cyan)
+        );
+        assert_eq!(
+            row_style(BlockKind::Diff, "+++ file").fg,
+            Some(Color::Magenta)
+        );
     }
 
     #[test]
