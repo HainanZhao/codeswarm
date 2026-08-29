@@ -136,6 +136,13 @@ Still required before cutover:
 - [ ] Complete real-agent dogfooding, preview release/rollback, and staged
   default cutover.
 
+Dogfood note: the installed \`gemini 0.29.5\` exposes ACP, but its cached
+credentials currently return \`IneligibleTierError\` because Gemini Code Assist
+for individuals is no longer supported and requires migration to Antigravity.
+The Rust ACP path was exercised through process startup and surfaced the
+closed stream; a provider account migration or another installed ACP agent is
+required to complete this external validation.
+
 ## Phase 0 — Baseline and Performance Harness
 
 **Purpose:** Make “fast in tmux” falsifiable before a renderer exists.
