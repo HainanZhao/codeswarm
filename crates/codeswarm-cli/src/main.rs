@@ -1163,7 +1163,7 @@ fn run_terminal(
 ) -> std::io::Result<()> {
     load_ui_preferences(app);
     app.set_prompt_completions([
-        "/agents", "/cancel", "/clear", "/close", "/collab", "/config", "/exit", "/export",
+        "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/exit", "/export",
         "/help", "/mode", "/pause", "/quit", "/reload", "/resume",
     ]);
     let mut selected_slot = selected_slot;
@@ -1505,6 +1505,32 @@ fn run_terminal(
                                         let _ = controls.send(AdapterControl::Reload(slot));
                                     } else {
                                         app.status = "no crashed agent to reload".into();
+                                    }
+                                }
+                                LocalCommand::Directory(path) => {
+                                    let path = PathBuf::from(path).canonicalize();
+                                    match path {
+                                        Ok(path) if path.is_dir() => {
+                                            match std::env::set_current_dir(&path) {
+                                                Ok(()) => {
+                                                    app.status =
+                                                        format!("workspace: {}", path.display())
+                                                }
+                                                Err(error) => {
+                                                    app.status = format!(
+                                                        "unable to change workspace: {error}"
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Ok(path) => {
+                                            app.status =
+                                                format!("not a directory: {}", path.display())
+                                        }
+                                        Err(error) => {
+                                            app.status =
+                                                format!("unable to resolve workspace: {error}")
+                                        }
                                     }
                                 }
                                 LocalCommand::Export => match export_conversation(app) {

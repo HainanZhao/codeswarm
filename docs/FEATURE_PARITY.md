@@ -20,7 +20,7 @@ matrix records behavior, not widget-level implementation details.
 | Pause/resume/cancel/queue | Implemented | CLI controls and relay cancellation. |
 | Mode policy synchronization | Partial | Semantic policies now translate to each adapter's advertised mode when available, with safe native-ID fallbacks; startup catalog synchronization and a full mode picker remain. |
 | Crash tombstone/reload UX | Partial | Core tombstones and `/reload` retries a failed slot; an explicit reload/drop prompt is still needed for unattended failures. |
-| Project-directory selection | Partial | Rust supports `--project-dir PATH`; an in-store directory editor remains to be added. |
+| Project-directory selection | Partial | Rust supports `--project-dir PATH` and `/cd PATH`; an in-store directory editor remains to be added. |
 | Local `!command` shell execution | Implemented | Runs asynchronously in the workspace with bounded output and local transcript rendering. |
 | Persistent prompt/settings preferences | Partial | Roster, custom agents, follow-tail, and collapsed-details persist; density/theme/notification/tool/diff preferences do not. |
 | Rich Markdown/diff views | Deliberately compact | Rust keeps rich details lazy; a full diff renderer is not yet ported. |

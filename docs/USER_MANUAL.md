@@ -61,6 +61,7 @@ terminal output, and UI history stay local to the producing agent.
   `/collab roster`, `/collab manual`, and `/collab pair` select a strategy.
 - `/pause` and `/resume` — pause or resume a multi-agent relay.
 - `/reload` — retry the most recently crashed adapter in place.
+- `/cd PATH` — change the workspace directory for subsequent launches.
 - `/clear` — clear the local transcript.
 - `!command` — run a bounded shell command in the current workspace.
 - `/cancel` — cancel the active turn when an adapter supports cancellation.

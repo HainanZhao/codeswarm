@@ -79,6 +79,7 @@ Inside the conversation prompt:
 - `/collab roster|manual|pair` selects collaboration routing.
 - `/pause` and `/resume` control a relay.
 - `/reload` retries the most recently crashed agent in its roster slot.
+- `/cd PATH` changes the workspace for subsequent local commands and launches.
 - `/clear` clears the local transcript; `/close` exits the session.
 - `!command` runs a bounded local shell command in the selected workspace.
 

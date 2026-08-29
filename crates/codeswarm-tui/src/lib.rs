@@ -70,7 +70,7 @@ pub enum PermissionAction {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LocalCommand {
     Handled,
     Close,
@@ -82,6 +82,7 @@ pub enum LocalCommand {
     Export,
     Agents,
     Reload,
+    Directory(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -621,6 +622,14 @@ impl App {
             "/export" => LocalCommand::Export,
             "/agents" => LocalCommand::Agents,
             "/reload" => LocalCommand::Reload,
+            "/cd" => {
+                if argument.is_empty() {
+                    self.status = "usage: /cd PATH".into();
+                    LocalCommand::Handled
+                } else {
+                    LocalCommand::Directory(argument)
+                }
+            }
             "/help" => {
                 self.keyboard_help = true;
                 self.status = "keyboard help shown".into();
@@ -1572,7 +1581,7 @@ fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
 fn render_keyboard_help(buffer: &mut Buffer, area: Rect) {
     let lines = [
         " keys: ↑/↓ scroll · End follow tail · Tab details · Ctrl+K cancel queue · ? hide help",
-        " commands: /help  /config  /agents  /export  /mode  /collab  /reload",
+        " commands: /help  /config  /agents  /export  /mode  /collab  /reload  /cd",
         " /mode chat · /collab roster|manual|pair · /pause · /resume",
         " /clear clears the local transcript · /close exits the session",
         " Ctrl+Enter sends to the selected agent · Ctrl+C cancels active work",
@@ -2365,6 +2374,10 @@ mod tests {
         assert_eq!(
             app.handle_local_command("/agents"),
             Some(LocalCommand::Agents)
+        );
+        assert_eq!(
+            app.handle_local_command("/cd /tmp"),
+            Some(LocalCommand::Directory("/tmp".into()))
         );
     }
 
