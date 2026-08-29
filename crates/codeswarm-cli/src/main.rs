@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use codeswarm_adapters::{
@@ -608,9 +608,13 @@ fn run_agy_task(
                             let _ = sender.send(Err(error));
                         }
                     }
+                    Some(AdapterControl::Permission { request_id, answer, .. }) => {
+                        if let Err(error) = adapter.answer_permission(request_id, answer).await {
+                            let _ = sender.send(Err(error));
+                        }
+                    }
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
-                    | Some(AdapterControl::Permission { .. })
                     | Some(AdapterControl::Pause)
                     | Some(AdapterControl::Resume)
                     | Some(AdapterControl::SetStrategy(_)) => {}
@@ -689,9 +693,13 @@ fn run_acp_task(
                             let _ = sender.send(Err(error));
                         }
                     }
+                    Some(AdapterControl::Permission { request_id, answer, .. }) => {
+                        if let Err(error) = adapter.answer_permission(request_id, answer).await {
+                            let _ = sender.send(Err(error));
+                        }
+                    }
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
-                    | Some(AdapterControl::Permission { .. })
                     | Some(AdapterControl::Pause)
                     | Some(AdapterControl::Resume)
                     | Some(AdapterControl::SetStrategy(_)) => {}
@@ -969,6 +977,7 @@ fn run_terminal(
     let event_log = event_log().ok();
     let mut pending_permission: Option<(usize, String)> = None;
     let mut turn_active = false;
+    let mut cancel_requested_at: Option<Instant> = None;
     loop {
         if let Some(events) = &events {
             while let Ok(event) = events.try_recv() {
@@ -980,7 +989,10 @@ fn run_terminal(
                             | AgentEvent::Tool { .. }
                             | AgentEvent::Permission { .. }
                             | AgentEvent::Terminal { .. } => turn_active = true,
-                            AgentEvent::TurnComplete { .. } => turn_active = false,
+                            AgentEvent::TurnComplete { .. } => {
+                                turn_active = false;
+                                cancel_requested_at = None;
+                            }
                             AgentEvent::Ready { .. }
                             | AgentEvent::ModesReplaced { .. }
                             | AgentEvent::Failed { .. } => {}
@@ -1006,6 +1018,7 @@ fn run_terminal(
                     }
                     Err(error) => {
                         turn_active = false;
+                        cancel_requested_at = None;
                         pending_permission = None;
                         let active_agent = app.active_agent.clone();
                         app.set_header(active_agent, format!("error: {error}"));
@@ -1276,10 +1289,25 @@ fn run_terminal(
                     }
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if !turn_active {
+                        if let Some(controls) = &controls {
+                            let _ = controls.send(AdapterControl::Stop);
+                        }
+                        return Ok(());
+                    }
+                    if cancel_requested_at
+                        .is_some_and(|started| started.elapsed() <= Duration::from_secs(3))
+                    {
+                        if let Some(controls) = &controls {
+                            let _ = controls.send(AdapterControl::Stop);
+                        }
+                        return Ok(());
+                    }
                     if let Some(controls) = &controls {
                         let _ = controls.send(AdapterControl::Cancel);
-                        app.status = "cancelling".into();
                     }
+                    cancel_requested_at = Some(Instant::now());
+                    app.status = "cancelling · press Ctrl+C again to quit".into();
                 }
                 _ => match app.handle_prompt_input(Input::from(key)) {
                     PromptAction::Completion { index, total, .. } => {
