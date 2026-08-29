@@ -154,6 +154,17 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   allowing single-slot continuation and retargeting untagged prompts.
 - [x] Add live `/add` and `/drop SLOT` controls over the relay coordinator,
   with startup rollback and stable slot identity.
+- [x] Add live `/promote SLOT` owner transfer and `/swap A B` roster
+  reordering, preserving queued targets, context watermarks, adapter event
+  slots, and visible agent identity.
+- [x] Resolve live `/add` arguments through the configured catalog as well as
+  explicit native/ACP command specifications; failed optimistic UI additions
+  are rolled back when coordinator startup fails.
+- [x] Restore Python-compatible notification policy (`blur`, `always`,
+  `never`) for completion and permission events, with independent sound
+  control and persisted settings.
+- [x] Restore the Python path-completion threshold and lightweight source-file
+  reference styling without putting repository indexing on the scroll path.
 - [x] Integrated resize settling and latest-state frame recovery into a
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
@@ -166,11 +177,15 @@ Still required before cutover:
 - [x] Wire the relay host into the Rust CLI roster UX, including native/ACP
   selection, selected-first routing, direct prompts, pause/resume, and live
   normalized event streaming.
-- [ ] Finish adapter parity for real terminal process lifecycle ownership, full
-  mode replacement/synchronization, and all roster failure/reload branches.
+- [x] Finish the supported adapter lifecycle slice: terminal process-group
+  ownership, mode replacement/synchronization, ACP session reload identity,
+  and roster failure/reload branches have translated Rust coverage.
 - [x] Production terminal UI parity for the current rewrite slice: queue
   controls, permission answer focus, lazy tool/diff/terminal detail,
   launcher/settings persistence, and inline interaction behavior.
+- [ ] Add a catalog-backed live configuration surface for changing the active
+  roster from `/config`; `/add`, `/drop`, `/promote`, and `/swap` are the
+  current command-level equivalent.
 - [ ] Complete real-agent dogfooding, preview release/rollback, and staged
   default cutover.
 

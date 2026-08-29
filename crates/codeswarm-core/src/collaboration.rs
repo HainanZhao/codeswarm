@@ -59,6 +59,16 @@ impl CollaborationContext {
         }
     }
 
+    /// Follow two roster members when their logical slots exchange places.
+    /// Watermarks belong to the adapter, rather than to the numeric slot, so
+    /// moving a live owner must move its context cursor with it as well.
+    pub fn swap_agents(&mut self, first: usize, second: usize) {
+        if first < self.seen.len() && second < self.seen.len() {
+            self.seen.swap(first, second);
+            self.truncated.swap(first, second);
+        }
+    }
+
     pub fn unseen(&mut self, slot: usize) -> String {
         let start = self.seen.get(slot).copied().unwrap_or(self.events.len());
         let mut updates = self.events[start..]

@@ -86,6 +86,8 @@ pub enum LocalCommand {
     Reload,
     Drop,
     DropSlot(usize),
+    Promote(usize),
+    Swap(usize, usize),
     Directory(String),
     Diff,
 }
@@ -103,6 +105,54 @@ pub enum ConfigAction {
     Ignored,
     Changed,
     Close,
+}
+
+/// When CodeSwarm may forward completion and permission events to the
+/// operating system.  This preserves the Python client's three-way setting
+/// while keeping the common tmux case cheap and deterministic.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NotificationPolicy {
+    /// Never send an OS notification or completion bell.
+    Never,
+    /// Notify only after the terminal reports that it is unfocused.
+    #[default]
+    Blur,
+    /// Notify regardless of terminal focus.
+    Always,
+}
+
+impl NotificationPolicy {
+    pub fn from_setting(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "always" => Self::Always,
+            "blur" | "unfocused" => Self::Blur,
+            _ => Self::Never,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::Blur => "blur",
+            Self::Always => "always",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Never => "Never",
+            Self::Blur => "When unfocused",
+            Self::Always => "Always",
+        }
+    }
+
+    const fn next(self) -> Self {
+        match self {
+            Self::Never => Self::Blur,
+            Self::Blur => Self::Always,
+            Self::Always => Self::Never,
+        }
+    }
 }
 
 /// How much vertical space the conversation surface gives to editor text.
@@ -485,7 +535,10 @@ impl PromptEditor {
                 // editor avoids cycling through a large repository-wide
                 // candidate set after typing a bare `@`, while still keeping
                 // slash-command completion immediate.
-                if prefix[1..].chars().count() < 3 {
+                if prefix
+                    .strip_prefix('@')
+                    .is_some_and(|query| query.chars().count() < 3)
+                {
                     Vec::new()
                 } else {
                     let mut matches = self
@@ -635,7 +688,7 @@ pub struct App {
     config_visible: bool,
     config_selected: usize,
     collapse_details: bool,
-    notifications: bool,
+    notification_policy: NotificationPolicy,
     sounds: bool,
     terminal_focused: bool,
     show_thoughts: bool,
@@ -679,7 +732,7 @@ impl Default for App {
             config_visible: false,
             config_selected: 0,
             collapse_details: true,
-            notifications: false,
+            notification_policy: NotificationPolicy::Blur,
             sounds: true,
             terminal_focused: true,
             show_thoughts: false,
@@ -768,7 +821,7 @@ impl App {
             "/agents" => LocalCommand::Agents,
             "/add" => {
                 if argument.is_empty() {
-                    self.status = "usage: /add agy:COMMAND or /add acp:COMMAND".into();
+                    self.status = "usage: /add AGENT, agy:COMMAND, or acp:COMMAND".into();
                     LocalCommand::Handled
                 } else {
                     LocalCommand::Add(argument)
@@ -778,6 +831,23 @@ impl App {
             "/drop" => argument
                 .parse::<usize>()
                 .map_or(LocalCommand::Drop, LocalCommand::DropSlot),
+            "/promote" => argument
+                .parse::<usize>()
+                .map_or(LocalCommand::Handled, LocalCommand::Promote),
+            "/swap" => {
+                let mut slots = argument
+                    .split_whitespace()
+                    .filter_map(|value| value.parse::<usize>().ok());
+                match (slots.next(), slots.next()) {
+                    (Some(first), Some(second)) if slots.next().is_none() => {
+                        LocalCommand::Swap(first, second)
+                    }
+                    _ => {
+                        self.status = "usage: /swap SLOT SLOT".into();
+                        LocalCommand::Handled
+                    }
+                }
+            }
             "/diff" => {
                 match argument.to_ascii_lowercase().as_str() {
                     "split" => self.diff_split = true,
@@ -981,9 +1051,7 @@ impl App {
                 match self.config_selected {
                     0 => self.follow_tail = !self.follow_tail,
                     1 => self.collapse_details = !self.collapse_details,
-                    2 => {
-                        self.notifications = !self.notifications;
-                    }
+                    2 => self.notification_policy = self.notification_policy.next(),
                     3 => {
                         let options = self.mode_options();
                         if !options.is_empty() {
@@ -1047,11 +1115,32 @@ impl App {
     }
 
     pub fn notifications_enabled(&self) -> bool {
-        self.notifications
+        self.notification_policy != NotificationPolicy::Never
     }
 
     pub fn set_notifications_enabled(&mut self, enabled: bool) {
-        self.notifications = enabled;
+        self.notification_policy = if enabled {
+            NotificationPolicy::Blur
+        } else {
+            NotificationPolicy::Never
+        };
+    }
+
+    pub fn notification_policy(&self) -> NotificationPolicy {
+        self.notification_policy
+    }
+
+    pub fn set_notification_policy(&mut self, policy: &str) {
+        self.notification_policy = NotificationPolicy::from_setting(policy);
+    }
+
+    /// Return whether an event may be surfaced outside the terminal.
+    pub fn should_notify_system(&self) -> bool {
+        match self.notification_policy {
+            NotificationPolicy::Never => false,
+            NotificationPolicy::Blur => !self.terminal_focused,
+            NotificationPolicy::Always => true,
+        }
     }
 
     pub fn sounds_enabled(&self) -> bool {
@@ -1168,6 +1257,56 @@ impl App {
             .or_insert_with(|| "starting".into());
     }
 
+    /// Remove a roster entry that failed before its adapter became visible.
+    /// Live add startup is transactional at the coordinator, so the UI must
+    /// discard its optimistic label when that transaction rolls back.
+    pub fn remove_agent(&mut self, slot: usize) -> bool {
+        let removed = self.agent_names.remove(&slot).is_some();
+        self.agent_states.remove(&slot);
+        self.agent_modes.remove(&slot);
+        removed
+    }
+
+    /// Move the visible identity and per-agent UI state alongside a promoted
+    /// roster member. The coordinator keeps numeric slots stable, but slot
+    /// zero's displayed owner must follow the adapter that now owns it.
+    pub fn promote_agent(&mut self, slot: usize) -> bool {
+        if slot == 0
+            || !self.agent_names.contains_key(&slot)
+            || self
+                .agent_states
+                .get(&slot)
+                .is_some_and(|state| state == "dropped")
+        {
+            return false;
+        }
+        let Some(promoted_name) = self.agent_names.remove(&slot) else {
+            return false;
+        };
+        let owner_name = self.agent_names.remove(&0);
+        self.agent_names.insert(0, promoted_name);
+        if let Some(owner_name) = owner_name {
+            self.agent_names.insert(slot, owner_name);
+        }
+
+        let promoted_state = self.agent_states.remove(&slot);
+        self.agent_states.remove(&0);
+        if let Some(state) = promoted_state {
+            self.agent_states.insert(0, state);
+        }
+        self.agent_states.insert(slot, "dropped".into());
+
+        if let Some(promoted_modes) = self.agent_modes.remove(&slot) {
+            let owner_modes = self.agent_modes.remove(&0);
+            self.agent_modes.insert(0, promoted_modes);
+            if let Some(modes) = owner_modes {
+                self.agent_modes.insert(slot, modes);
+            }
+        }
+        self.active_agent = self.agent_name(0);
+        true
+    }
+
     pub fn agent_count(&self) -> usize {
         self.agent_names.len()
     }
@@ -1255,6 +1394,52 @@ impl App {
     pub fn mark_agent_dropped(&mut self, slot: usize) {
         self.agent_states.insert(slot, "dropped".into());
         self.status = format!("agent {slot} dropped");
+    }
+
+    /// Move two visible roster identities and their per-agent state together.
+    pub fn swap_agents(&mut self, first: usize, second: usize) -> bool {
+        if first == second
+            || !self.agent_names.contains_key(&first)
+            || !self.agent_names.contains_key(&second)
+        {
+            return false;
+        }
+        if self
+            .agent_states
+            .get(&first)
+            .is_some_and(|state| state == "dropped")
+            || self
+                .agent_states
+                .get(&second)
+                .is_some_and(|state| state == "dropped")
+        {
+            return false;
+        }
+        let first_name = self.agent_names.remove(&first);
+        let second_name = self.agent_names.remove(&second);
+        if let (Some(first_name), Some(second_name)) = (first_name, second_name) {
+            self.agent_names.insert(first, second_name);
+            self.agent_names.insert(second, first_name);
+        }
+        let first_state = self.agent_states.remove(&first);
+        let second_state = self.agent_states.remove(&second);
+        if let (Some(first_state), Some(second_state)) = (first_state, second_state) {
+            self.agent_states.insert(first, second_state);
+            self.agent_states.insert(second, first_state);
+        }
+        let first_modes = self.agent_modes.remove(&first);
+        let second_modes = self.agent_modes.remove(&second);
+        if let (Some(first_modes), Some(second_modes)) = (first_modes, second_modes) {
+            self.agent_modes.insert(first, second_modes);
+            self.agent_modes.insert(second, first_modes);
+        }
+        if self.failed_agent == Some(first) {
+            self.failed_agent = Some(second);
+        } else if self.failed_agent == Some(second) {
+            self.failed_agent = Some(first);
+        }
+        self.active_agent = self.agent_name(first);
+        true
     }
 
     pub fn set_header(&mut self, active_agent: impl Into<String>, status: impl Into<String>) {
@@ -2062,7 +2247,7 @@ fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
 fn render_keyboard_help(buffer: &mut Buffer, area: Rect) {
     let lines = [
         " keys: ↑/↓ scroll · End follow tail · Tab details · Ctrl+K cancel queue · ? hide help",
-        " commands: /help  /config  /agents  /add  /export  /diff  /mode  /collab  /reload  /drop  /cd",
+        " commands: /help  /config  /agents  /add  /export  /diff  /mode  /collab  /reload  /drop  /promote  /swap  /cd",
         " /mode chat · /collab roster|manual|pair · /pause · /resume",
         " /clear clears the local transcript · /close exits the session",
         " Ctrl+Enter sends to the selected agent · Ctrl+C cancels active work",
@@ -2099,11 +2284,7 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
             if app.collapse_details { "On" } else { "Off" },
             true,
         ),
-        (
-            "Notifications",
-            if app.notifications { "On" } else { "Off" },
-            true,
-        ),
+        ("Notifications", app.notification_policy.label(), true),
         ("Mode", app.mode(), false),
         ("Collaboration", app.collaboration(), false),
         (
@@ -2813,7 +2994,10 @@ fn add_file_reference_range(
         }))
         && !path.is_empty()
     {
-        ranges.push((start, start + path_end));
+        // Keep the optional source location attached to the reference. The
+        // Python renderer treats `src/main.rs:42` as one destination span,
+        // which makes line-addressed references easy to spot at a glance.
+        ranges.push((start, end));
     }
 }
 
@@ -3217,16 +3401,16 @@ mod tests {
     }
 
     #[test]
-    fn file_references_are_accented_but_line_suffix_stays_together() {
+    fn file_references_are_accented_with_line_suffix_attached() {
         let spans = file_reference_spans(
             Style::default().fg(Color::White),
             "see src/main.rs:42 and README",
         );
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content, "see ");
-        assert_eq!(spans[1].content, "src/main.rs");
+        assert_eq!(spans[1].content, "src/main.rs:42");
         assert!(spans[1].style.add_modifier == Modifier::UNDERLINED);
-        assert_eq!(spans[2].content, ":42 and README");
+        assert_eq!(spans[2].content, " and README");
     }
 
     #[test]
@@ -3401,6 +3585,45 @@ mod tests {
     }
 
     #[test]
+    fn promoting_a_live_agent_moves_its_identity_and_marks_old_owner_dropped() {
+        let mut app = App::default();
+        app.set_agent_name(0, "Claude Code");
+        app.set_agent_name(1, "Codex CLI");
+        app.apply_event(&codeswarm_core::AgentEvent::Ready {
+            slot: 0,
+            capabilities: codeswarm_core::AgentCapabilities::default(),
+        });
+        app.apply_event(&codeswarm_core::AgentEvent::Ready {
+            slot: 1,
+            capabilities: codeswarm_core::AgentCapabilities::default(),
+        });
+
+        assert!(app.promote_agent(1));
+        assert_eq!(app.agent_name(0), "Codex CLI");
+        assert_eq!(app.agent_name(1), "Claude Code");
+        assert_eq!(
+            app.agent_states.get(&1).map(String::as_str),
+            Some("dropped")
+        );
+        assert_eq!(app.active_agent, "Codex CLI");
+        assert!(!app.promote_agent(1));
+    }
+
+    #[test]
+    fn swapping_live_agents_moves_their_visible_state_without_touching_dropped_slots() {
+        let mut app = App::default();
+        app.set_agent_name(0, "Claude Code");
+        app.set_agent_name(1, "Codex CLI");
+        app.set_agent_name(2, "Gemini CLI");
+        app.mark_agent_dropped(2);
+        assert!(app.swap_agents(0, 1));
+        assert_eq!(app.agent_name(0), "Codex CLI");
+        assert_eq!(app.agent_name(1), "Claude Code");
+        assert!(!app.swap_agents(0, 2));
+        assert_eq!(app.agent_name(2), "Gemini CLI");
+    }
+
+    #[test]
     fn local_commands_do_not_become_agent_prompts() {
         let mut app = App::default();
         assert_eq!(
@@ -3456,6 +3679,14 @@ mod tests {
             Some(LocalCommand::DropSlot(2))
         );
         assert_eq!(
+            app.handle_local_command("/promote 2"),
+            Some(LocalCommand::Promote(2))
+        );
+        assert_eq!(
+            app.handle_local_command("/swap 0 2"),
+            Some(LocalCommand::Swap(0, 2))
+        );
+        assert_eq!(
             app.handle_local_command("/cd /tmp"),
             Some(LocalCommand::Directory("/tmp".into()))
         );
@@ -3504,12 +3735,14 @@ mod tests {
         app.handle_local_command("/config");
         app.handle_config_key(ConfigKey::Down);
         app.handle_config_key(ConfigKey::Down);
-        assert!(!app.notifications_enabled());
+        assert!(app.notifications_enabled());
+        assert_eq!(app.notification_policy().as_str(), "blur");
         assert_eq!(
             app.handle_config_key(ConfigKey::Confirm),
             ConfigAction::Changed
         );
         assert!(app.notifications_enabled());
+        assert_eq!(app.notification_policy().as_str(), "always");
     }
 
     #[test]
@@ -3520,6 +3753,25 @@ mod tests {
         assert!(!app.terminal_focused());
         app.set_terminal_focused(true);
         assert!(app.terminal_focused());
+    }
+
+    #[test]
+    fn notification_policy_preserves_python_blur_always_never_semantics() {
+        let mut app = App::default();
+        assert_eq!(app.notification_policy().as_str(), "blur");
+        assert!(!app.should_notify_system());
+
+        app.set_notification_policy("blur");
+        assert!(!app.should_notify_system());
+        app.set_terminal_focused(false);
+        assert!(app.should_notify_system());
+
+        app.set_notification_policy("always");
+        app.set_terminal_focused(true);
+        assert!(app.should_notify_system());
+
+        app.set_notification_policy("invalid");
+        assert!(!app.should_notify_system());
     }
 
     #[test]
@@ -3576,7 +3828,7 @@ mod tests {
     fn sound_preference_is_separate_from_completion_notifications() {
         let mut app = App::default();
         assert!(app.sounds_enabled());
-        assert!(!app.notifications_enabled());
+        assert!(app.notifications_enabled());
         app.handle_local_command("/config");
         for _ in 0..10 {
             app.handle_config_key(ConfigKey::Down);
@@ -3586,7 +3838,7 @@ mod tests {
             ConfigAction::Changed
         );
         assert!(!app.sounds_enabled());
-        assert!(!app.notifications_enabled());
+        assert!(app.notifications_enabled());
     }
 
     #[test]

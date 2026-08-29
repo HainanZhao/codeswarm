@@ -88,7 +88,8 @@ Inside the conversation prompt:
 - `/help` shows keyboard and command help.
 - `/config` opens the lightweight inline settings panel.
 - `/agents` returns to the agent store to edit the saved roster.
-- `/add agy:COMMAND` or `/add acp:COMMAND` starts a new peer in the live roster.
+- `/add AGENT`, `/add agy:COMMAND`, or `/add acp:COMMAND` starts a new peer in
+  the live roster.
 - `/export` writes the retained conversation to Markdown.
 - `/diff split|unified` switches the lazy diff view.
 - `/mode` and `/mode chat` select or show the current mode state.
@@ -97,6 +98,10 @@ Inside the conversation prompt:
 - `/reload` retries the most recently crashed agent in its roster slot.
 - `/drop` removes the most recently crashed peer; `/drop SLOT` removes a
   peer by zero-based roster slot (the owner is protected).
+- `/promote SLOT` transfers ownership to an active peer without restarting
+  it; the former owner remains in its stable slot and is tombstoned.
+- `/swap A B` reorders two active roster slots without restarting their
+  adapters; queued work and response colors follow the agents.
 - `/cd PATH` changes the workspace for subsequent local commands and launches.
 - `/clear` clears the local transcript; `/close` exits the session.
 - `!command` runs a bounded local shell command in the selected workspace.

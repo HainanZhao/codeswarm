@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     io::{Write, stdout},
     path::PathBuf,
     sync::mpsc::{self, Receiver, Sender},
@@ -55,6 +55,8 @@ enum AdapterControl {
     SetMode(String),
     Reload(usize),
     Drop(usize),
+    Promote(usize),
+    Swap(usize, usize),
     Cancel,
     Stop,
 }
@@ -259,7 +261,7 @@ fn normalize_arguments(mut arguments: Vec<String>) -> Vec<String> {
 
 fn print_help() {
     println!(
-        "CodeSwarm — fast tmux-first terminal workspace\n\nUsage:\n  codeswarm [OPTIONS] [PROMPT]\n  codeswarm run [PATH] [OPTIONS] [PROMPT]\n  codeswarm acp COMMAND [PATH]\n\nOptions:\n  -a, --agent NAME                Select a catalog agent (repeatable)\n  --demo                         Run the local UI preview\n  --agy PROMPT                   Run the native Agy adapter\n  --acp PROGRAM [PROMPT]         Run an ACP adapter\n  --roster KIND:COMMAND          Add a native/ACP roster member (repeatable)\n  --first N                      Select the first roster slot (zero-based)\n  --first-agent N                Select the first named agent (one-based)\n  --max-rounds N                 Limit automated relay turns\n  --project-dir PATH             Use PATH as the workspace\n  --alt-screen                   Use the alternate terminal screen\n  -h, --help                     Show this help\n  -v, --version                  Show the version\n\nPrompt commands include /config, /agents, /add, /mode, /collab, /pause, /resume,\n/reload, /drop, /diff, /export, /clear, /close, and !command."
+        "CodeSwarm — fast tmux-first terminal workspace\n\nUsage:\n  codeswarm [OPTIONS] [PROMPT]\n  codeswarm run [PATH] [OPTIONS] [PROMPT]\n  codeswarm acp COMMAND [PATH]\n\nOptions:\n  -a, --agent NAME                Select a catalog agent (repeatable)\n  --demo                         Run the local UI preview\n  --agy PROMPT                   Run the native Agy adapter\n  --acp PROGRAM [PROMPT]         Run an ACP adapter\n  --roster KIND:COMMAND          Add a native/ACP roster member (repeatable)\n  --first N                      Select the first roster slot (zero-based)\n  --first-agent N                Select the first named agent (one-based)\n  --max-rounds N                 Limit automated relay turns\n  --project-dir PATH             Use PATH as the workspace\n  --alt-screen                   Use the alternate terminal screen\n  -h, --help                     Show this help\n  -v, --version                  Show the version\n\nPrompt commands include /config, /agents, /add, /mode, /collab, /pause, /resume,\n/reload, /drop, /promote, /swap, /diff, /export, /clear, /close, and !command."
     );
 }
 
@@ -487,6 +489,30 @@ fn parse_agent_spec(value: &str) -> Option<AgentSpec> {
     }
 }
 
+/// Resolve either the explicit `agy:COMMAND`/`acp:COMMAND` form or an active
+/// catalog identity, short name, or alias for live roster additions.
+fn resolve_live_agent_spec(value: &str) -> Option<AgentSpec> {
+    parse_agent_spec(value).or_else(|| {
+        let settings = settings_path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .unwrap_or_default();
+        let query = value.trim();
+        catalog_from_settings(&settings)
+            .into_iter()
+            .find(|agent| {
+                agent.active
+                    && (agent.identity.eq_ignore_ascii_case(query)
+                        || agent.short_name.eq_ignore_ascii_case(query)
+                        || agent.name.eq_ignore_ascii_case(query)
+                        || agent
+                            .aliases
+                            .iter()
+                            .any(|alias| alias.eq_ignore_ascii_case(query)))
+            })
+            .map(|agent| agent_spec(&agent))
+    })
+}
+
 fn display_agent_name(command: &str) -> String {
     let lower = command.to_ascii_lowercase();
     if lower.contains("claude") {
@@ -702,17 +728,7 @@ fn load_ui_preferences(app: &mut App) {
     {
         app.set_collapse_details(collapsed);
     }
-    if let Some(enabled) = value
-        .get("notifications")
-        .and_then(|notifications| {
-            notifications
-                .get("enabled")
-                .or_else(|| notifications.get("turn_over"))
-        })
-        .and_then(serde_json::Value::as_bool)
-    {
-        app.set_notifications_enabled(enabled);
-    }
+    apply_notification_preferences(app, &value);
     if let Some(enabled) = value
         .get("notifications")
         .and_then(|notifications| notifications.get("enable_sounds"))
@@ -757,6 +773,30 @@ fn load_ui_preferences(app: &mut App) {
     }
 }
 
+fn apply_notification_preferences(app: &mut App, value: &serde_json::Value) {
+    if let Some(policy) = value
+        .get("notifications")
+        .and_then(|notifications| notifications.get("system"))
+        .and_then(serde_json::Value::as_str)
+    {
+        app.set_notification_policy(policy);
+    } else if let Some(enabled) = value
+        .get("notifications")
+        .and_then(|notifications| notifications.get("enabled"))
+        .and_then(serde_json::Value::as_bool)
+        .or_else(|| {
+            value
+                .get("notifications")
+                .and_then(|notifications| notifications.get("turn_over"))
+                .and_then(serde_json::Value::as_bool)
+        })
+    {
+        // `enabled`/`turn_over` are the Rust and Python boolean compatibility
+        // keys.  They map to the Python client's safe blur-only policy.
+        app.set_notifications_enabled(enabled);
+    }
+}
+
 fn save_ui_preferences(app: &App) -> std::io::Result<()> {
     let Some(path) = settings_path() else {
         return Ok(());
@@ -793,6 +833,8 @@ fn save_ui_preferences(app: &App) -> std::io::Result<()> {
         if !notifications.is_object() {
             *notifications = serde_json::json!({});
         }
+        notifications["system"] =
+            serde_json::Value::String(app.notification_policy().as_str().into());
         notifications["enabled"] = serde_json::Value::Bool(app.notifications_enabled());
         // Keep the legacy Python key readable by either client while the
         // Rust UI uses the shorter `enabled` spelling internally.
@@ -1000,7 +1042,10 @@ fn run_agy_task(
                             let _ = sender.send(Err(error));
                         }
                     }
-                    Some(AdapterControl::Drop(_)) | Some(AdapterControl::Add(_)) => {}
+                    Some(AdapterControl::Drop(_))
+                    | Some(AdapterControl::Promote(_))
+                    | Some(AdapterControl::Swap(_, _))
+                    | Some(AdapterControl::Add(_)) => {}
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
                     | Some(AdapterControl::Pause)
@@ -1104,7 +1149,10 @@ fn run_acp_task(
                             let _ = sender.send(Err(error));
                         }
                     }
-                    Some(AdapterControl::Drop(_)) | Some(AdapterControl::Add(_)) => {}
+                    Some(AdapterControl::Drop(_))
+                    | Some(AdapterControl::Promote(_))
+                    | Some(AdapterControl::Swap(_, _))
+                    | Some(AdapterControl::Add(_)) => {}
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
                     | Some(AdapterControl::Pause)
@@ -1400,6 +1448,16 @@ fn run_relay_task(
                         let _ = sender.send(Err(error));
                     }
                 }
+                Some(AdapterControl::Promote(slot)) => {
+                    if let Err(error) = relay.promote_owner(slot).await {
+                        let _ = sender.send(Err(error));
+                    }
+                }
+                Some(AdapterControl::Swap(first, second)) => {
+                    if let Err(error) = relay.swap_agents(first, second) {
+                        let _ = sender.send(Err(error));
+                    }
+                }
                 Some(AdapterControl::Add(spec)) => {
                     let slot = relay.next_slot();
                     let adapter = match spec.clone() {
@@ -1456,7 +1514,8 @@ fn run_terminal(
     app.load_prompt_history(load_prompt_history());
     let mut completion_candidates = [
         "/add", "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/diff",
-        "/exit", "/export", "/help", "/mode", "/pause", "/quit", "/reload", "/drop", "/resume",
+        "/exit", "/export", "/help", "/mode", "/pause", "/quit", "/reload", "/drop", "/promote",
+        "/swap", "/resume",
     ]
     .into_iter()
     .map(String::from)
@@ -1468,6 +1527,7 @@ fn run_terminal(
     let (shell_sender, shell_receiver) = mpsc::channel::<AdapterResult<AgentEvent>>();
     let mut pending_permission: Option<(usize, String)> = None;
     let mut synced_mode_slots = std::collections::BTreeSet::new();
+    let mut pending_adds = BTreeSet::new();
     let mut turn_active = false;
     let mut cancel_requested_at: Option<Instant> = None;
     loop {
@@ -1485,7 +1545,10 @@ fn run_terminal(
                                 turn_active = false;
                                 cancel_requested_at = None;
                             }
-                            AgentEvent::Ready { .. } | AgentEvent::Failed { .. } => {}
+                            AgentEvent::Ready { slot, .. } => {
+                                pending_adds.remove(slot);
+                            }
+                            AgentEvent::Failed { .. } => {}
                             AgentEvent::ModesReplaced { slot, .. } => {
                                 if app.mode() == "Auto pilot"
                                     && synced_mode_slots.insert(*slot)
@@ -1513,12 +1576,19 @@ fn run_terminal(
                             }
                         }
                         app.apply_event(&event);
-                        if matches!(&event, AgentEvent::TurnComplete { .. })
-                            && app.notifications_enabled()
+                        if matches!(&event, AgentEvent::Permission { .. })
+                            && app.should_notify_system()
                         {
-                            if !app.terminal_focused() {
-                                notify_turn_complete(&app.active_agent);
+                            notify_permission_request(&app.active_agent);
+                            if app.sounds_enabled() {
+                                let _ = stdout().write_all(b"\x07");
+                                let _ = stdout().flush();
                             }
+                        }
+                        if matches!(&event, AgentEvent::TurnComplete { .. })
+                            && app.should_notify_system()
+                        {
+                            notify_turn_complete(&app.active_agent);
                             if app.sounds_enabled() {
                                 let _ = stdout().write_all(b"\x07");
                                 let _ = stdout().flush();
@@ -1534,6 +1604,9 @@ fn run_terminal(
                         }
                     }
                     Err(error) => {
+                        for slot in std::mem::take(&mut pending_adds) {
+                            app.remove_agent(slot);
+                        }
                         if let Some(log) = &event_log {
                             let _ = log.flush();
                         }
@@ -1829,9 +1902,10 @@ fn run_terminal(
                                             app.status = "add unavailable in solo session".into();
                                             continue;
                                         };
-                                        let Some(agent_spec) = parse_agent_spec(&spec) else {
+                                        let Some(agent_spec) = resolve_live_agent_spec(&spec)
+                                        else {
                                             app.status =
-                                                "usage: /add agy:COMMAND or /add acp:COMMAND"
+                                                "usage: /add AGENT, agy:COMMAND, or acp:COMMAND"
                                                     .into();
                                             continue;
                                         };
@@ -1843,6 +1917,7 @@ fn run_terminal(
                                         };
                                         app.set_agent_name(slot, name);
                                         if controls.send(AdapterControl::Add(agent_spec)).is_ok() {
+                                            pending_adds.insert(slot);
                                             app.status = format!("adding agent {slot}");
                                         } else {
                                             app.status = "unable to add agent".into();
@@ -1876,6 +1951,46 @@ fn run_terminal(
                                             }
                                         } else {
                                             app.status = "drop unavailable in solo session".into();
+                                        }
+                                    }
+                                    LocalCommand::Promote(slot) => {
+                                        if slot == 0 {
+                                            app.status = "agent 0 is already the owner".into();
+                                        } else if let Some(controls) = &controls {
+                                            if controls.send(AdapterControl::Promote(slot)).is_ok()
+                                                && app.promote_agent(slot)
+                                            {
+                                                if selected_slot == Some(slot) {
+                                                    selected_slot = Some(0);
+                                                }
+                                                app.status = format!("promoting agent {slot}");
+                                            } else {
+                                                app.status = "unable to promote agent".into();
+                                            }
+                                        } else {
+                                            app.status =
+                                                "promote unavailable in solo session".into();
+                                        }
+                                    }
+                                    LocalCommand::Swap(first, second) => {
+                                        if let Some(controls) = &controls {
+                                            if controls
+                                                .send(AdapterControl::Swap(first, second))
+                                                .is_ok()
+                                                && app.swap_agents(first, second)
+                                            {
+                                                if selected_slot == Some(first) {
+                                                    selected_slot = Some(second);
+                                                } else if selected_slot == Some(second) {
+                                                    selected_slot = Some(first);
+                                                }
+                                                app.status =
+                                                    format!("swapping agents {first} and {second}");
+                                            } else {
+                                                app.status = "unable to swap agents".into();
+                                            }
+                                        } else {
+                                            app.status = "swap unavailable in solo session".into();
                                         }
                                     }
                                     LocalCommand::Drop => {
@@ -2167,12 +2282,42 @@ fn notify_turn_complete(agent: &str) {
     });
 }
 
+/// Surface an agent permission request outside the TUI when notifications are
+/// enabled.  The Python client uses its bundled `question.wav`; a terminal
+/// bell is emitted by the event loop alongside this lightweight OS message so
+/// the Rust client has the same useful signal without shipping a media
+/// runtime or blocking the render thread.
+fn notify_permission_request(agent: &str) {
+    let agent = agent.to_owned();
+    thread::spawn(move || {
+        let message = format!("{agent} is waiting for permission");
+        #[cfg(target_os = "linux")]
+        {
+            let _ = std::process::Command::new("notify-send")
+                .args(["CodeSwarm", &message])
+                .status();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let escaped = message.replace('"', "\\\"");
+            let script = format!("display notification \"{escaped}\" with title \"CodeSwarm\"");
+            let _ = std::process::Command::new("osascript")
+                .args(["-e", &script])
+                .status();
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = message;
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        AdapterControl, AgentSpec, Launch, bare_launch_from_settings, dispatch_permission_action,
-        dispatch_queued_prompt, normalize_arguments, parse_launch, project_dir_argument,
-        run_relay_sequence_with_controls,
+        AdapterControl, AgentSpec, Launch, apply_notification_preferences,
+        bare_launch_from_settings, dispatch_permission_action, dispatch_queued_prompt,
+        normalize_arguments, parse_launch, project_dir_argument, run_relay_sequence_with_controls,
     };
     use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
     use codeswarm_core::{AgentCapabilities, AgentEvent, PermissionAnswer};
@@ -2232,6 +2377,20 @@ mod tests {
             parse_launch(&["--acp".into(), "codex-acp".into()]),
             Some(Launch::Acp { program, prompt: None }) if program == "codex-acp"
         ));
+    }
+
+    #[test]
+    fn resolves_catalog_names_for_live_additions() {
+        assert_eq!(
+            super::resolve_live_agent_spec("codex"),
+            Some(AgentSpec::Acp(
+                "npx -y @agentclientprotocol/codex-acp".into()
+            ))
+        );
+        assert_eq!(
+            super::resolve_live_agent_spec("agy:custom-agent"),
+            Some(AgentSpec::Agy("custom-agent".into()))
+        );
     }
 
     #[test]
@@ -2317,6 +2476,25 @@ mod tests {
             bare_launch_from_settings(r#"{"launcher":{"roster":"removed.ai"}}"#),
             Launch::Store
         ));
+    }
+
+    #[test]
+    fn notification_settings_load_with_python_and_rust_key_shapes() {
+        let mut app = codeswarm_tui::App::default();
+        apply_notification_preferences(
+            &mut app,
+            &serde_json::json!({"notifications": {"system": "always", "enabled": false}}),
+        );
+        assert_eq!(app.notification_policy().as_str(), "always");
+        assert!(app.should_notify_system());
+
+        apply_notification_preferences(
+            &mut app,
+            &serde_json::json!({"notifications": {"turn_over": true}}),
+        );
+        assert_eq!(app.notification_policy().as_str(), "blur");
+        app.set_terminal_focused(false);
+        assert!(app.should_notify_system());
     }
 
     #[tokio::test]

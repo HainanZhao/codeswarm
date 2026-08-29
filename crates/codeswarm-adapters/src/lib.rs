@@ -362,6 +362,108 @@ pub trait AgentAdapter: Send {
     async fn next_event(&mut self) -> Option<AdapterResult<AgentEvent>>;
 }
 
+/// Preserve a stable CodeSwarm roster slot when an already-running adapter is
+/// moved to another logical position (for example, owner promotion). Native
+/// protocol implementations keep their original slot internally, while this
+/// boundary rewrites the normalized event identity seen by the reducer.
+struct SlotMappedAdapter {
+    logical_slot: RosterSlot,
+    inner: Box<dyn AgentAdapter>,
+}
+
+impl std::fmt::Debug for SlotMappedAdapter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SlotMappedAdapter")
+            .field("logical_slot", &self.logical_slot)
+            .field("inner_slot", &self.inner.slot())
+            .finish_non_exhaustive()
+    }
+}
+
+fn map_event_slot(event: AgentEvent, slot: RosterSlot) -> AgentEvent {
+    match event {
+        AgentEvent::Ready { capabilities, .. } => AgentEvent::Ready { slot, capabilities },
+        AgentEvent::ModesReplaced {
+            modes,
+            current_mode,
+            ..
+        } => AgentEvent::ModesReplaced {
+            slot,
+            modes,
+            current_mode,
+        },
+        AgentEvent::Text { text, .. } => AgentEvent::Text { slot, text },
+        AgentEvent::Thought { text, .. } => AgentEvent::Thought { slot, text },
+        AgentEvent::Tool { update, .. } => AgentEvent::Tool { slot, update },
+        AgentEvent::Permission { request, .. } => AgentEvent::Permission { slot, request },
+        AgentEvent::Terminal { event, .. } => AgentEvent::Terminal { slot, event },
+        AgentEvent::TurnComplete { .. } => AgentEvent::TurnComplete { slot },
+        AgentEvent::Failed {
+            started, detail, ..
+        } => AgentEvent::Failed {
+            slot,
+            started,
+            detail,
+        },
+    }
+}
+
+#[async_trait]
+impl AgentAdapter for SlotMappedAdapter {
+    fn slot(&self) -> RosterSlot {
+        self.logical_slot
+    }
+
+    fn display_name(&self) -> String {
+        self.inner.display_name()
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        self.inner.capabilities()
+    }
+
+    async fn start(&mut self) -> AdapterResult<()> {
+        self.inner.start().await
+    }
+
+    async fn send_prompt(&mut self, prompt: String) -> AdapterResult<()> {
+        self.inner.send_prompt(prompt).await
+    }
+
+    async fn cancel(&mut self) -> AdapterResult<bool> {
+        self.inner.cancel().await
+    }
+
+    async fn answer_permission(
+        &mut self,
+        request_id: String,
+        answer: PermissionAnswer,
+    ) -> AdapterResult<()> {
+        self.inner.answer_permission(request_id, answer).await
+    }
+
+    async fn set_mode(&mut self, mode: String) -> AdapterResult<()> {
+        self.inner.set_mode(mode).await
+    }
+
+    async fn reload(&mut self) -> AdapterResult<()> {
+        self.inner.reload().await
+    }
+
+    async fn stop(&mut self) -> AdapterResult<()> {
+        self.inner.stop().await
+    }
+
+    async fn next_event(&mut self) -> Option<AdapterResult<AgentEvent>> {
+        let slot = self.logical_slot;
+        self.inner
+            .next_event()
+            .await
+            .map(|result| result.map(|event| map_event_slot(event, slot)))
+    }
+}
+
 /// Owns one adapter and feeds normalized events through the deterministic core
 /// reducer. The UI consumes effects and state snapshots.
 pub struct AdapterHost {
@@ -467,6 +569,48 @@ impl AdapterHost {
     pub fn adapter(&self) -> &dyn AgentAdapter {
         &*self.adapter
     }
+
+    /// Move this host to a new logical roster slot. The adapter process is not
+    /// restarted; only normalized event identities and reducer state move.
+    fn remap(self, logical_slot: RosterSlot) -> Self {
+        let old_slot = self.adapter.slot();
+        if old_slot == logical_slot {
+            return self;
+        }
+
+        let mut state = self.state;
+        if state.slots.len() <= logical_slot {
+            state
+                .slots
+                .resize(logical_slot.saturating_add(1), Default::default());
+        }
+        if let Some(agent) = state.slots.get(old_slot).cloned() {
+            state.slots[logical_slot] = agent;
+        }
+        if state.active_slot == Some(old_slot) {
+            state.active_slot = Some(logical_slot);
+        }
+        for (slot, _) in &mut state.queued_prompts {
+            if *slot == old_slot {
+                *slot = logical_slot;
+            }
+        }
+        for (slot, _) in &mut state.public_text {
+            if *slot == old_slot {
+                *slot = logical_slot;
+            }
+        }
+
+        Self {
+            adapter: Box::new(SlotMappedAdapter {
+                logical_slot,
+                inner: self.adapter,
+            }),
+            state,
+            last_error: self.last_error,
+            event_log: self.event_log,
+        }
+    }
 }
 
 /// Sequential multi-adapter runner. It intentionally never polls two
@@ -564,10 +708,19 @@ impl RelayHost {
     }
 
     pub async fn stop(&mut self) -> AdapterResult<()> {
+        // A third-party adapter can fail during shutdown (for example after
+        // its transport has already disappeared). Always give every roster
+        // member a chance to clean up, then return the first error so callers
+        // still get an actionable failure without leaking later processes.
+        let mut first_error = None;
         for host in &mut self.hosts {
-            host.stop().await?;
+            if let Err(error) = host.stop().await
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Forward a normalized permission answer to the adapter owning `slot`.
@@ -702,6 +855,81 @@ impl RelayHost {
             sink(AgentEvent::Ready { slot, capabilities });
         }
         Ok(slot)
+    }
+
+    /// Promote an active peer to the owner slot without restarting it. The
+    /// former owner is stopped and retained as a tombstoned stable slot, so
+    /// queued targets and future reloads cannot silently change identity.
+    pub async fn promote_owner(&mut self, slot: RosterSlot) -> AdapterResult<()> {
+        if slot == 0 {
+            return Ok(());
+        }
+        if slot >= self.hosts.len() {
+            return Err(AdapterError::Transport(
+                "replacement owner is out of range".into(),
+            ));
+        }
+        if !self.relay.active_slots().any(|candidate| candidate == slot) {
+            return Err(AdapterError::Transport(
+                "replacement owner is not active".into(),
+            ));
+        }
+
+        // Shutdown is the only fallible step. Do it before mutating the
+        // roster, leaving all logical state intact if the old owner refuses.
+        self.hosts[0].stop().await?;
+        self.relay
+            .promote_owner(slot)
+            .map_err(|error| AdapterError::Transport(error.into()))?;
+
+        let replacement = self.hosts.remove(slot).remap(0);
+        let old_owner = self.hosts.remove(0).remap(slot);
+        self.hosts.insert(0, replacement);
+        self.hosts.insert(slot, old_owner);
+        self.roster_names.swap(0, slot);
+        self.introduced[0] = false;
+        self.introduced[slot] = false;
+        if let Some(sink) = &self.event_sink {
+            sink(AgentEvent::Ready {
+                slot: 0,
+                capabilities: self.hosts[0].adapter().capabilities(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Reorder two live adapters without restarting either process. The
+    /// logical slot wrapper keeps normalized events, reducer state, and
+    /// permission routing aligned with the new roster order.
+    pub fn swap_agents(&mut self, first: RosterSlot, second: RosterSlot) -> AdapterResult<()> {
+        if first == second {
+            return Ok(());
+        }
+        if first >= self.hosts.len() || second >= self.hosts.len() {
+            return Err(AdapterError::Transport("roster slot out of range".into()));
+        }
+        self.relay
+            .swap_agents(first, second)
+            .map_err(|error| AdapterError::Transport(error.into()))?;
+        let low = first.min(second);
+        let high = first.max(second);
+        let high_host = self.hosts.remove(high);
+        let low_host = self.hosts.remove(low);
+        self.hosts.insert(low, high_host.remap(low));
+        self.hosts.insert(high, low_host.remap(high));
+        self.roster_names.swap(first, second);
+        self.introduced.swap(first, second);
+        if let Some(sink) = &self.event_sink {
+            sink(AgentEvent::Ready {
+                slot: first,
+                capabilities: self.hosts[first].adapter().capabilities(),
+            });
+            sink(AgentEvent::Ready {
+                slot: second,
+                capabilities: self.hosts[second].adapter().capabilities(),
+            });
+        }
+        Ok(())
     }
 
     pub fn relay(&self) -> &Relay {
@@ -2199,8 +2427,21 @@ impl AgentAdapter for AcpAdapter {
     }
 
     async fn reload(&mut self) -> AdapterResult<()> {
+        // `stop` tears down the process and clears its transport-owned
+        // session handle. A reload is different from a final shutdown: ACP
+        // peers advertising `loadSession` must receive the prior ID so the
+        // replacement process can resume the same conversation.
+        let session_id = self.session_id.clone();
         self.stop().await?;
-        self.start().await
+        self.session_id = session_id.clone();
+        let result = self.start().await;
+        if result.is_err() {
+            // `start` cleans up a partially initialized transport by calling
+            // `stop`, which also clears the handle. Keep it available for a
+            // subsequent retry after the coordinator reports the failure.
+            self.session_id = session_id;
+        }
+        result
     }
 
     async fn stop(&mut self) -> AdapterResult<()> {
@@ -2455,6 +2696,10 @@ mod tests {
         relay::{DEFAULT_STOP_ACKNOWLEDGMENT, RelayDecision, STOP_TOKEN},
     };
     use serde_json::Value;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     fn unique_test_path(stem: &str, extension: &str) -> std::path::PathBuf {
         let nonce = std::time::SystemTime::now()
@@ -2578,6 +2823,97 @@ mod tests {
         async fn next_event(&mut self) -> Option<super::AdapterResult<AgentEvent>> {
             std::future::pending().await
         }
+    }
+
+    #[derive(Debug)]
+    struct StopTrackingAdapter {
+        slot: usize,
+        stopped: Arc<AtomicUsize>,
+        fail_stop: bool,
+    }
+
+    #[async_trait]
+    impl AgentAdapter for StopTrackingAdapter {
+        fn slot(&self) -> usize {
+            self.slot
+        }
+
+        fn capabilities(&self) -> AgentCapabilities {
+            AgentCapabilities::default()
+        }
+
+        async fn start(&mut self) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn send_prompt(&mut self, _prompt: String) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn cancel(&mut self) -> super::AdapterResult<bool> {
+            Ok(false)
+        }
+
+        async fn answer_permission(
+            &mut self,
+            _request_id: String,
+            _answer: PermissionAnswer,
+        ) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn set_mode(&mut self, _mode: String) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn reload(&mut self) -> super::AdapterResult<()> {
+            Ok(())
+        }
+
+        async fn stop(&mut self) -> super::AdapterResult<()> {
+            self.stopped.fetch_add(1, Ordering::Relaxed);
+            if self.fail_stop {
+                Err(super::AdapterError::Transport("stop failed".into()))
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn next_event(&mut self) -> Option<super::AdapterResult<AgentEvent>> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_stop_attempts_every_adapter_after_one_shutdown_failure() {
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let relay = RelayHost::new(
+            vec![
+                AdapterHost::new(
+                    Box::new(StopTrackingAdapter {
+                        slot: 0,
+                        stopped: Arc::clone(&stopped),
+                        fail_stop: true,
+                    }),
+                    None,
+                ),
+                AdapterHost::new(
+                    Box::new(StopTrackingAdapter {
+                        slot: 1,
+                        stopped: Arc::clone(&stopped),
+                        fail_stop: false,
+                    }),
+                    None,
+                ),
+            ],
+            4,
+        )
+        .expect("relay");
+        let mut relay = relay;
+
+        let error = relay.stop().await.expect_err("first stop failure");
+        assert!(error.to_string().contains("stop failed"));
+        assert_eq!(stopped.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -2850,6 +3186,23 @@ mod tests {
             adapter.next_event().await,
             Some(Ok(AgentEvent::TurnComplete { .. }))
         ));
+    }
+
+    #[tokio::test]
+    async fn acp_reload_preserves_a_loadable_session_id() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let mut adapter = AcpAdapter::with_session_id(
+            0,
+            cwd,
+            "__codeswarm_missing_acp_for_reload_test__",
+            Vec::new(),
+            "saved-session",
+        );
+        // A failed replacement process still must not erase the session ID:
+        // the coordinator can report the startup error and offer another
+        // reload, preserving the only handle that can resume the conversation.
+        assert!(adapter.reload().await.is_err());
+        assert_eq!(adapter.session_id.as_deref(), Some("saved-session"));
     }
 
     #[tokio::test]
@@ -3534,6 +3887,101 @@ mod tests {
                 .iter()
                 .any(|event| { matches!(event, AgentEvent::Ready { slot: 2, .. }) })
         );
+    }
+
+    #[tokio::test]
+    async fn relay_host_promotes_peer_without_restarting_or_leaking_slot_identity() {
+        let former_owner = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(
+                0,
+                AgentCapabilities::default(),
+                [AgentEvent::TurnComplete { slot: 0 }],
+            )),
+            None,
+        );
+        let replacement = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(
+                1,
+                AgentCapabilities::default(),
+                [
+                    AgentEvent::Text {
+                        slot: 1,
+                        text: "promoted response".into(),
+                    },
+                    AgentEvent::TurnComplete { slot: 1 },
+                ],
+            )),
+            None,
+        );
+        let mut relay = RelayHost::new(vec![former_owner, replacement], 4).expect("relay");
+        relay.set_roster_names(vec!["Owner".into(), "Reviewer".into()]);
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = std::sync::Arc::clone(&events);
+        relay.set_event_sink(move |event| captured.lock().expect("lock").push(event));
+        relay.start().await.expect("start");
+
+        relay.promote_owner(1).await.expect("promote peer");
+        assert_eq!(relay.relay().active_slots().collect::<Vec<_>>(), vec![0]);
+        assert!(matches!(
+            relay.run_turn("task", 0).await.expect("promoted turn"),
+            RelayDecision::Dispatch { slot: 0, .. }
+        ));
+        let events = events.lock().expect("lock");
+        let text = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Text { slot: 0, text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(text, "promoted response");
+        assert!(relay.dispatches()[0].1.contains("You are Reviewer"));
+    }
+
+    #[tokio::test]
+    async fn relay_host_swaps_live_adapters_and_remaps_stream_events() {
+        let first = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(
+                0,
+                AgentCapabilities::default(),
+                [
+                    AgentEvent::Text {
+                        slot: 0,
+                        text: "owner stream".into(),
+                    },
+                    AgentEvent::TurnComplete { slot: 0 },
+                ],
+            )),
+            None,
+        );
+        let second = AdapterHost::new(
+            Box::new(ScriptedAdapter::new(
+                1,
+                AgentCapabilities::default(),
+                [
+                    AgentEvent::Text {
+                        slot: 1,
+                        text: "peer stream".into(),
+                    },
+                    AgentEvent::TurnComplete { slot: 1 },
+                ],
+            )),
+            None,
+        );
+        let mut relay = RelayHost::new(vec![first, second], 4).expect("relay");
+        relay.set_roster_names(vec!["Owner".into(), "Peer".into()]);
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = std::sync::Arc::clone(&events);
+        relay.set_event_sink(move |event| captured.lock().expect("lock").push(event));
+        relay.start().await.expect("start");
+
+        relay.swap_agents(0, 1).expect("swap peers");
+        relay.run_turn("task", 0).await.expect("swapped turn");
+        let events = events.lock().expect("events");
+        assert!(events.iter().any(|event| {
+            matches!(event, AgentEvent::Text { slot: 0, text } if text == "peer stream")
+        }));
+        assert!(relay.dispatches()[0].1.contains("You are Peer"));
     }
 
     #[tokio::test]

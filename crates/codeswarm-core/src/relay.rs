@@ -156,6 +156,106 @@ impl Relay {
         Ok(())
     }
 
+    /// Promote an active peer into the owner slot while preserving the
+    /// causal relay state. The former owner remains in its original slot but
+    /// is tombstoned, matching the Python coordinator's stable-slot model.
+    pub fn promote_owner(&mut self, slot: RosterSlot) -> Result<(), &'static str> {
+        if slot == 0 {
+            return Ok(());
+        }
+        if !self.active.get(slot).copied().ok_or("slot out of range")? {
+            return Err("replacement owner is not active");
+        }
+
+        // Queue and cursor targets identify adapters, so follow both agents
+        // across the slot exchange. The old owner may already be tombstoned
+        // after a crash; slot zero is made active for its replacement.
+        fn swap_targets(queue: &mut VecDeque<QueuedPrompt>, first: usize, second: usize) {
+            for queued in queue {
+                if queued.slot == first {
+                    queued.slot = second;
+                } else if queued.slot == second {
+                    queued.slot = first;
+                }
+            }
+        }
+        swap_targets(&mut self.direct, 0, slot);
+        swap_targets(&mut self.steering, 0, slot);
+        if self.last_active == 0 {
+            self.last_active = slot;
+        } else if self.last_active == slot {
+            self.last_active = 0;
+        }
+        if self.next == Some(0) {
+            self.next = Some(slot);
+        } else if self.next == Some(slot) {
+            self.next = Some(0);
+        }
+        if self.previous_slot == Some(0) {
+            self.previous_slot = Some(slot);
+        } else if self.previous_slot == Some(slot) {
+            self.previous_slot = Some(0);
+        }
+        if self.pair_partner == Some(slot) {
+            self.pair_partner = Some(0);
+        } else if self.pair_partner == Some(0) {
+            self.pair_partner = Some(slot);
+        }
+
+        self.context.swap_agents(0, slot);
+        self.context.rewind(0);
+        self.active[0] = true;
+        self.active[slot] = false;
+        Ok(())
+    }
+
+    /// Exchange two live roster slots while preserving adapter identity in
+    /// queued work, routing cursors, and per-agent context watermarks.
+    pub fn swap_agents(
+        &mut self,
+        first: RosterSlot,
+        second: RosterSlot,
+    ) -> Result<(), &'static str> {
+        if first == second {
+            return Ok(());
+        }
+        if first >= self.active.len() || second >= self.active.len() {
+            return Err("roster slot out of range");
+        }
+        if !self.active[first] || !self.active[second] {
+            return Err("both roster slots must be active");
+        }
+        fn swap_targets(queue: &mut VecDeque<QueuedPrompt>, first: usize, second: usize) {
+            for queued in queue {
+                if queued.slot == first {
+                    queued.slot = second;
+                } else if queued.slot == second {
+                    queued.slot = first;
+                }
+            }
+        }
+        swap_targets(&mut self.direct, first, second);
+        swap_targets(&mut self.steering, first, second);
+        if self.last_active == first {
+            self.last_active = second;
+        } else if self.last_active == second {
+            self.last_active = first;
+        }
+        fn swap_option(cursor: &mut Option<usize>, first: usize, second: usize) {
+            if *cursor == Some(first) {
+                *cursor = Some(second);
+            } else if *cursor == Some(second) {
+                *cursor = Some(first);
+            }
+        }
+        swap_option(&mut self.next, first, second);
+        swap_option(&mut self.previous_slot, first, second);
+        swap_option(&mut self.pair_partner, first, second);
+        self.active.swap(first, second);
+        self.context.swap_agents(first, second);
+        Ok(())
+    }
+
     pub fn enqueue_human(
         &mut self,
         prompt: impl Into<String>,
@@ -500,6 +600,62 @@ mod tests {
             relay.begin("", 0),
             RelayDecision::Dispatch { slot: 0, prompt, .. } if prompt == "new task"
         ));
+    }
+
+    #[test]
+    fn owner_promotion_follows_targets_and_replays_context_to_replacement() {
+        let mut relay = Relay::new(3, 10);
+        relay.set_shared_task("shared");
+        relay.record_public("owner", "context");
+        relay.mark_context_seen(0);
+        assert_eq!(relay.unseen_context(0), "");
+        assert!(relay.enqueue_direct(0, "old owner work").expect("queue"));
+        assert!(relay.enqueue_direct(1, "replacement work").expect("queue"));
+        assert!(matches!(
+            relay.begin("task", 0),
+            RelayDecision::Dispatch { slot: 0, .. }
+        ));
+        relay.finish(0, false, false);
+
+        relay.promote_owner(1).expect("promote active peer");
+        assert_eq!(relay.active_slots().collect::<Vec<_>>(), vec![0, 2]);
+        // Work follows its adapter: the replacement's queue target now names
+        // slot zero, while the former owner's target is tombstoned at one.
+        assert!(matches!(
+            relay.begin("", 0),
+            RelayDecision::Dispatch { slot: 0, direct: true, prompt, .. }
+                if prompt == "replacement work"
+        ));
+        assert_eq!(relay.unseen_context(0), "owner:\ncontext");
+    }
+
+    #[test]
+    fn live_slot_swap_follows_queued_targets_and_runtime_cursors() {
+        let mut relay = Relay::new(3, 10);
+        relay.record_public("Agent 0", "owner work");
+        relay.mark_context_seen(0);
+        assert!(matches!(
+            relay.begin("task", 0),
+            RelayDecision::Dispatch { slot: 0, .. }
+        ));
+        relay.finish(0, false, false);
+        relay.enqueue_human("to owner", Some(0));
+        relay.enqueue_direct(2, "to third").expect("queue direct");
+
+        relay.swap_agents(0, 2).expect("swap live slots");
+        assert_eq!(relay.active_slots().collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert!(matches!(
+            relay.begin("", 0),
+            RelayDecision::Dispatch { slot: 0, direct: true, prompt, .. }
+                if prompt == "to third"
+        ));
+        relay.finish(0, true, false);
+        assert!(matches!(
+            relay.begin("", 0),
+            RelayDecision::Dispatch { slot: 2, direct: false, prompt, .. }
+                if prompt == "to owner"
+        ));
+        assert_eq!(relay.unseen_context(0), "Agent 0:\nowner work");
     }
 
     #[test]

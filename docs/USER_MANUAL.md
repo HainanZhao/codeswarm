@@ -66,8 +66,8 @@ bounded to preserve tmux responsiveness.
 - `/help` — show the complete keyboard and command guide.
 - `/config` — open the lightweight inline settings panel.
 - `/agents` — return to the agent store and edit the saved roster.
-- `/add agy:COMMAND` or `/add acp:COMMAND` — append a live peer without
-  restarting the current conversation.
+- `/add AGENT`, `/add agy:COMMAND`, or `/add acp:COMMAND` — append a live peer
+  without restarting the current conversation.
 - `/export` — write the retained transcript to a timestamped Markdown file.
 - `/diff split` and `/diff unified` — choose side-by-side or inline diff rows.
 - `/mode` — focus mode settings; `/mode chat` selects chat mode.
@@ -77,6 +77,10 @@ bounded to preserve tmux responsiveness.
 - `/reload` — retry the most recently crashed adapter in place.
 - `/drop` — remove the most recently crashed peer; `/drop SLOT` removes a
   peer by zero-based roster slot (slot 0 is the owner).
+- `/promote SLOT` — transfer ownership to an active peer without restarting
+  it; the former owner remains in its stable slot and is tombstoned.
+- `/swap A B` — reorder two active roster slots without restarting their
+  adapters; queued work follows the agents.
 - `/cd PATH` — change the workspace directory for subsequent launches.
 - `/clear` — clear the local transcript.
 - `!command` — run a bounded shell command in the current workspace.
@@ -87,12 +91,13 @@ Unknown slash commands are reported locally and are never sent to an agent.
 
 The configuration panel includes compact/comfortable density, normal/hidden
 scrollbar, thought visibility, tool-detail expansion, diff view, and an
-optional notification toggle. On Linux notifications use `notify-send`; on
+notification policy. On Linux notifications use `notify-send`; on
 macOS they use `osascript` when the corresponding system tool is available.
-The notification and sound toggles are independent.
-System notifications are emitted only while the terminal reports focus lost;
-the terminal bell remains available on turn completion when notifications are
-enabled. Terminals that do not report focus changes keep the app in the safe
+The notification policy and sound toggle are independent. Notifications can be
+set to `Never`, `When unfocused`, or `Always`; the default is `When unfocused`.
+Completion and permission-request notifications are emitted according to that
+policy, while the terminal bell is additionally controlled by the sound
+toggle. Terminals that do not report focus changes keep the app in the safe
 focused state.
 
 ## Performance model
