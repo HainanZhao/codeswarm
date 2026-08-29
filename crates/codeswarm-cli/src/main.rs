@@ -15,7 +15,7 @@ use codeswarm_core::PermissionAnswer;
 use codeswarm_core::agents::{AdapterKind, AgentDefinition, catalog_from_settings};
 use codeswarm_core::history;
 use codeswarm_core::launcher::{LaunchDecision, launch_decision, parse_saved_roster};
-use codeswarm_core::persistence::SessionMetadataStore;
+use codeswarm_core::persistence::{SessionMetadata, SessionMetadataStore};
 use codeswarm_core::relay::{CollaborationStrategy, RelayDecision};
 use codeswarm_core::settings;
 use codeswarm_core::{AgentEvent, BufferedEventLog, EventLog};
@@ -582,6 +582,99 @@ fn display_agent_name(command: &str) -> String {
         "Antigravity CLI".into()
     } else {
         command.into()
+    }
+}
+
+/// Resolve the catalog identity for a direct command invocation.  Relay
+/// launches already have catalog definitions available, but `--agy` and
+/// `--acp` intentionally accept arbitrary custom commands and therefore need
+/// a small best-effort lookup of their own.
+fn catalog_identity_for_command(command: &str) -> String {
+    let settings = settings_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let normalized = command.trim();
+    catalog_from_settings(&settings)
+        .into_iter()
+        .find(|agent| {
+            agent.command.trim().eq_ignore_ascii_case(normalized)
+                || agent
+                    .detect_command
+                    .as_deref()
+                    .is_some_and(|detect| detect.trim().eq_ignore_ascii_case(normalized))
+                || agent.name.eq_ignore_ascii_case(normalized)
+                || agent.short_name.eq_ignore_ascii_case(normalized)
+                || agent
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(normalized))
+        })
+        .map_or_else(|| normalized.to_owned(), |agent| agent.identity)
+}
+
+/// Build the single-owner snapshot used by direct (non-relay) launches.
+///
+/// `RelayHost` owns the equivalent method for a multi-agent session. Keeping
+/// this helper at the CLI boundary means custom adapters remain supported by
+/// the same `AgentAdapter` contract without forcing them to implement ACP or
+/// a second persistence API.
+fn standalone_session_metadata(
+    cwd: &Path,
+    name: &str,
+    identity: &str,
+    adapter: &dyn AgentAdapter,
+) -> SessionMetadata {
+    let mut data = serde_json::Map::new();
+    data.insert(
+        "cwd".into(),
+        serde_json::Value::String(cwd.display().to_string()),
+    );
+    data.insert("roster".into(), serde_json::json!([identity]));
+    data.insert("owner".into(), serde_json::Value::String(name.to_owned()));
+    data.insert("title".into(), serde_json::Value::String(name.to_owned()));
+    data.insert("agent".into(), serde_json::Value::String(name.to_owned()));
+    data.insert(
+        "agent_identity".into(),
+        serde_json::Value::String(identity.to_owned()),
+    );
+    data.insert(
+        "protocol".into(),
+        serde_json::Value::String(adapter.protocol().to_owned()),
+    );
+    data.insert(
+        "agent_data".into(),
+        serde_json::json!({
+            "name": name,
+            "identity": identity,
+            "protocol": adapter.protocol(),
+        }),
+    );
+    data.insert(
+        "agent_supports_load_session".into(),
+        serde_json::Value::Bool(adapter.capabilities().supports_session_load),
+    );
+    if let Some(session_id) = adapter.session_id() {
+        data.insert(
+            "agent_session_id".into(),
+            serde_json::Value::String(session_id.clone()),
+        );
+        data.insert(
+            "owner_session_id".into(),
+            serde_json::Value::String(session_id),
+        );
+    }
+    SessionMetadata::new(data)
+}
+
+fn queue_standalone_metadata(
+    writer: Option<&codeswarm_core::persistence::BufferedSessionMetadataStore>,
+    cwd: &Path,
+    name: &str,
+    identity: &str,
+    adapter: &dyn AgentAdapter,
+) {
+    if let Some(writer) = writer {
+        let _ = writer.write(standalone_session_metadata(cwd, name, identity, adapter));
     }
 }
 
@@ -1231,6 +1324,53 @@ fn spawn_agy_command(
     (receiver, controls)
 }
 
+/// Hide CodeSwarm's relay marker when an adapter is run directly. Relay turns
+/// retain the marker until `RelayHost` decides whether a reviewer may stop;
+/// standalone `--agy` and `--acp` sessions have no such semantics and must
+/// never expose the control token in the transcript. A short UTF-8-safe tail
+/// also handles a marker split across stream chunks.
+fn sanitize_direct_event(event: AgentEvent, response_tail: &mut String) -> Vec<AgentEvent> {
+    let mut visible = Vec::new();
+    match event {
+        AgentEvent::Text { slot, text } => {
+            response_tail.push_str(&text);
+            let token = codeswarm_core::relay::STOP_TOKEN;
+            let keep = token.len().saturating_sub(1);
+            loop {
+                if let Some(index) = response_tail.find(token) {
+                    let prefix = response_tail[..index].to_owned();
+                    if !prefix.is_empty() {
+                        visible.push(AgentEvent::Text { slot, text: prefix });
+                    }
+                    *response_tail = response_tail[index + token.len()..].replace(token, "");
+                    continue;
+                }
+                if response_tail.len() > keep {
+                    let mut boundary = response_tail.len() - keep;
+                    while boundary > 0 && !response_tail.is_char_boundary(boundary) {
+                        boundary -= 1;
+                    }
+                    let prefix = response_tail[..boundary].to_owned();
+                    if !prefix.is_empty() {
+                        visible.push(AgentEvent::Text { slot, text: prefix });
+                    }
+                    *response_tail = response_tail[boundary..].to_owned();
+                }
+                break;
+            }
+        }
+        AgentEvent::TurnComplete { slot } => {
+            let text = std::mem::take(response_tail).replace(codeswarm_core::relay::STOP_TOKEN, "");
+            if !text.is_empty() {
+                visible.push(AgentEvent::Text { slot, text });
+            }
+            visible.push(AgentEvent::TurnComplete { slot });
+        }
+        other => visible.push(other),
+    }
+    visible
+}
+
 fn run_agy_task(
     sender: Sender<AdapterResult<AgentEvent>>,
     mut controls: tokio::sync::mpsc::UnboundedReceiver<AdapterControl>,
@@ -1251,23 +1391,57 @@ fn run_agy_task(
     };
     runtime.block_on(async move {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let mut adapter = AgyAdapter::new(0, cwd, command);
+        let name = display_agent_name(&command);
+        let identity = catalog_identity_for_command(&command);
+        let session_id = load_owner_session_id(&cwd, &name);
+        let mut adapter = session_id.map_or_else(
+            || AgyAdapter::new(0, cwd.clone(), command.clone()),
+            |session_id| AgyAdapter::with_session_id(0, cwd.clone(), command.clone(), session_id),
+        );
+        let metadata_writer = SessionMetadataStore::open(session_metadata_path())
+            .buffered()
+            .ok();
         if let Err(error) = adapter.start().await {
             let _ = sender.send(Err(error));
             return;
         }
+        queue_standalone_metadata(metadata_writer.as_ref(), &cwd, &name, &identity, &adapter);
         if let Some(prompt) = prompt
             && let Err(error) = adapter.send_prompt(prompt).await
         {
             let _ = sender.send(Err(error));
             return;
         }
+        let mut response_tail = String::new();
         loop {
             tokio::select! {
                 event = adapter.next_event() => match event {
                     Some(event) => {
-                        if sender.send(event).is_err() {
-                            break;
+                        match event {
+                            Ok(event) => {
+                                let turn_complete =
+                                    matches!(&event, AgentEvent::TurnComplete { .. });
+                                for event in sanitize_direct_event(event, &mut response_tail) {
+                                    if sender.send(Ok(event)).is_err() {
+                                        return;
+                                    }
+                                }
+                                if turn_complete {
+                                    queue_standalone_metadata(
+                                        metadata_writer.as_ref(),
+                                        &cwd,
+                                        &name,
+                                        &identity,
+                                        &adapter,
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                response_tail.clear();
+                                if sender.send(Err(error)).is_err() {
+                                    return;
+                                }
+                            }
                         }
                     }
                     None => break,
@@ -1312,6 +1486,9 @@ fn run_agy_task(
             }
         }
         let _ = adapter.stop().await;
+        if let Some(writer) = &metadata_writer {
+            let _ = writer.flush();
+        }
     });
 }
 
@@ -1358,23 +1535,69 @@ fn run_acp_task(
     };
     runtime.block_on(async move {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let mut adapter = AcpAdapter::new(0, cwd, program, args);
+        let command = std::iter::once(program.as_str())
+            .chain(args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let name = display_agent_name(&command);
+        let identity = catalog_identity_for_command(&command);
+        let session_id = load_owner_session_id(&cwd, &name);
+        let mut adapter = session_id.map_or_else(
+            || AcpAdapter::new(0, cwd.clone(), program.clone(), args.clone()),
+            |session_id| {
+                AcpAdapter::with_session_id(
+                    0,
+                    cwd.clone(),
+                    program.clone(),
+                    args.clone(),
+                    session_id,
+                )
+            },
+        );
+        let metadata_writer = SessionMetadataStore::open(session_metadata_path())
+            .buffered()
+            .ok();
         if let Err(error) = adapter.start().await {
             let _ = sender.send(Err(error));
             return;
         }
+        queue_standalone_metadata(metadata_writer.as_ref(), &cwd, &name, &identity, &adapter);
         if let Some(prompt) = prompt
             && let Err(error) = adapter.send_prompt(prompt).await
         {
             let _ = sender.send(Err(error));
             return;
         }
+        let mut response_tail = String::new();
         loop {
             tokio::select! {
                 event = adapter.next_event() => match event {
                     Some(event) => {
-                        if sender.send(event).is_err() {
-                            break;
+                        match event {
+                            Ok(event) => {
+                                let turn_complete =
+                                    matches!(&event, AgentEvent::TurnComplete { .. });
+                                for event in sanitize_direct_event(event, &mut response_tail) {
+                                    if sender.send(Ok(event)).is_err() {
+                                        return;
+                                    }
+                                }
+                                if turn_complete {
+                                    queue_standalone_metadata(
+                                        metadata_writer.as_ref(),
+                                        &cwd,
+                                        &name,
+                                        &identity,
+                                        &adapter,
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                response_tail.clear();
+                                if sender.send(Err(error)).is_err() {
+                                    return;
+                                }
+                            }
                         }
                     }
                     None => break,
@@ -1419,6 +1642,9 @@ fn run_acp_task(
             }
         }
         let _ = adapter.stop().await;
+        if let Some(writer) = &metadata_writer {
+            let _ = writer.flush();
+        }
     });
 }
 
@@ -1867,7 +2093,8 @@ fn run_terminal(
                             | AgentEvent::Thought { .. }
                             | AgentEvent::Tool { .. }
                             | AgentEvent::Permission { .. }
-                            | AgentEvent::Terminal { .. } => turn_active = true,
+                            | AgentEvent::Terminal { .. }
+                            | AgentEvent::UserText { .. } => turn_active = true,
                             AgentEvent::TurnComplete { .. } => {
                                 turn_active = false;
                                 cancel_requested_at = None;
@@ -1908,6 +2135,9 @@ fn run_terminal(
                                         .send(AdapterControl::SetMode("full-access".into()));
                                 }
                             }
+                            AgentEvent::ModeUpdated { .. }
+                            | AgentEvent::CommandsReplaced { .. }
+                            | AgentEvent::UsageUpdated { .. } => {}
                         }
                         if let AgentEvent::Permission { slot, request } = &event {
                             pending_permission = Some((*slot, request.id.clone()));
@@ -2648,19 +2878,40 @@ fn session_metadata_path() -> PathBuf {
 }
 
 fn load_owner_session_id(cwd: &Path, owner_name: &str) -> Option<String> {
-    let loaded = SessionMetadataStore::open(session_metadata_path())
-        .read()
-        .ok()??;
+    load_owner_session_id_from(&session_metadata_path(), cwd, owner_name)
+}
+
+fn load_owner_session_id_from(
+    metadata_path: &Path,
+    cwd: &Path,
+    owner_name: &str,
+) -> Option<String> {
+    let loaded = SessionMetadataStore::open(metadata_path).read().ok()??;
     let stored_cwd = loaded.get("cwd").and_then(serde_json::Value::as_str)?;
-    if Path::new(stored_cwd) != cwd {
+    // Compare canonical paths where possible.  A session launched through a
+    // symlink should still resume when the next invocation uses the real
+    // path (and vice versa); Python's project-root normalization has the same
+    // effect.
+    let stored_cwd = Path::new(stored_cwd)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(stored_cwd));
+    let current_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    if stored_cwd != current_cwd {
         return None;
     }
-    let stored_owner = loaded.get("owner").and_then(serde_json::Value::as_str)?;
-    if !stored_owner.eq_ignore_ascii_case(owner_name) {
+    let owner_matches = ["owner", "agent", "agent_identity"]
+        .into_iter()
+        .filter_map(|key| loaded.get(key).and_then(serde_json::Value::as_str))
+        .any(|stored_owner| stored_owner.eq_ignore_ascii_case(owner_name));
+    if !owner_matches {
         return None;
     }
+    // `owner_session_id` is the explicit Rust snapshot key.  Fall back to
+    // the Python-compatible session-row name so snapshots produced before
+    // that alias was added remain resumable.
     loaded
         .get("owner_session_id")
+        .or_else(|| loaded.get("agent_session_id"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
 }
@@ -2771,7 +3022,7 @@ mod tests {
         bare_launch_from_settings, dispatch_permission_action, dispatch_queued_prompt,
         normalize_arguments, parse_launch, prepare_launch_arguments, project_dir_argument,
         project_prompt_history_path, reconcile_config_roster, run_relay_sequence_with_controls,
-        validate_project_directory,
+        standalone_session_metadata, validate_project_directory,
     };
     use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
     use codeswarm_core::{AgentCapabilities, AgentEvent, PermissionAnswer};
@@ -2867,6 +3118,74 @@ mod tests {
             path,
             PathBuf::from("/tmp/codeswarm-data/codeswarm/workspace-project/prompt_history.jsonl")
         );
+    }
+
+    #[test]
+    fn direct_catalog_commands_keep_stable_builtin_identity() {
+        assert_eq!(
+            super::catalog_identity_for_command("agy"),
+            "antigravity.google.com"
+        );
+        assert_eq!(
+            super::catalog_identity_for_command("npx -y @agentclientprotocol/codex-acp"),
+            "openai.com"
+        );
+    }
+
+    #[test]
+    fn direct_session_metadata_contains_resume_alias_and_custom_protocol() {
+        let adapter = ScriptedAdapter::new(
+            0,
+            AgentCapabilities {
+                supports_session_load: true,
+                ..AgentCapabilities::default()
+            },
+            [],
+        );
+        let metadata = standalone_session_metadata(
+            PathBuf::from("/tmp/codeswarm-project").as_path(),
+            "Custom agent",
+            "custom.example",
+            &adapter,
+        );
+        assert_eq!(
+            metadata.get("roster"),
+            Some(&serde_json::json!(["custom.example"]))
+        );
+        assert_eq!(
+            metadata.get("owner"),
+            Some(&serde_json::json!("Custom agent"))
+        );
+        assert_eq!(metadata.get("protocol"), Some(&serde_json::json!("custom")));
+        assert_eq!(
+            metadata.get("agent_supports_load_session"),
+            Some(&serde_json::json!(true))
+        );
+        assert!(metadata.get("owner_session_id").is_none());
+    }
+
+    #[test]
+    fn owner_session_restore_accepts_legacy_agent_session_key_and_symlink_paths() {
+        let root =
+            std::env::temp_dir().join(format!("codeswarm-owner-restore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("project directory");
+        let metadata_path = root.join("session.json");
+        let mut data = serde_json::Map::new();
+        data.insert(
+            "cwd".into(),
+            serde_json::Value::String(root.display().to_string()),
+        );
+        data.insert("owner".into(), serde_json::json!("Codex CLI"));
+        data.insert("agent_session_id".into(), serde_json::json!("session-42"));
+        codeswarm_core::persistence::SessionMetadataStore::open(&metadata_path)
+            .write(&codeswarm_core::persistence::SessionMetadata::new(data))
+            .expect("write metadata");
+        assert_eq!(
+            super::load_owner_session_id_from(&metadata_path, &root, "codex cli"),
+            Some("session-42".into())
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3217,5 +3536,39 @@ mod tests {
             direct: true,
         };
         assert!(!dispatch_queued_prompt(Some(&sender), &prompt));
+    }
+
+    #[test]
+    fn standalone_stop_token_is_hidden_even_when_split_across_chunks() {
+        let token = codeswarm_core::relay::STOP_TOKEN;
+        let mut tail = String::new();
+        let mut output = Vec::new();
+        output.extend(sanitize_direct_event(
+            AgentEvent::Text {
+                slot: 0,
+                text: format!("visible {token}").replace(token, "[CODESWARM:"),
+            },
+            &mut tail,
+        ));
+        output.extend(sanitize_direct_event(
+            AgentEvent::Text {
+                slot: 0,
+                text: format!("STOP] trailing"),
+            },
+            &mut tail,
+        ));
+        output.extend(sanitize_direct_event(
+            AgentEvent::TurnComplete { slot: 0 },
+            &mut tail,
+        ));
+        let text = output
+            .into_iter()
+            .filter_map(|event| match event {
+                AgentEvent::Text { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(text, "visible [CODESWARM:STOP] trailing");
+        assert!(!text.contains(token));
     }
 }

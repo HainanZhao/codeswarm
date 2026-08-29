@@ -9,7 +9,7 @@ use std::{
     path::PathBuf,
 };
 
-use codeswarm_core::{AgentEvent, TerminalEvent, ToolStatus};
+use codeswarm_core::{AgentCommand, AgentEvent, TerminalEvent, ToolStatus, UsageUpdate};
 use codeswarm_transcript::{RenderRow, Transcript};
 use ratatui::{
     Frame,
@@ -427,6 +427,13 @@ impl PromptEditor {
         &self.completion_matches
     }
 
+    /// Return the complete candidate vocabulary currently used for Tab
+    /// completion.  The CLI can merge local CodeSwarm commands with commands
+    /// advertised by an ACP session without reaching into the textarea.
+    pub fn completion_candidates(&self) -> &[String] {
+        &self.completion_candidates
+    }
+
     /// Record a successful submission in the bounded history.
     pub fn remember(&mut self, prompt: impl Into<String>) {
         let prompt = prompt.into();
@@ -764,6 +771,8 @@ pub struct App {
     agent_names: BTreeMap<usize, String>,
     agent_states: BTreeMap<usize, String>,
     agent_modes: BTreeMap<usize, (Vec<codeswarm_core::Mode>, Option<String>)>,
+    agent_commands: BTreeMap<usize, Vec<AgentCommand>>,
+    agent_usage: BTreeMap<usize, UsageUpdate>,
     failed_agent: Option<usize>,
     queued_prompts: VecDeque<QueuedPrompt>,
     next_queue_id: u64,
@@ -778,6 +787,7 @@ pub struct App {
     path_query: String,
     path_matches: Vec<PathMatch>,
     path_selection: usize,
+    base_prompt_completions: Vec<String>,
 }
 
 const CONFIG_SETTING_COUNT: usize = 14;
@@ -823,6 +833,8 @@ impl Default for App {
             agent_names: BTreeMap::new(),
             agent_states: BTreeMap::new(),
             agent_modes: BTreeMap::new(),
+            agent_commands: BTreeMap::new(),
+            agent_usage: BTreeMap::new(),
             failed_agent: None,
             queued_prompts: VecDeque::new(),
             next_queue_id: 0,
@@ -834,6 +846,7 @@ impl Default for App {
             path_query: String::new(),
             path_matches: Vec::new(),
             path_selection: 0,
+            base_prompt_completions: Vec::new(),
         }
     }
 }
@@ -979,6 +992,11 @@ impl App {
                 self.status = "configuration".into();
                 LocalCommand::Handled
             }
+            // Agent-provided slash commands share the prompt's command
+            // surface but are dispatched to the agent, not consumed by the
+            // local command parser.  The ACP catalog can change during a
+            // session, so resolve this against the latest replacement event.
+            _ if command.starts_with('/') && self.is_agent_command(&command) => return None,
             _ if command.starts_with('/') => {
                 self.status = format!("unknown command: {input}");
                 LocalCommand::Handled
@@ -986,6 +1004,18 @@ impl App {
             _ => return None,
         };
         Some(result)
+    }
+
+    fn is_agent_command(&self, command: &str) -> bool {
+        self.agent_commands
+            .values()
+            .flat_map(Vec::as_slice)
+            .any(|entry| {
+                let name = entry.name.trim();
+                name.eq_ignore_ascii_case(command)
+                    || (name.starts_with('/') && name[1..].eq_ignore_ascii_case(&command[1..]))
+                    || (!name.starts_with('/') && format!("/{name}").eq_ignore_ascii_case(command))
+            })
     }
 
     pub fn config_visible(&self) -> bool {
@@ -1511,6 +1541,9 @@ impl App {
         let removed = self.agent_names.remove(&slot).is_some();
         self.agent_states.remove(&slot);
         self.agent_modes.remove(&slot);
+        self.agent_commands.remove(&slot);
+        self.agent_usage.remove(&slot);
+        self.refresh_prompt_completions();
         removed
     }
 
@@ -1550,6 +1583,21 @@ impl App {
                 self.agent_modes.insert(slot, modes);
             }
         }
+        if let Some(promoted_commands) = self.agent_commands.remove(&slot) {
+            let owner_commands = self.agent_commands.remove(&0);
+            self.agent_commands.insert(0, promoted_commands);
+            if let Some(commands) = owner_commands {
+                self.agent_commands.insert(slot, commands);
+            }
+        }
+        if let Some(promoted_usage) = self.agent_usage.remove(&slot) {
+            let owner_usage = self.agent_usage.remove(&0);
+            self.agent_usage.insert(0, promoted_usage);
+            if let Some(usage) = owner_usage {
+                self.agent_usage.insert(slot, usage);
+            }
+        }
+        self.refresh_prompt_completions();
         self.active_agent = self.agent_name(0);
         true
     }
@@ -1662,6 +1710,9 @@ impl App {
 
     pub fn mark_agent_dropped(&mut self, slot: usize) {
         self.agent_states.insert(slot, "dropped".into());
+        self.agent_commands.remove(&slot);
+        self.agent_usage.remove(&slot);
+        self.refresh_prompt_completions();
         self.status = format!("agent {slot} dropped");
     }
 
@@ -1702,6 +1753,19 @@ impl App {
             self.agent_modes.insert(first, second_modes);
             self.agent_modes.insert(second, first_modes);
         }
+        let first_commands = self.agent_commands.remove(&first);
+        let second_commands = self.agent_commands.remove(&second);
+        if let (Some(first_commands), Some(second_commands)) = (first_commands, second_commands) {
+            self.agent_commands.insert(first, second_commands);
+            self.agent_commands.insert(second, first_commands);
+        }
+        let first_usage = self.agent_usage.remove(&first);
+        let second_usage = self.agent_usage.remove(&second);
+        if let (Some(first_usage), Some(second_usage)) = (first_usage, second_usage) {
+            self.agent_usage.insert(first, second_usage);
+            self.agent_usage.insert(second, first_usage);
+        }
+        self.refresh_prompt_completions();
         if self.failed_agent == Some(first) {
             self.failed_agent = Some(second);
         } else if self.failed_agent == Some(second) {
@@ -1779,7 +1843,38 @@ impl App {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        self.base_prompt_completions = candidates.into_iter().map(Into::into).collect();
+        self.refresh_prompt_completions();
+    }
+
+    fn refresh_prompt_completions(&mut self) {
+        let mut candidates = self.base_prompt_completions.clone();
+        for command in self.agent_commands.values().flat_map(Vec::as_slice) {
+            let name = command.name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let value = if name.starts_with('/') {
+                name.to_owned()
+            } else {
+                format!("/{name}")
+            };
+            if !candidates.iter().any(|candidate| candidate == &value) {
+                candidates.push(value);
+            }
+        }
         self.prompt_editor.set_completion_candidates(candidates);
+    }
+
+    /// Return commands advertised by the active roster, deduplicated in
+    /// stable order.  ACP command names are normalized to slash commands so
+    /// they can share the same prompt completion surface as local commands.
+    pub fn agent_commands(&self) -> impl Iterator<Item = &AgentCommand> {
+        self.agent_commands.values().flat_map(Vec::as_slice)
+    }
+
+    pub fn agent_usage(&self, slot: usize) -> Option<&UsageUpdate> {
+        self.agent_usage.get(&slot)
     }
 
     /// Start a lazy workspace index for `@path` prompt references.  Starting
@@ -1955,6 +2050,44 @@ impl App {
                     self.mode = mode.label.clone();
                 }
             }
+            AgentEvent::ModeUpdated { slot, current_mode } => {
+                let modes = self
+                    .agent_modes
+                    .get(slot)
+                    .map(|(modes, _)| modes.clone())
+                    .unwrap_or_default();
+                self.agent_modes
+                    .insert(*slot, (modes.clone(), Some(current_mode.clone())));
+                if *slot == 0 {
+                    self.mode = modes
+                        .iter()
+                        .find(|mode| mode.id == *current_mode)
+                        .map(|mode| mode.label.clone())
+                        .unwrap_or_else(|| current_mode.clone());
+                }
+            }
+            AgentEvent::UserText { slot, text } => {
+                let key = (*slot, codeswarm_transcript::BlockKind::Human);
+                let block = self.streaming_blocks.get(&key).copied().unwrap_or_else(|| {
+                    let id = self.transcript.append(
+                        codeswarm_transcript::BlockKind::Human,
+                        format!("{}: ", self.agent_name(*slot)),
+                        false,
+                    );
+                    self.streaming_blocks.insert(key, id);
+                    id
+                });
+                self.transcript.extend(block, text);
+                self.active_agent = self.agent_name(*slot);
+                self.agent_states.insert(*slot, "working".into());
+            }
+            AgentEvent::CommandsReplaced { slot, commands } => {
+                self.agent_commands.insert(*slot, commands.clone());
+                self.refresh_prompt_completions();
+            }
+            AgentEvent::UsageUpdated { slot, usage } => {
+                self.agent_usage.insert(*slot, usage.clone());
+            }
             AgentEvent::Text { slot, text } => {
                 let key = (*slot, codeswarm_transcript::BlockKind::Agent);
                 let block = self.streaming_blocks.get(&key).copied().unwrap_or_else(|| {
@@ -2066,6 +2199,8 @@ impl App {
                     .remove(&(*slot, codeswarm_transcript::BlockKind::Agent));
                 self.streaming_blocks
                     .remove(&(*slot, codeswarm_transcript::BlockKind::Thought));
+                self.streaming_blocks
+                    .remove(&(*slot, codeswarm_transcript::BlockKind::Human));
                 if self
                     .permission
                     .as_ref()
@@ -2085,6 +2220,8 @@ impl App {
                     .remove(&(*slot, codeswarm_transcript::BlockKind::Agent));
                 self.streaming_blocks
                     .remove(&(*slot, codeswarm_transcript::BlockKind::Thought));
+                self.streaming_blocks
+                    .remove(&(*slot, codeswarm_transcript::BlockKind::Human));
                 if self
                     .permission
                     .as_ref()
@@ -2500,8 +2637,9 @@ fn render_path_picker(buffer: &mut Buffer, area: Rect, app: &App) {
     let mut lines = Vec::with_capacity(7);
     lines.push(Line::styled(
         format!(
-            " files · {} matches · ↑/↓ choose · Enter insert",
-            app.path_matches().len()
+            " {} · {} paths · Enter select · Esc close",
+            compact_label(&app.path_query, area.width.saturating_sub(36) as usize),
+            app.path_matches().len(),
         ),
         Style::default().fg(Color::Gray),
     ));
@@ -2517,16 +2655,13 @@ fn render_path_picker(buffer: &mut Buffer, area: Rect, app: &App) {
         } else {
             Style::default().fg(Color::LightCyan)
         };
-        lines.push(Line::from(vec![
-            Span::styled(format!(" {marker} "), style),
-            Span::styled(
-                compact_label(
-                    &format!("{}{}", candidate.path, suffix),
-                    area.width.saturating_sub(6) as usize,
-                ),
-                style,
-            ),
-        ]));
+        let path = compact_label(
+            &format!("{}{}", candidate.path, suffix),
+            area.width.saturating_sub(6) as usize,
+        );
+        let mut row = vec![Span::styled(format!(" {marker} "), style)];
+        row.extend(path_match_spans(&path, &candidate.offsets, selected));
+        lines.push(Line::from(row));
     }
     Paragraph::new(lines)
         .style(Style::default().bg(PANEL_BG))
@@ -2536,6 +2671,59 @@ fn render_path_picker(buffer: &mut Buffer, area: Rect, app: &App) {
                 .border_style(Style::default().fg(Color::Cyan)),
         )
         .render(area, buffer);
+}
+
+/// Render a path candidate with the characters matched by the fuzzy query
+/// accented.  The offsets come from [`rank_matches`] and are byte offsets in
+/// the original candidate; walking `char_indices` keeps this Unicode-safe
+/// without rescanning the workspace or allocating a second candidate.
+fn path_match_spans(path: &str, offsets: &[usize], selected: bool) -> Vec<Span<'static>> {
+    let base = if selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::LightCyan)
+    };
+    let matched = if selected {
+        base.add_modifier(Modifier::UNDERLINED)
+    } else {
+        base.fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    };
+    let mut spans = Vec::new();
+    let mut segment_start = 0;
+    let mut segment_style = base;
+    let offsets = offsets
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    for (index, character) in path.char_indices() {
+        let style = if offsets.contains(&index) {
+            matched
+        } else {
+            base
+        };
+        if index != segment_start && style != segment_style {
+            spans.push(Span::styled(
+                path[segment_start..index].to_owned(),
+                segment_style,
+            ));
+            segment_start = index;
+        }
+        segment_style = style;
+        let next = index + character.len_utf8();
+        if next == path.len() {
+            spans.push(Span::styled(
+                path[segment_start..next].to_owned(),
+                segment_style,
+            ));
+        }
+    }
+    if spans.is_empty() && !path.is_empty() {
+        spans.push(Span::styled(path.to_owned(), base));
+    }
+    spans
 }
 
 /// Render a useful two- or three-row fallback in a very small pane. Keeping
@@ -4044,6 +4232,95 @@ mod tests {
         assert_eq!(app.prompt, "@src/main.rs ");
         assert!(!app.path_picker_visible());
         std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn path_picker_accents_the_fuzzy_match_offsets() {
+        let matches = codeswarm_tui_path_match_fixture();
+        let spans = super::path_match_spans(&matches.path, &matches.offsets, false);
+        assert!(spans.iter().any(|span| {
+            span.content == "main"
+                && span.style.fg == Some(Color::Yellow)
+                && span.style.add_modifier.contains(Modifier::BOLD)
+        }));
+        assert!(spans.iter().any(|span| span.content == ".rs"));
+    }
+
+    #[test]
+    fn advertised_agent_commands_extend_prompt_completion_without_noise() {
+        let mut app = App::default();
+        app.set_prompt_completions(["/help"]);
+        app.apply_event(&codeswarm_core::AgentEvent::CommandsReplaced {
+            slot: 0,
+            commands: vec![codeswarm_core::AgentCommand {
+                name: "review".into(),
+            }],
+        });
+        app.handle_prompt_input(key(Key::Char('/')));
+        app.handle_prompt_input(key(Key::Char('r')));
+        assert!(matches!(
+            app.handle_prompt_input(key(Key::Tab)),
+            PromptAction::Completion { value, .. } if value == "/review"
+        ));
+        assert_eq!(app.handle_local_command("/review"), None);
+        assert_eq!(app.status, "idle");
+        assert_eq!(
+            app.handle_local_command("/unknown"),
+            Some(LocalCommand::Handled)
+        );
+    }
+
+    #[test]
+    fn protocol_state_is_removed_when_an_agent_is_dropped() {
+        let mut app = App::default();
+        app.set_agent_name(0, "Agent");
+        app.set_prompt_completions(["/help"]);
+        app.apply_event(&codeswarm_core::AgentEvent::CommandsReplaced {
+            slot: 0,
+            commands: vec![codeswarm_core::AgentCommand {
+                name: "review".into(),
+            }],
+        });
+        app.apply_event(&codeswarm_core::AgentEvent::UsageUpdated {
+            slot: 0,
+            usage: codeswarm_core::UsageUpdate { used: 1, size: 2 },
+        });
+        assert!(app.agent_usage(0).is_some());
+        app.mark_agent_dropped(0);
+        assert!(app.agent_usage(0).is_none());
+        assert!(app.agent_commands().next().is_none());
+    }
+
+    #[test]
+    fn streamed_user_message_chunks_share_one_transcript_block() {
+        let mut app = App::default();
+        app.set_agent_name(0, "ACP");
+        app.apply_event(&codeswarm_core::AgentEvent::UserText {
+            slot: 0,
+            text: "first ".into(),
+        });
+        app.apply_event(&codeswarm_core::AgentEvent::UserText {
+            slot: 0,
+            text: "second".into(),
+        });
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(
+            app.transcript.viewport(80, 0, 4, 0)[0].text,
+            "ACP: first second"
+        );
+    }
+
+    fn codeswarm_tui_path_match_fixture() -> super::PathMatch {
+        super::rank_matches(
+            "@main",
+            &[super::PathCandidate {
+                path: "src/main.rs".into(),
+                directory: false,
+            }],
+        )
+        .into_iter()
+        .next()
+        .expect("fixture path match")
     }
 
     #[test]

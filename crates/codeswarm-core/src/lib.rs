@@ -51,6 +51,22 @@ pub struct ToolUpdate {
     pub detail: Option<String>,
 }
 
+/// A slash command advertised by an ACP session.  The renderer intentionally
+/// keeps only the command name at the shared event boundary; descriptions and
+/// input hints are provider-specific presentation data and are not needed to
+/// dispatch or complete a command.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentCommand {
+    pub name: String,
+}
+
+/// The latest context-window counters reported by an ACP session.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UsageUpdate {
+    pub used: u64,
+    pub size: u64,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ToolStatus {
     Pending,
@@ -97,6 +113,22 @@ pub enum AgentEvent {
         modes: Vec<Mode>,
         current_mode: Option<String>,
     },
+    ModeUpdated {
+        slot: RosterSlot,
+        current_mode: String,
+    },
+    UserText {
+        slot: RosterSlot,
+        text: String,
+    },
+    CommandsReplaced {
+        slot: RosterSlot,
+        commands: Vec<AgentCommand>,
+    },
+    UsageUpdated {
+        slot: RosterSlot,
+        usage: UsageUpdate,
+    },
     Text {
         slot: RosterSlot,
         text: String,
@@ -140,6 +172,10 @@ pub struct AgentSlot {
     pub capabilities: AgentCapabilities,
     pub modes: Vec<Mode>,
     pub current_mode: Option<String>,
+    #[serde(default)]
+    pub commands: Vec<AgentCommand>,
+    #[serde(default)]
+    pub usage: Option<UsageUpdate>,
 }
 
 impl Default for AgentSlot {
@@ -149,6 +185,8 @@ impl Default for AgentSlot {
             capabilities: AgentCapabilities::default(),
             modes: Vec::new(),
             current_mode: None,
+            commands: Vec::new(),
+            usage: None,
         }
     }
 }
@@ -194,9 +232,31 @@ pub fn reduce(state: &mut SessionState, event: AgentEvent) -> Vec<Effect> {
             }
             vec![Effect::Render]
         }
+        AgentEvent::CommandsReplaced { slot, commands } => {
+            if let Some(agent) = state.slots.get_mut(slot) {
+                agent.commands = commands;
+            }
+            vec![Effect::Render]
+        }
+        AgentEvent::ModeUpdated { slot, current_mode } => {
+            if let Some(agent) = state.slots.get_mut(slot) {
+                agent.current_mode = Some(current_mode);
+            }
+            vec![Effect::Render]
+        }
+        AgentEvent::UsageUpdated { slot, usage } => {
+            if let Some(agent) = state.slots.get_mut(slot) {
+                agent.usage = Some(usage);
+            }
+            vec![Effect::Render]
+        }
         AgentEvent::Text { slot, text } => {
             state.active_slot = Some(slot);
             state.public_text.push((slot, text));
+            vec![Effect::Render]
+        }
+        AgentEvent::UserText { slot, .. } => {
+            state.active_slot = Some(slot);
             vec![Effect::Render]
         }
         AgentEvent::Thought { slot, .. }

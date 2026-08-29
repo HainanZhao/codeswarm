@@ -15,8 +15,9 @@ use std::sync::{
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use codeswarm_core::{
-    AgentCapabilities, AgentEvent, Effect, EventLog, Mode, PermissionAnswer, PermissionRequest,
-    RosterSlot, SessionState, TerminalEvent, ToolStatus, ToolUpdate,
+    AgentCapabilities, AgentCommand, AgentEvent, Effect, EventLog, Mode, PermissionAnswer,
+    PermissionRequest, RosterSlot, SessionState, TerminalEvent, ToolStatus, ToolUpdate,
+    UsageUpdate,
     persistence::{BufferedSessionMetadataStore, SessionMetadata},
     reduce,
     relay::{
@@ -407,6 +408,14 @@ fn map_event_slot(event: AgentEvent, slot: RosterSlot) -> AgentEvent {
             modes,
             current_mode,
         },
+        AgentEvent::ModeUpdated { current_mode, .. } => {
+            AgentEvent::ModeUpdated { slot, current_mode }
+        }
+        AgentEvent::UserText { text, .. } => AgentEvent::UserText { slot, text },
+        AgentEvent::CommandsReplaced { commands, .. } => {
+            AgentEvent::CommandsReplaced { slot, commands }
+        }
+        AgentEvent::UsageUpdated { usage, .. } => AgentEvent::UsageUpdated { slot, usage },
         AgentEvent::Text { text, .. } => AgentEvent::Text { slot, text },
         AgentEvent::Thought { text, .. } => AgentEvent::Thought { slot, text },
         AgentEvent::Tool { update, .. } => AgentEvent::Tool { slot, update },
@@ -823,8 +832,17 @@ impl RelayHost {
                 serde_json::Value::Bool(owner.adapter().capabilities().supports_session_load),
             );
             if let Some(session_id) = owner.session_id() {
+                // Keep both spellings.  `agent_session_id` is the Python
+                // session-row column and is useful to importers; the owner
+                // alias is consumed by the Rust launcher when restoring a
+                // bare invocation.  Writing both also makes snapshots from
+                // older Rust builds resumable after an upgrade.
                 data.insert(
                     "agent_session_id".into(),
+                    serde_json::Value::String(session_id.clone()),
+                );
+                data.insert(
+                    "owner_session_id".into(),
                     serde_json::Value::String(session_id),
                 );
             }
@@ -2819,6 +2837,49 @@ fn parse_acp_notification(slot: RosterSlot, line: &str) -> AdapterResult<Option<
             update.get("options"),
         ));
     }
+    if kind == Some("available_commands_update") {
+        let commands = update
+            .get("availableCommands")
+            .and_then(Value::as_array)
+            .map(|commands| {
+                commands
+                    .iter()
+                    .filter_map(|command| {
+                        let name = command.get("name").and_then(Value::as_str)?.trim();
+                        (!name.is_empty()).then(|| AgentCommand {
+                            name: name.to_owned(),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        return Ok(Some(AgentEvent::CommandsReplaced { slot, commands }));
+    }
+    if kind == Some("current_mode_update") {
+        if let Some(mode) = update
+            .get("currentModeId")
+            .and_then(Value::as_str)
+            .filter(|mode| !mode.trim().is_empty())
+        {
+            return Ok(Some(AgentEvent::ModeUpdated {
+                slot,
+                current_mode: mode.to_owned(),
+            }));
+        }
+        return Ok(None);
+    }
+    if kind == Some("usage_update") {
+        let Some(used) = update.get("used").and_then(Value::as_u64) else {
+            return Ok(None);
+        };
+        let Some(size) = update.get("size").and_then(Value::as_u64) else {
+            return Ok(None);
+        };
+        return Ok(Some(AgentEvent::UsageUpdated {
+            slot,
+            usage: UsageUpdate { used, size },
+        }));
+    }
     if let Some(terminal) = parse_terminal_event(update, kind) {
         return Ok(Some(AgentEvent::Terminal {
             slot,
@@ -2830,6 +2891,11 @@ fn parse_acp_notification(slot: RosterSlot, line: &str) -> AdapterResult<Option<
         .and_then(|content| content.get("text"))
         .and_then(Value::as_str)
         .map(str::to_owned);
+    if kind == Some("user_message_chunk") {
+        return Ok(text
+            .filter(|text| !text.is_empty())
+            .map(|text| AgentEvent::UserText { slot, text }));
+    }
     if kind == Some("agent_message_chunk")
         && let Some(mode) = text
             .as_deref()
@@ -3328,6 +3394,70 @@ mod tests {
             AgentEvent::Text {
                 slot: 2,
                 text: "hello".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_acp_state_notifications_at_the_adapter_boundary() {
+        let commands = parse_acp_notification(
+            3,
+            r#"{"method":"session/update","params":{"update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"review","description":"Review"},{"name":"","description":"bad"},{"name":7}]}}}"#,
+        )
+        .expect("valid ACP")
+        .expect("commands event");
+        assert_eq!(
+            commands,
+            AgentEvent::CommandsReplaced {
+                slot: 3,
+                commands: vec![codeswarm_core::AgentCommand {
+                    name: "review".into()
+                }]
+            }
+        );
+
+        let mode = parse_acp_notification(
+            3,
+            r#"{"method":"session/update","params":{"update":{"sessionUpdate":"current_mode_update","currentModeId":"review"}}}"#,
+        )
+        .expect("valid ACP")
+        .expect("mode event");
+        assert_eq!(
+            mode,
+            AgentEvent::ModeUpdated {
+                slot: 3,
+                current_mode: "review".into()
+            }
+        );
+
+        let usage = parse_acp_notification(
+            3,
+            r#"{"method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":4200,"size":128000}}}"#,
+        )
+        .expect("valid ACP")
+        .expect("usage event");
+        assert_eq!(
+            usage,
+            AgentEvent::UsageUpdated {
+                slot: 3,
+                usage: codeswarm_core::UsageUpdate {
+                    used: 4200,
+                    size: 128000
+                }
+            }
+        );
+
+        let user = parse_acp_notification(
+            3,
+            r#"{"method":"session/update","params":{"update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"context"}}}}"#,
+        )
+        .expect("valid ACP")
+        .expect("user event");
+        assert_eq!(
+            user,
+            AgentEvent::UserText {
+                slot: 3,
+                text: "context".into()
             }
         );
     }
