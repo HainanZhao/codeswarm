@@ -6,8 +6,9 @@
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use serde::{Deserialize, Serialize};
 
@@ -236,9 +237,10 @@ pub fn reduce(state: &mut SessionState, event: AgentEvent) -> Vec<Effect> {
     }
 }
 
-/// A durable newline-delimited event log. It deliberately records normalized
-/// events rather than UI operations, so sessions can be replayed by a future
-/// renderer or adapter host.
+/// A newline-delimited event log. It deliberately records normalized events
+/// rather than UI operations, so sessions can be replayed by a future renderer
+/// or adapter host. Each append closes its file handle but does not force a
+/// storage sync; the terminal input/render loop must never block on fsync.
 #[derive(Clone, Debug)]
 pub struct EventLog {
     path: PathBuf,
@@ -261,8 +263,40 @@ impl EventLog {
             .append(true)
             .open(&self.path)?;
         file.write_all(encoded.as_bytes())?;
+        file.write_all(b"\n")
+    }
+
+    /// Append an event and force it to stable storage.
+    ///
+    /// The regular [`append`](Self::append) path is deliberately lightweight
+    /// because it is called from the terminal event loop. Call this only at a
+    /// durability boundary such as a completed turn or explicit shutdown.
+    pub fn append_durable(&self, event: &AgentEvent) -> std::io::Result<()> {
+        let encoded = serde_json::to_string(event)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        file.write_all(encoded.as_bytes())?;
         file.write_all(b"\n")?;
         file.sync_data()
+    }
+
+    /// Force already-appended records to stable storage without writing a
+    /// duplicate event. This is useful for callers that batch lightweight
+    /// appends and checkpoint at turn boundaries.
+    pub fn sync(&self) -> std::io::Result<()> {
+        let file = OpenOptions::new().read(true).open(&self.path)?;
+        file.sync_data()
+    }
+
+    /// Start a background writer for event-loop use. The returned handle
+    /// queues records in memory and performs all file I/O on its worker
+    /// thread. Use [`BufferedEventLog::flush`] at explicit durability
+    /// boundaries such as completed turns.
+    pub fn buffered(&self) -> std::io::Result<BufferedEventLog> {
+        BufferedEventLog::open(self.path.clone())
     }
 
     pub fn read(&self) -> std::io::Result<Vec<AgentEvent>> {
@@ -294,6 +328,128 @@ impl EventLog {
         }
         Ok(state)
     }
+}
+
+enum BufferedLogCommand {
+    Append(String),
+    Flush(Sender<std::io::Result<()>>),
+    Shutdown(Sender<std::io::Result<()>>),
+}
+
+/// Background event-log writer used to keep terminal input/render handling
+/// independent from filesystem latency. The channel is intentionally
+/// unbounded: dropping normalized events during a streamed turn would make
+/// replay and recovery incomplete, while the writer drains ordinary event
+/// rates faster than adapters produce them.
+pub struct BufferedEventLog {
+    sender: Sender<BufferedLogCommand>,
+    worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+}
+
+impl std::fmt::Debug for BufferedEventLog {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BufferedEventLog")
+            .field("worker_running", &self.worker.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl BufferedEventLog {
+    fn open(path: PathBuf) -> std::io::Result<Self> {
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("codeswarm-event-log".into())
+            .spawn(move || buffered_log_worker(path, receiver))?;
+        Ok(Self {
+            sender,
+            worker: Some(worker),
+        })
+    }
+
+    /// Serialize and queue a normalized event without opening a file or
+    /// waiting on a filesystem operation in the caller.
+    pub fn append(&self, event: &AgentEvent) -> std::io::Result<()> {
+        let encoded = serde_json::to_string(event)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        self.sender
+            .send(BufferedLogCommand::Append(format!("{encoded}\n")))
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "event log background writer stopped",
+                )
+            })
+    }
+
+    /// Drain queued records and force them to stable storage.
+    pub fn flush(&self) -> std::io::Result<()> {
+        let (reply, result) = mpsc::channel();
+        self.sender
+            .send(BufferedLogCommand::Flush(reply))
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "event log background writer stopped",
+                )
+            })?;
+        result.recv().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "event log background writer stopped",
+            )
+        })?
+    }
+}
+
+impl Drop for BufferedEventLog {
+    fn drop(&mut self) {
+        let (reply, result) = mpsc::channel();
+        if self
+            .sender
+            .send(BufferedLogCommand::Shutdown(reply))
+            .is_ok()
+        {
+            let _ = result.recv();
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn buffered_log_worker(
+    path: PathBuf,
+    receiver: Receiver<BufferedLogCommand>,
+) -> std::io::Result<()> {
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
+    let mut writer = BufWriter::new(file);
+    while let Ok(command) = receiver.recv() {
+        match command {
+            BufferedLogCommand::Append(line) => writer.write_all(line.as_bytes())?,
+            BufferedLogCommand::Flush(reply) => {
+                let result = writer.flush().and_then(|()| writer.get_ref().sync_data());
+                let _ = reply.send(result);
+            }
+            BufferedLogCommand::Shutdown(reply) => {
+                let result = writer.flush().and_then(|()| writer.get_ref().sync_data());
+                let worker_result = match result {
+                    Ok(()) => {
+                        let _ = reply.send(Ok(()));
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let kind = error.kind();
+                        let detail = error.to_string();
+                        let _ = reply.send(Err(std::io::Error::new(kind, detail.clone())));
+                        Err(std::io::Error::new(kind, detail))
+                    }
+                };
+                return worker_result;
+            }
+        }
+    }
+    writer.flush()
 }
 
 #[cfg(test)]
@@ -372,6 +528,88 @@ mod tests {
             reduce(&mut expected, event);
         }
         assert_eq!(replayed, expected);
+        std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn event_log_can_checkpoint_batched_appends() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("codeswarm-core-checkpoint-{unique}.jsonl"));
+        let log = super::EventLog::open(&path);
+        log.append(&AgentEvent::Text {
+            slot: 0,
+            text: "batched".into(),
+        })
+        .expect("append");
+        // `sync` is an explicit checkpoint; it is separate from the hot-path
+        // append so render/input latency cannot inherit a storage flush.
+        log.sync().expect("checkpoint");
+        assert_eq!(log.read().expect("read").len(), 1);
+        std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn event_log_durable_append_is_replayable() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("codeswarm-core-durable-{unique}.jsonl"));
+        let log = super::EventLog::open(&path);
+        log.append_durable(&AgentEvent::Text {
+            slot: 1,
+            text: "durable".into(),
+        })
+        .expect("durable append");
+        assert_eq!(
+            log.read().expect("read")[0].clone(),
+            AgentEvent::Text {
+                slot: 1,
+                text: "durable".into(),
+            }
+        );
+        std::fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn buffered_event_log_drains_and_checkpoints_in_order() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("codeswarm-core-buffered-{unique}.jsonl"));
+        let log = super::EventLog::open(&path);
+        let buffered = log.buffered().expect("background writer");
+        for text in ["one", "two", "three"] {
+            buffered
+                .append(&AgentEvent::Text {
+                    slot: 0,
+                    text: text.into(),
+                })
+                .expect("queue event");
+        }
+        buffered.flush().expect("checkpoint");
+        assert_eq!(
+            log.read().expect("read").into_iter().collect::<Vec<_>>(),
+            [
+                AgentEvent::Text {
+                    slot: 0,
+                    text: "one".into()
+                },
+                AgentEvent::Text {
+                    slot: 0,
+                    text: "two".into()
+                },
+                AgentEvent::Text {
+                    slot: 0,
+                    text: "three".into()
+                }
+            ]
+        );
+        drop(buffered);
         std::fs::remove_file(path).expect("cleanup");
     }
 

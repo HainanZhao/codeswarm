@@ -9,6 +9,9 @@ non-ACP adapters, sequential multi-agent relay, session recovery, and the
 **Non-goal:** Pixel-for-pixel parity with the retired UI. The transcript is a fast,
 compact terminal surface, not a permanently mounted Markdown/widget tree.
 
+See [FEATURE_PARITY.md](FEATURE_PARITY.md) for the current behavior matrix and
+the remaining parity work.
+
 ## Operating Rules
 
 - Default to compact inline output that works well in tmux and SSH. Alternate

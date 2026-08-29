@@ -26,6 +26,18 @@ const TRANSCRIPT_BG: Color = Color::Rgb(12, 16, 23);
 const STATUS_BG: Color = Color::Rgb(22, 28, 38);
 const PANEL_BG: Color = Color::Rgb(18, 23, 32);
 
+fn normalized_mode(value: &str) -> Option<(&'static str, &'static str)> {
+    match value.to_ascii_lowercase().as_str() {
+        "plan" | "readonly" | "planmode" => Some(("plan", "Plan")),
+        "manual" | "ask" | "default" => Some(("default", "Manual")),
+        "accept-edits" | "acceptedits" | "autoedit" => Some(("accept-edits", "Accept Edits")),
+        "full-access" | "fullaccess" | "auto" | "autopilot" | "yolo" => {
+            Some(("full-access", "Auto pilot"))
+        }
+        _ => None,
+    }
+}
+
 /// Keyboard actions understood by the focused permission prompt.
 ///
 /// The terminal frontend maps its native key events to this small vocabulary,
@@ -494,6 +506,7 @@ pub struct App {
     pub active_agent: String,
     pub status: String,
     mode: String,
+    requested_mode: Option<String>,
     collaboration: String,
     pub permission: Option<PermissionPrompt>,
     config_visible: bool,
@@ -524,6 +537,7 @@ impl Default for App {
             active_agent: "Initializing".into(),
             status: "idle".into(),
             mode: "Auto pilot".into(),
+            requested_mode: None,
             collaboration: "Roster relay".into(),
             permission: None,
             config_visible: false,
@@ -567,7 +581,13 @@ impl App {
                     "chat" | "discuss" | "discussion"
                 ) {
                     self.mode = "Chat".into();
+                    self.requested_mode = None;
                     self.status = "mode set to Chat".into();
+                    LocalCommand::Mode
+                } else if let Some(mode) = normalized_mode(&argument) {
+                    self.mode = mode.1.into();
+                    self.requested_mode = Some(mode.0.into());
+                    self.status = format!("mode set to {}", self.mode);
                     LocalCommand::Mode
                 } else {
                     self.status = "Use /mode to choose a mode".into();
@@ -739,11 +759,19 @@ impl App {
                     0 => self.follow_tail = !self.follow_tail,
                     1 => self.collapse_details = !self.collapse_details,
                     2 => {
-                        self.mode = if self.mode == "Auto pilot" {
-                            "Chat".into()
+                        if self.mode == "Auto pilot" {
+                            self.mode = "Chat".into();
+                            self.requested_mode = None;
+                        } else if self.mode == "Chat" {
+                            self.mode = "Plan".into();
+                            self.requested_mode = Some("plan".into());
+                        } else if self.mode == "Plan" {
+                            self.mode = "Accept Edits".into();
+                            self.requested_mode = Some("accept-edits".into());
                         } else {
-                            "Auto pilot".into()
-                        };
+                            self.mode = "Auto pilot".into();
+                            self.requested_mode = Some("full-access".into());
+                        }
                     }
                     3 => {
                         self.collaboration = match self.collaboration.as_str() {
@@ -767,6 +795,10 @@ impl App {
 
     pub fn mode(&self) -> &str {
         &self.mode
+    }
+
+    pub fn take_requested_mode(&mut self) -> Option<String> {
+        self.requested_mode.take()
     }
 
     pub fn collaboration(&self) -> &str {
@@ -895,7 +927,18 @@ impl App {
                 self.agent_states.insert(*slot, "ready".into());
                 self.status = "ready".into();
             }
-            AgentEvent::ModesReplaced { .. } => {}
+            AgentEvent::ModesReplaced {
+                slot,
+                modes,
+                current_mode,
+            } => {
+                if *slot == 0
+                    && let Some(current) = current_mode
+                    && let Some(mode) = modes.iter().find(|mode| mode.id == *current)
+                {
+                    self.mode = mode.label.clone();
+                }
+            }
             AgentEvent::Text { slot, text } => {
                 let key = (*slot, codeswarm_transcript::BlockKind::Agent);
                 let block = self.streaming_blocks.get(&key).copied().unwrap_or_else(|| {

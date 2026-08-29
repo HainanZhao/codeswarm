@@ -9,12 +9,13 @@ use std::{
 
 use codeswarm_adapters::{
     AcpAdapter, AdapterError, AdapterHost, AdapterResult, AgentAdapter, AgyAdapter, RelayHost,
+    parse_command_line,
 };
 use codeswarm_core::PermissionAnswer;
 use codeswarm_core::agents::{AdapterKind, AgentDefinition, catalog_from_settings};
 use codeswarm_core::launcher::{LaunchDecision, launch_decision, parse_saved_roster};
 use codeswarm_core::relay::{CollaborationStrategy, RelayDecision};
-use codeswarm_core::{AgentEvent, EventLog};
+use codeswarm_core::{AgentEvent, BufferedEventLog, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{
     App, ConfigKey, Input, LocalCommand, PermissionAction, PermissionKey, PromptAction,
@@ -46,6 +47,7 @@ enum AdapterControl {
     Pause,
     Resume,
     SetStrategy(CollaborationStrategy),
+    SetMode(String),
     Cancel,
     Stop,
 }
@@ -311,12 +313,6 @@ fn parse_agent_spec(value: &str) -> Option<AgentSpec> {
     }
 }
 
-fn split_command(command: &str) -> (String, Vec<String>) {
-    let mut parts = command.split_whitespace();
-    let program = parts.next().unwrap_or_default().to_owned();
-    (program, parts.map(ToOwned::to_owned).collect())
-}
-
 fn display_agent_name(command: &str) -> String {
     let lower = command.to_ascii_lowercase();
     if lower.contains("claude") {
@@ -432,7 +428,9 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
 }
 
 fn command_available(command: &str) -> bool {
-    let (program, _) = split_command(command);
+    let Ok((program, _)) = parse_command_line(command) else {
+        return false;
+    };
     !program.is_empty()
         && std::process::Command::new("which")
             .arg(program)
@@ -645,6 +643,11 @@ fn run_agy_task(
                             let _ = sender.send(Err(error));
                         }
                     }
+                    Some(AdapterControl::SetMode(mode)) => {
+                        if let Err(error) = adapter.set_mode(mode).await {
+                            let _ = sender.send(Err(error));
+                        }
+                    }
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
                     | Some(AdapterControl::Pause)
@@ -667,7 +670,15 @@ fn spawn_acp(
 ) {
     let (sender, receiver) = mpsc::channel();
     let (controls, control_receiver) = tokio::sync::mpsc::unbounded_channel();
-    let (program, args) = split_command(&program);
+    let (program, args) = match parse_command_line(&program) {
+        Ok(command) => command,
+        Err(error) => {
+            let _ = sender.send(Err(AdapterError::Spawn(format!(
+                "invalid ACP command: {error}"
+            ))));
+            return (receiver, controls);
+        }
+    };
     thread::spawn(move || run_acp_task(sender, control_receiver, program, args, prompt));
     (receiver, controls)
 }
@@ -727,6 +738,11 @@ fn run_acp_task(
                     }
                     Some(AdapterControl::Permission { request_id, answer, .. }) => {
                         if let Err(error) = adapter.answer_permission(request_id, answer).await {
+                            let _ = sender.send(Err(error));
+                        }
+                    }
+                    Some(AdapterControl::SetMode(mode)) => {
+                        if let Err(error) = adapter.set_mode(mode).await {
                             let _ = sender.send(Err(error));
                         }
                     }
@@ -855,18 +871,34 @@ fn run_relay_task(
             .into_iter()
             .enumerate()
             .map(|(slot, spec)| {
-                let adapter: Box<dyn AgentAdapter> = match spec {
+                let adapter = match spec {
                     AgentSpec::Agy(command) => {
-                        Box::new(AgyAdapter::new(slot, cwd.clone(), command))
+                        Ok(Box::new(AgyAdapter::new(slot, cwd.clone(), command))
+                            as Box<dyn AgentAdapter>)
                     }
                     AgentSpec::Acp(command) => {
-                        let (program, args) = split_command(&command);
-                        Box::new(AcpAdapter::new(slot, cwd.clone(), program, args))
+                        let (program, args) = match parse_command_line(&command) {
+                            Ok(command) => command,
+                            Err(error) => {
+                                return Err(AdapterError::Spawn(format!(
+                                    "invalid ACP command: {error}"
+                                )));
+                            }
+                        };
+                        Ok(Box::new(AcpAdapter::new(slot, cwd.clone(), program, args))
+                            as Box<dyn AgentAdapter>)
                     }
-                };
-                AdapterHost::new(adapter, None)
+                }?;
+                Ok(AdapterHost::new(adapter, None))
             })
-            .collect();
+            .collect::<Result<Vec<_>, AdapterError>>();
+        let hosts = match hosts {
+            Ok(hosts) => hosts,
+            Err(error) => {
+                let _ = sender.send(Err(error));
+                return;
+            }
+        };
         let mut relay = match RelayHost::new(hosts, max_rounds) {
             Ok(relay) => relay,
             Err(error) => {
@@ -984,6 +1016,11 @@ fn run_relay_task(
                 Some(AdapterControl::Pause) => relay.pause(),
                 Some(AdapterControl::Resume) => relay.resume(),
                 Some(AdapterControl::SetStrategy(strategy)) => relay.set_strategy(strategy),
+                Some(AdapterControl::SetMode(mode)) => {
+                    if let Err(error) = relay.set_mode(mode).await {
+                        let _ = sender.send(Err(error));
+                    }
+                }
                 Some(AdapterControl::Cancel) => {
                     let _ = sender.send(Err(AdapterError::Unsupported("no active relay turn")));
                 }
@@ -1037,6 +1074,13 @@ fn run_terminal(
                         }
                         if let Some(log) = &event_log {
                             let _ = log.append(&event);
+                            // Checkpoint only at turn boundaries. Streamed
+                            // chunks stay off the terminal thread's fsync
+                            // path while still making completed turns
+                            // recoverable after an abrupt process exit.
+                            if matches!(&event, AgentEvent::TurnComplete { .. }) {
+                                let _ = log.flush();
+                            }
                         }
                         app.apply_event(&event);
                         if matches!(&event, AgentEvent::TurnComplete { .. })
@@ -1049,6 +1093,9 @@ fn run_terminal(
                         }
                     }
                     Err(error) => {
+                        if let Some(log) = &event_log {
+                            let _ = log.flush();
+                        }
                         turn_active = false;
                         cancel_requested_at = None;
                         pending_permission = None;
@@ -1077,6 +1124,11 @@ fn run_terminal(
                 if let Some(config_key) = config_key {
                     let previous_collaboration = app.collaboration().to_owned();
                     let _ = app.handle_config_key(config_key);
+                    if let Some(mode) = app.take_requested_mode()
+                        && let Some(controls) = &controls
+                    {
+                        let _ = controls.send(AdapterControl::SetMode(mode));
+                    }
                     if previous_collaboration != app.collaboration()
                         && let Some(controls) = &controls
                     {
@@ -1260,7 +1312,13 @@ fn run_terminal(
                                     }
                                     app.status = "relay resumed".into();
                                 }
-                                LocalCommand::Mode => {}
+                                LocalCommand::Mode => {
+                                    if let Some(mode) = app.take_requested_mode()
+                                        && let Some(controls) = &controls
+                                    {
+                                        let _ = controls.send(AdapterControl::SetMode(mode));
+                                    }
+                                }
                                 LocalCommand::Collaboration => {
                                     if let Some(controls) = &controls {
                                         let _ = controls.send(AdapterControl::SetStrategy(
@@ -1366,14 +1424,14 @@ fn export_conversation(app: &App) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-fn event_log() -> std::io::Result<EventLog> {
+fn event_log() -> std::io::Result<BufferedEventLog> {
     let root = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from(".codeswarm-state"));
     let directory = root.join("codeswarm");
     std::fs::create_dir_all(&directory)?;
-    Ok(EventLog::open(directory.join("rust-events.jsonl")))
+    EventLog::open(directory.join("rust-events.jsonl")).buffered()
 }
 
 #[cfg(test)]

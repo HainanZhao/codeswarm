@@ -62,12 +62,110 @@ fn floor_char_boundary(text: &str, index: usize) -> usize {
     index
 }
 
+/// A shell-free argv parser for commands stored in the agent catalog.
+///
+/// Agent commands are configuration data, not shell snippets: expansion and
+/// pipelines are intentionally unsupported. We still accept the quoting users
+/// expect when entering a command (`'...'`, `"..."`, and backslash escapes),
+/// so a configured executable or argument containing whitespace is passed to
+/// `Command` as one argument and cannot be re-split accidentally.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommandParseError {
+    Empty,
+    UnterminatedQuote,
+    TrailingEscape,
+}
+
+impl std::fmt::Display for CommandParseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::Empty => "command is empty",
+            Self::UnterminatedQuote => "command contains an unterminated quote",
+            Self::TrailingEscape => "command ends with an incomplete escape",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl std::error::Error for CommandParseError {}
+
+/// Parse a configured command into an executable and argv without invoking a
+/// shell. This is shared by native and ACP adapters.
+pub fn parse_command_line(command: &str) -> Result<(String, Vec<String>), CommandParseError> {
+    let mut argv = Vec::new();
+    let mut argument = String::new();
+    let mut quoted = None;
+    let mut escaped = false;
+    let mut started = false;
+
+    for character in command.chars() {
+        if escaped {
+            argument.push(character);
+            escaped = false;
+            started = true;
+            continue;
+        }
+        match (quoted, character) {
+            (_, '\\') if quoted != Some('\'') => {
+                escaped = true;
+                started = true;
+            }
+            (None, '\'' | '"') => {
+                quoted = Some(character);
+                started = true;
+            }
+            (Some(quote), character) if character == quote => quoted = None,
+            (None, character) if character.is_whitespace() => {
+                if started {
+                    argv.push(std::mem::take(&mut argument));
+                    started = false;
+                }
+            }
+            (_, character) => {
+                argument.push(character);
+                started = true;
+            }
+        }
+    }
+
+    if escaped {
+        return Err(CommandParseError::TrailingEscape);
+    }
+    if quoted.is_some() {
+        return Err(CommandParseError::UnterminatedQuote);
+    }
+    if started {
+        argv.push(argument);
+    }
+    let Some((program, args)) = argv.split_first() else {
+        return Err(CommandParseError::Empty);
+    };
+    Ok((program.clone(), args.to_vec()))
+}
+
+/// Kill and reap a child process. Tokio intentionally does not reap a child
+/// when its handle is dropped, so every adapter shutdown path must await this
+/// helper before releasing the handle.
+async fn terminate_child(child: &mut Child) -> AdapterResult<()> {
+    let kill_error = child.start_kill().err();
+    let wait_error = child.wait().await.err();
+    if let Some(error) = kill_error.or(wait_error) {
+        return Err(AdapterError::Transport(error.to_string()));
+    }
+    Ok(())
+}
+
 /// Uniform control plane for ACP and custom command-line adapters.
 #[async_trait]
 pub trait AgentAdapter: Send {
     fn slot(&self) -> RosterSlot;
     fn capabilities(&self) -> AgentCapabilities;
     async fn start(&mut self) -> AdapterResult<()>;
+    /// Internal startup hook used by adapters that need cleanup around a
+    /// multi-step initialization handshake. Other adapters use `start`.
+    async fn start_inner(&mut self) -> AdapterResult<()> {
+        self.start().await
+    }
     async fn send_prompt(&mut self, prompt: String) -> AdapterResult<()>;
     async fn cancel(&mut self) -> AdapterResult<bool>;
     async fn answer_permission(
@@ -256,8 +354,13 @@ impl RelayHost {
     }
 
     pub async fn start(&mut self) -> AdapterResult<()> {
-        for host in &mut self.hosts {
-            host.start().await?;
+        for index in 0..self.hosts.len() {
+            if let Err(error) = self.hosts[index].start().await {
+                for host in &mut self.hosts[..index] {
+                    let _ = host.stop().await;
+                }
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -300,6 +403,17 @@ impl RelayHost {
 
     pub fn strategy(&self) -> CollaborationStrategy {
         self.relay.strategy()
+    }
+
+    /// Apply one semantic mode to every active adapter that advertises mode
+    /// support. Native adapters may translate the policy to their own IDs.
+    pub async fn set_mode(&mut self, mode: String) -> AdapterResult<()> {
+        for host in &mut self.hosts {
+            if host.adapter().capabilities().supports_modes {
+                host.set_mode(mode.clone()).await?;
+            }
+        }
+        Ok(())
     }
 
     pub fn relay(&self) -> &Relay {
@@ -370,6 +484,10 @@ impl RelayHost {
         let mut response = String::new();
         let mut emitted_text = 0usize;
         loop {
+            if self.cancel_requested.swap(false, Ordering::AcqRel) {
+                let _ = host.cancel().await?;
+                return Err(AdapterError::Transport("relay turn cancelled".into()));
+            }
             let update = tokio::select! {
                 update = host.next_update() => update
                     .ok_or_else(|| AdapterError::Transport("adapter ended during turn".into()))??,
@@ -399,6 +517,7 @@ impl RelayHost {
                     break;
                 }
                 AgentEvent::Failed { detail, .. } => {
+                    let _ = self.relay.tombstone(*slot);
                     return Err(AdapterError::Transport(detail.clone()));
                 }
                 _ => {}
@@ -611,8 +730,11 @@ impl AgentAdapter for AgyAdapter {
                 "agent is already handling a turn".into(),
             ));
         }
-        let mut command = Command::new(&self.command);
+        let (program, args) = parse_command_line(&self.command)
+            .map_err(|error| AdapterError::Spawn(format!("invalid agent command: {error}")))?;
+        let mut command = Command::new(program);
         command
+            .args(args)
             .arg("--print")
             .arg(prompt)
             .arg("--print-timeout")
@@ -631,10 +753,13 @@ impl AgentAdapter for AgyAdapter {
         let mut child = command
             .spawn()
             .map_err(|error| AdapterError::Spawn(error.to_string()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| AdapterError::Transport("agent has no stdout".into()))?;
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                let _ = terminate_child(&mut child).await;
+                return Err(AdapterError::Transport("agent has no stdout".into()));
+            }
+        };
         let sender = self.sender.clone();
         let slot = self.slot;
         tokio::spawn(async move {
@@ -659,12 +784,13 @@ impl AgentAdapter for AgyAdapter {
     }
 
     async fn cancel(&mut self) -> AdapterResult<bool> {
-        let Some(child) = self.child.as_mut() else {
+        let Some(mut child) = self.child.take() else {
             return Ok(false);
         };
-        child
-            .start_kill()
-            .map_err(|error| AdapterError::Transport(error.to_string()))?;
+        // `Child` does not reap itself when dropped. Awaiting wait after the
+        // kill keeps repeated prompts from accumulating zombies, especially
+        // when cancellation happens before the stream reader observes EOF.
+        terminate_child(&mut child).await?;
         Ok(true)
     }
 
@@ -697,7 +823,6 @@ impl AgentAdapter for AgyAdapter {
 
     async fn stop(&mut self) -> AdapterResult<()> {
         let _ = self.cancel().await?;
-        self.child = None;
         Ok(())
     }
 
@@ -789,6 +914,7 @@ pub struct AcpAdapter {
     capabilities: AgentCapabilities,
     session_id: Option<String>,
     next_request_id: u64,
+    prompt_request_id: Option<u64>,
     queued_events: VecDeque<AdapterResult<AgentEvent>>,
 }
 
@@ -809,6 +935,7 @@ impl AcpAdapter {
             capabilities: AgentCapabilities::default(),
             session_id: None,
             next_request_id: 1,
+            prompt_request_id: None,
             queued_events: VecDeque::new(),
         }
     }
@@ -882,6 +1009,147 @@ impl AcpAdapter {
             .map_err(|error| AdapterError::Transport(error.to_string()))?
             .ok_or_else(|| AdapterError::Transport("ACP stream closed".into()))
     }
+
+    async fn start(&mut self) -> AdapterResult<()> {
+        // Starting an adapter twice must never orphan the first transport.
+        if self.child.is_some() {
+            self.stop().await?;
+        }
+        let mut child = Command::new(&self.program)
+            .args(&self.args)
+            .current_dir(&self.cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| AdapterError::Spawn(error.to_string()))?;
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                let _ = terminate_child(&mut child).await;
+                return Err(AdapterError::Transport("ACP agent has no stdout".into()));
+            }
+        };
+        self.child = Some(child);
+        self.reader = Some(BufReader::new(stdout).lines());
+
+        let initialize = match self
+            .request(
+                "initialize",
+                serde_json::json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": {
+                        "fs": {"readTextFile": true, "writeTextFile": true},
+                        "terminal": true,
+                    },
+                    "clientInfo": {
+                        "name": "CodeSwarm",
+                        "title": "CodeSwarm",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    },
+                }),
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = self.stop().await;
+                return Err(error);
+            }
+        };
+        let agent_capabilities = initialize
+            .get("agentCapabilities")
+            .cloned()
+            .unwrap_or(Value::Null);
+        self.capabilities = AgentCapabilities {
+            supports_cancel: true,
+            supports_modes: true,
+            supports_permissions: true,
+            supports_terminals: true,
+            supports_session_load: agent_capabilities
+                .get("loadSession")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+        let session = if let Some(session_id) = self.session_id.clone() {
+            if !self.capabilities.supports_session_load {
+                let _ = self.stop().await;
+                return Err(AdapterError::Unsupported("session/load"));
+            }
+            match self
+                .request(
+                    "session/load",
+                    serde_json::json!({
+                        "cwd": self.cwd,
+                        "mcpServers": [],
+                        "sessionId": session_id,
+                    }),
+                )
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = self.stop().await;
+                    return Err(error);
+                }
+            }
+        } else {
+            let session = match self
+                .request(
+                    "session/new",
+                    serde_json::json!({"cwd": self.cwd, "mcpServers": []}),
+                )
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = self.stop().await;
+                    return Err(error);
+                }
+            };
+            self.session_id = session
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if self.session_id.is_none() {
+                let _ = self.stop().await;
+                return Err(AdapterError::Protocol(
+                    "session/new returned no sessionId".into(),
+                ));
+            }
+            session
+        };
+        if let Some(modes) = session.get("modes") {
+            let available = modes
+                .get("availableModes")
+                .and_then(Value::as_array)
+                .map(|modes| {
+                    modes
+                        .iter()
+                        .filter_map(|mode| {
+                            Some(Mode {
+                                id: mode.get("id")?.as_str()?.to_owned(),
+                                label: mode.get("name")?.as_str()?.to_owned(),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            self.queued_events.push_back(Ok(AgentEvent::ModesReplaced {
+                slot: self.slot,
+                modes: available,
+                current_mode: modes
+                    .get("currentModeId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            }));
+        }
+        self.queued_events.push_back(Ok(AgentEvent::Ready {
+            slot: self.slot,
+            capabilities: self.capabilities(),
+        }));
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -895,6 +1163,12 @@ impl AgentAdapter for AcpAdapter {
     }
 
     async fn start(&mut self) -> AdapterResult<()> {
+        // Use the inherent implementation, which owns the cleanup boundary
+        // around the multi-step ACP handshake.
+        AcpAdapter::start(self).await
+    }
+
+    async fn start_inner(&mut self) -> AdapterResult<()> {
         let mut child = Command::new(&self.program)
             .args(&self.args)
             .current_dir(&self.cwd)
@@ -903,10 +1177,13 @@ impl AgentAdapter for AcpAdapter {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|error| AdapterError::Spawn(error.to_string()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| AdapterError::Transport("agent has no stdout".into()))?;
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                let _ = terminate_child(&mut child).await;
+                return Err(AdapterError::Transport("ACP agent has no stdout".into()));
+            }
+        };
         self.child = Some(child);
         self.reader = Some(BufReader::new(stdout).lines());
 
@@ -1020,7 +1297,9 @@ impl AgentAdapter for AcpAdapter {
                 "prompt": [{"type": "text", "text": prompt}],
             },
         }))
-        .await
+        .await?;
+        self.prompt_request_id = Some(request_id);
+        Ok(())
     }
 
     async fn cancel(&mut self) -> AdapterResult<bool> {
@@ -1054,7 +1333,7 @@ impl AgentAdapter for AcpAdapter {
         self.write_json(serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
-            "result": {"outcome": outcome},
+            "result": outcome,
         }))
         .await
     }
@@ -1080,10 +1359,11 @@ impl AgentAdapter for AcpAdapter {
 
     async fn stop(&mut self) -> AdapterResult<()> {
         if let Some(mut child) = self.child.take() {
-            let _ = child.start_kill();
+            terminate_child(&mut child).await?;
         }
         self.reader = None;
         self.session_id = None;
+        self.prompt_request_id = None;
         Ok(())
     }
 
@@ -1105,7 +1385,8 @@ impl AgentAdapter for AcpAdapter {
                 Ok(None) => {}
                 Err(error) => return Some(Err(error)),
             }
-            if value.get("id").is_some() {
+            if value.get("id").and_then(Value::as_u64) == self.prompt_request_id {
+                self.prompt_request_id = None;
                 return Some(Ok(AgentEvent::TurnComplete { slot: self.slot }));
             }
         }
@@ -1300,9 +1581,45 @@ mod tests {
 
     use super::{
         AcpAdapter, AdapterHost, AgentAdapter, AgyAdapter, RelayHost, ScriptedAdapter,
-        parse_acp_notification, parse_agy_line,
+        parse_acp_notification, parse_agy_line, parse_command_line,
     };
     use serde_json::Value;
+
+    #[test]
+    fn parses_configured_commands_with_shell_style_quotes_without_a_shell() {
+        assert_eq!(
+            parse_command_line(r#"npx -y "@agentclientprotocol/codex-acp" --flag 'two words'"#),
+            Ok((
+                "npx".into(),
+                vec![
+                    "-y".into(),
+                    "@agentclientprotocol/codex-acp".into(),
+                    "--flag".into(),
+                    "two words".into(),
+                ]
+            ),)
+        );
+        assert_eq!(
+            parse_command_line(r#"agent "" escaped\ argument"#),
+            Ok(("agent".into(), vec!["".into(), "escaped argument".into()],))
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_configured_commands_before_spawn() {
+        assert_eq!(
+            parse_command_line("agent 'unfinished"),
+            Err(super::CommandParseError::UnterminatedQuote)
+        );
+        assert_eq!(
+            parse_command_line("agent\\"),
+            Err(super::CommandParseError::TrailingEscape)
+        );
+        assert_eq!(
+            parse_command_line("   \t"),
+            Err(super::CommandParseError::Empty)
+        );
+    }
 
     #[derive(Debug)]
     struct PendingAdapter {
@@ -1570,13 +1887,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn acp_start_failure_reaps_transport_process() {
+        // The child emits an invalid initialize response and exits. The
+        // adapter must not retain a live child after protocol startup fails;
+        // this is the path used when a configured ACP command is unavailable
+        // or speaks a different protocol.
+        let mut adapter = AcpAdapter::new(
+            0,
+            std::env::current_dir().expect("cwd"),
+            "sh",
+            vec!["-c".into(), "printf 'not-json\\n'".into()],
+        );
+        assert!(adapter.start().await.is_err());
+        assert!(adapter.child.is_none());
+        assert!(adapter.reader.is_none());
+    }
+
+    #[tokio::test]
     async fn acp_adapter_answers_permission_json_rpc_requests() {
         let path = std::env::temp_dir().join(format!(
             "codeswarm-permission-answer-{}",
             std::process::id()
         ));
         let script = format!(
-            r#"read _; echo '{{"jsonrpc":"2.0","id":1,"result":{{"agentCapabilities":{{}}}}}}'; read _; echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s1"}}}}'; read _; echo '{{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{{"toolCall":{{"title":"Write file"}},"options":[{{"optionId":"allow-once"}}]}}}}'; read answer; printf '%s' "$answer" > '{}'; echo '{{"jsonrpc":"2.0","id":4,"result":{{"stopReason":"end_turn"}}}}'"#,
+            r#"read _; echo '{{"jsonrpc":"2.0","id":1,"result":{{"agentCapabilities":{{}}}}}}'; read _; echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s1"}}}}'; read _; echo '{{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{{"toolCall":{{"title":"Write file"}},"options":[{{"optionId":"allow-once"}}]}}}}'; read answer; printf '%s' "$answer" > '{}'; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}'"#,
             path.display()
         );
         let mut adapter = AcpAdapter::new(
@@ -1614,8 +1948,8 @@ mod tests {
         )
         .expect("valid JSON-RPC answer");
         assert_eq!(answer["id"], 9);
-        assert_eq!(answer["result"]["outcome"]["outcome"], "selected");
-        assert_eq!(answer["result"]["outcome"]["optionId"], "allow-once");
+        assert_eq!(answer["result"]["outcome"], "selected");
+        assert_eq!(answer["result"]["optionId"], "allow-once");
         std::fs::remove_file(path).expect("cleanup");
     }
 
