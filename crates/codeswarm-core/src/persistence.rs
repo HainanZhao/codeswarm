@@ -133,8 +133,7 @@ impl VersionedEventLog {
     }
 
     /// Rewrite legacy records atomically. A malformed record leaves the source
-    /// untouched, which lets the Python client continue reading its metadata
-    /// and lets an operator repair the bad log manually.
+    /// untouched, allowing an operator to repair the bad log manually.
     pub fn migrate_in_place(&self) -> Result<MigrationReport, PersistenceError> {
         let loaded = self.read_with_versions()?;
         if loaded.events.is_empty() && !self.path.exists() {

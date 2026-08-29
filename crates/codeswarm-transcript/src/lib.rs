@@ -1,8 +1,9 @@
 //! Immutable, viewport-oriented transcript data.
 //!
-//! This crate deliberately has no terminal or async dependencies. Rendering a
-//! scroll position is a lookup over cached rows; it never reparses the full
-//! transcript, talks to an adapter, or waits for persistence.
+//! This crate deliberately has no terminal or async dependencies. After the
+//! width cache is warm, rendering a scroll position is a lookup over cached
+//! rows; it does not reparse the full transcript, talk to an adapter, or wait
+//! for persistence.
 
 use std::collections::BTreeMap;
 
@@ -46,8 +47,8 @@ pub struct Transcript {
 }
 
 impl Transcript {
-    /// Append a completed logical block. Row materialization is deferred until
-    /// a viewport requests it at a concrete width.
+    /// Append a logical block. Row materialization is deferred until a
+    /// viewport requests it at a concrete width.
     pub fn append(&mut self, kind: BlockKind, source: impl Into<String>, collapsed: bool) -> u64 {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);

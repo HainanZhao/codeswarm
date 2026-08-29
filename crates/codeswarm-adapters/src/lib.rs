@@ -1,7 +1,7 @@
 //! Protocol adapters for CodeSwarm.
 //!
 //! ACP and native CLI protocols are intentionally peers here. They emit the
-//! same core events and advertise only the capabilities they actually provide.
+//! same core events and expose capabilities through the same adapter boundary.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;

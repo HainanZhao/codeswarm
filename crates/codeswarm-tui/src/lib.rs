@@ -1,7 +1,8 @@
 //! Low-churn Ratatui rendering over the viewport transcript model.
 //!
 //! The renderer is intentionally stateless with respect to historical rows:
-//! scrolling asks the transcript for a small cached slice and draws that slice.
+//! after the transcript cache is warm, scrolling asks for a small cached slice
+//! and draws that slice.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -158,8 +159,8 @@ impl App {
     }
 
     /// Apply normalized adapter state without exposing protocol-specific
-    /// objects to the renderer. Text chunks are coalesced into one immutable
-    /// transcript block per active agent turn.
+    /// objects to the renderer. Text chunks are coalesced into one transcript
+    /// block per active agent turn.
     pub fn apply_event(&mut self, event: &AgentEvent) {
         match event {
             AgentEvent::Ready { slot, .. } => {
