@@ -142,6 +142,7 @@ impl Relay {
     pub fn reactivate(&mut self, slot: RosterSlot) -> Result<(), &'static str> {
         let active = self.active.get_mut(slot).ok_or("slot out of range")?;
         *active = true;
+        self.context.rewind(slot);
         Ok(())
     }
 

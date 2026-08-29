@@ -51,6 +51,14 @@ impl CollaborationContext {
         }
     }
 
+    /// Rewind one agent's watermark after a replacement/reload so its next
+    /// turn receives the retained public journal again.
+    pub fn rewind(&mut self, slot: usize) {
+        if let Some(seen) = self.seen.get_mut(slot) {
+            *seen = 0;
+        }
+    }
+
     pub fn unseen(&mut self, slot: usize) -> String {
         let start = self.seen.get(slot).copied().unwrap_or(self.events.len());
         let mut updates = self.events[start..]
@@ -169,6 +177,16 @@ mod tests {
         context.mark_seen(0);
         assert_eq!(context.unseen(0), "");
         assert_eq!(context.unseen(1), "Human:\ntask");
+    }
+
+    #[test]
+    fn rewind_replays_retained_context_to_a_reloaded_agent() {
+        let mut context = CollaborationContext::new(1);
+        context.record("Agent", "answer", &[true]);
+        context.mark_seen(0);
+        assert_eq!(context.unseen(0), "");
+        context.rewind(0);
+        assert_eq!(context.unseen(0), "Agent:\nanswer");
     }
 
     #[test]

@@ -662,6 +662,19 @@ impl RelayHost {
             .map_err(|error| AdapterError::Transport(error.into()))
     }
 
+    /// Stop and tombstone a peer while preserving its stable roster slot.
+    /// Owner removal remains a deliberate error; callers should close or
+    /// promote through a higher-level coordinator instead.
+    pub async fn drop_agent(&mut self, slot: RosterSlot) -> AdapterResult<()> {
+        self.relay
+            .drop_agent(slot)
+            .map_err(|error| AdapterError::Transport(error.into()))?;
+        if let Some(host) = self.hosts.get_mut(slot) {
+            host.stop().await?;
+        }
+        Ok(())
+    }
+
     pub fn relay(&self) -> &Relay {
         &self.relay
     }

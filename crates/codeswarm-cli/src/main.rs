@@ -1395,8 +1395,8 @@ fn run_relay_task(
                     }
                 }
                 Some(AdapterControl::Drop(slot)) => {
-                    if let Err(error) = relay.relay_mut().drop_agent(slot) {
-                        let _ = sender.send(Err(AdapterError::Transport(error.into())));
+                    if let Err(error) = relay.drop_agent(slot).await {
+                        let _ = sender.send(Err(error));
                     }
                 }
                 Some(AdapterControl::Cancel) => {
