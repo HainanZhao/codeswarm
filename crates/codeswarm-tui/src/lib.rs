@@ -2614,6 +2614,42 @@ fn markdown_spans(
     let base = markdown_style(kind, text);
     let mut spans = Vec::new();
     let mut remaining = text;
+    let leading = text.len().saturating_sub(text.trim_start().len());
+    let trimmed = &text[leading..];
+    let marker_len =
+        if trimmed.starts_with("> ") || trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+            Some(2)
+        } else if trimmed
+            .char_indices()
+            .find(|(_, character)| *character == '.')
+            .is_some_and(|(index, _)| {
+                index > 0
+                    && trimmed[..index]
+                        .chars()
+                        .all(|character| character.is_ascii_digit())
+                    && trimmed.as_bytes().get(index + 1) == Some(&b' ')
+            })
+        {
+            trimmed.find(' ').map(|index| index + 1)
+        } else {
+            None
+        };
+    if let Some(marker_len) = marker_len {
+        if leading > 0 {
+            spans.push(Span::styled(text[..leading].to_owned(), base));
+        }
+        let marker_end = leading + marker_len;
+        let marker_style = if trimmed.starts_with("> ") {
+            base.fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            base.fg(Color::LightYellow).add_modifier(Modifier::BOLD)
+        };
+        spans.push(Span::styled(
+            text[leading..marker_end].to_owned(),
+            marker_style,
+        ));
+        remaining = &text[marker_end..];
+    }
     while !remaining.is_empty() {
         let next = ["**", "*", "`"]
             .iter()
@@ -3011,6 +3047,14 @@ mod tests {
         let _ = markdown_spans(BlockKind::Agent, "```rust", &mut in_code);
         let code = markdown_spans(BlockKind::Agent, "let answer = 42;", &mut in_code);
         assert_eq!(code[0].style.fg, Some(Color::LightCyan));
+        let mut in_code = false;
+        let list = markdown_spans(BlockKind::Agent, "- item", &mut in_code);
+        assert_eq!(list[0].content, "- ");
+        assert_eq!(list[0].style.fg, Some(Color::LightYellow));
+        let quote = markdown_spans(BlockKind::Agent, "> note", &mut in_code);
+        assert_eq!(quote[0].style.fg, Some(Color::Cyan));
+        let numbered = markdown_spans(BlockKind::Agent, "1. step", &mut in_code);
+        assert_eq!(numbered[0].content, "1. ");
     }
 
     #[test]
