@@ -230,7 +230,7 @@ impl Relay {
         if self.paused {
             return RelayDecision::Paused;
         }
-        if self.active_slots().count() < 2 {
+        if self.active_slots().next().is_none() {
             return RelayDecision::Collapsed;
         }
         let queued = Self::pop_active(&self.active, &mut self.direct)
@@ -519,6 +519,20 @@ mod tests {
         assert!(matches!(
             relay.begin("", 0),
             RelayDecision::Dispatch { slot: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn a_healthy_peer_continues_after_the_other_slot_is_tombstoned() {
+        let mut relay = Relay::new(2, 10);
+        relay.tombstone(0).expect("owner failure");
+        assert!(matches!(
+            relay.begin("continue", 0),
+            RelayDecision::Dispatch {
+                slot: 1,
+                can_stop: false,
+                ..
+            }
         ));
     }
 

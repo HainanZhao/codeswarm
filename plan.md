@@ -150,6 +150,8 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   foundation for prompt attachments.
 - [x] Expanded ACP `@path` references into bounded text/binary resource blocks
   before prompt dispatch, with prompt-level regression coverage.
+- [x] Keep healthy roster peers usable after a failed/dropped adapter by
+  allowing single-slot continuation and retargeting untagged prompts.
 - [x] Integrated resize settling and latest-state frame recovery into a
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and

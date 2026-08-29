@@ -1302,7 +1302,10 @@ fn run_relay_task(
             };
             match command {
                 Some(AdapterControl::Prompt(prompt)) => {
-                    let selected = first_slot;
+                    // If the configured first slot crashed, continue an
+                    // untagged human prompt with the first healthy slot
+                    // rather than stranding the session behind a tombstone.
+                    let selected = relay.relay().active_slots().next().unwrap_or(first_slot);
                     if !relay.relay_mut().enqueue_human(prompt, Some(selected)) {
                         let _ = sender.send(Err(AdapterError::Transport(
                             "unable to queue prompt for roster".into(),

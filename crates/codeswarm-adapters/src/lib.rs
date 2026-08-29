@@ -4,6 +4,7 @@
 //! same core events and expose capabilities through the same adapter boundary.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{
@@ -23,7 +24,7 @@ use codeswarm_core::{
     resources,
 };
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdout, Command};
 use tokio::sync::{Mutex as AsyncMutex, Notify, mpsc};
 
@@ -62,10 +63,18 @@ impl TerminalProcess {
         loop {
             let code = {
                 let mut child = self.child.lock().await;
-                child
-                    .as_mut()
-                    .and_then(|child| child.try_wait().ok().flatten())
-                    .map(|status| status.code().unwrap_or(-1))
+                match child.as_mut() {
+                    None => Some(-1),
+                    Some(child) => match child.try_wait() {
+                        Ok(Some(status)) => Some(status.code().unwrap_or(-1)),
+                        Ok(None) => None,
+                        // A terminal whose child handle can no longer be
+                        // polled must not leave `wait_for_exit` spinning
+                        // forever. Preserve the protocol's integer exit
+                        // contract with an unknown/failure sentinel.
+                        Err(_) => Some(-1),
+                    },
+                }
             };
             if code.is_some() {
                 while self.output_readers.load(Ordering::Acquire) != 0 {
@@ -248,6 +257,51 @@ where
         }
     }
     String::from_utf8_lossy(&bytes).trim().to_owned()
+}
+
+/// Read one JSONL frame without allowing a peer to allocate an unbounded
+/// string before the size check runs. `AsyncBufReadExt::read_line` checks only
+/// after it has appended the complete line, so the bounded fill/consume loop
+/// below is intentional.
+async fn read_bounded_line<R>(reader: &mut R) -> AdapterResult<String>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut bytes = Vec::with_capacity(4096);
+    loop {
+        let buffer = reader
+            .fill_buf()
+            .await
+            .map_err(|error| AdapterError::Transport(error.to_string()))?;
+        if buffer.is_empty() {
+            if bytes.is_empty() {
+                return Err(AdapterError::Transport("ACP stream closed".into()));
+            }
+            break;
+        }
+        let newline = buffer.iter().position(|byte| *byte == b'\n');
+        let available = newline.map_or(buffer.len(), |index| index + 1);
+        let remaining = MAX_ACP_LINE_BYTES
+            .saturating_add(1)
+            .saturating_sub(bytes.len());
+        if available > remaining {
+            reader.consume(remaining);
+            return Err(AdapterError::Protocol(format!(
+                "ACP protocol line exceeds {MAX_ACP_LINE_BYTES} bytes"
+            )));
+        }
+        bytes.extend_from_slice(&buffer[..available]);
+        reader.consume(available);
+        if newline.is_some() {
+            break;
+        }
+    }
+    if bytes.len() > MAX_ACP_LINE_BYTES {
+        return Err(AdapterError::Protocol(format!(
+            "ACP protocol line exceeds {MAX_ACP_LINE_BYTES} bytes"
+        )));
+    }
+    String::from_utf8(bytes).map_err(|error| AdapterError::Protocol(error.to_string()))
 }
 
 async fn drain_terminal_output<R>(
@@ -1423,12 +1477,6 @@ impl AcpAdapter {
         } else {
             root.join(requested)
         };
-        if std::fs::symlink_metadata(&candidate)
-            .map(|metadata| metadata.file_type().is_symlink())
-            .unwrap_or(false)
-        {
-            return Err("file path is a symlink".into());
-        }
         let resolved = if !candidate.exists() {
             let parent = candidate
                 .parent()
@@ -1464,11 +1512,17 @@ impl AcpAdapter {
             return Err("limit must not be negative".into());
         }
         let path = self.workspace_path(path)?;
-        let mut bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
+        let mut bytes = Vec::new();
+        let mut source = match std::fs::File::open(path) {
+            Ok(source) => source,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
             Err(error) => return Err(error.to_string()),
         };
+        source
+            .by_ref()
+            .take((MAX_FILE_READ_BYTES as u64).saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
         bytes.truncate(MAX_FILE_READ_BYTES);
         let text = String::from_utf8_lossy(&bytes);
         if line.is_none() && limit.is_none() {
@@ -1476,12 +1530,16 @@ impl AcpAdapter {
         }
         let start = line.map_or(0, |line| line as usize - 1);
         let limit = limit.unwrap_or(i64::MAX) as usize;
-        Ok(text
-            .lines()
+        let selected = text
+            .split_inclusive('\n')
             .skip(start)
             .take(limit)
-            .collect::<Vec<_>>()
-            .join("\n"))
+            .collect::<String>();
+        if line.is_some() {
+            Ok(selected.trim_end_matches('\n').to_owned())
+        } else {
+            Ok(selected)
+        }
     }
 
     async fn terminal_create(&mut self, params: &Value) -> Result<Value, String> {
@@ -1603,11 +1661,14 @@ impl AcpAdapter {
                 text: output.clone(),
             },
         }));
-        Ok(serde_json::json!({
+        let mut response = serde_json::json!({
             "output": output,
             "truncated": terminal.truncated.load(Ordering::Acquire),
-            "exitStatus": exit_code.map(|code| serde_json::json!({"exitCode": code})),
-        }))
+        });
+        if let Some(code) = exit_code {
+            response["exitStatus"] = serde_json::json!({"exitCode": code});
+        }
+        Ok(response)
     }
 
     async fn terminal_wait(&mut self, id: &str) -> Result<Value, String> {
@@ -1765,20 +1826,7 @@ impl AcpAdapter {
             .reader
             .as_mut()
             .ok_or_else(|| AdapterError::Transport("ACP agent has no stdout".into()))?;
-        let mut line = String::new();
-        let bytes = reader
-            .read_line(&mut line)
-            .await
-            .map_err(|error| AdapterError::Transport(error.to_string()))?;
-        if bytes == 0 {
-            return Err(AdapterError::Transport("ACP stream closed".into()));
-        }
-        if bytes > MAX_ACP_LINE_BYTES {
-            return Err(AdapterError::Protocol(format!(
-                "ACP protocol line exceeds {MAX_ACP_LINE_BYTES} bytes"
-            )));
-        }
-        Ok(line)
+        read_bounded_line(reader).await
     }
 
     async fn start(&mut self) -> AdapterResult<()> {
@@ -2336,8 +2384,9 @@ fn rpc_id_to_string(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AcpAdapter, AdapterHost, AgentAdapter, AgyAdapter, RelayHost, ScriptedAdapter,
-        parse_acp_notification, parse_agy_line, parse_command_line, prompt_content_blocks,
+        AcpAdapter, AdapterHost, AgentAdapter, AgyAdapter, MAX_ACP_LINE_BYTES, MAX_FILE_READ_BYTES,
+        RelayHost, ScriptedAdapter, parse_acp_notification, parse_agy_line, parse_command_line,
+        prompt_content_blocks, read_bounded_line,
     };
     use async_trait::async_trait;
     use codeswarm_core::TerminalEvent;
@@ -2387,6 +2436,17 @@ mod tests {
         assert_eq!(blocks[1]["resource"]["text"], "resource text");
         assert_eq!(blocks[1]["resource"]["mimeType"], "text/markdown");
         std::fs::remove_dir_all(root).expect("cleanup workspace");
+    }
+
+    #[tokio::test]
+    async fn oversized_acp_frames_are_rejected_before_full_line_allocation() {
+        let mut bytes = vec![b'x'; MAX_ACP_LINE_BYTES + 1];
+        bytes.push(b'\n');
+        let mut reader = tokio::io::BufReader::new(bytes.as_slice());
+        assert!(matches!(
+            read_bounded_line(&mut reader).await,
+            Err(super::AdapterError::Protocol(detail)) if detail.contains("exceeds")
+        ));
     }
 
     #[test]
@@ -2856,6 +2916,26 @@ mod tests {
                 .expect("read inside"),
             "two"
         );
+        std::fs::write(
+            root.join("large.txt"),
+            vec![b'x'; MAX_FILE_READ_BYTES + 1024],
+        )
+        .expect("large file");
+        let bounded = adapter
+            .read_workspace_text("large.txt", None, None)
+            .expect("bounded read");
+        assert!(bounded.len() <= MAX_FILE_READ_BYTES);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("inside.txt"), root.join("inside-link"))
+                .expect("internal symlink");
+            assert_eq!(
+                adapter
+                    .read_workspace_text("inside-link", None, None)
+                    .expect("read internal symlink"),
+                "one\ntwo\nthree\n"
+            );
+        }
         assert!(adapter.workspace_path("../codeswarm-outside").is_err());
         assert!(
             adapter
@@ -2866,7 +2946,31 @@ mod tests {
         assert!(adapter.workspace_path("outside-link").is_err());
         #[cfg(unix)]
         std::fs::remove_file(link).expect("cleanup symlink");
+        #[cfg(unix)]
+        std::fs::remove_file(root.join("inside-link")).expect("internal link cleanup");
         std::fs::remove_file(outside).expect("cleanup outside");
+        std::fs::remove_dir_all(root).expect("cleanup workspace");
+    }
+
+    #[tokio::test]
+    async fn running_terminal_output_omits_exit_status_until_completion() {
+        let root = unique_test_path("codeswarm-terminal-output", "dir");
+        std::fs::create_dir_all(&root).expect("workspace");
+        let mut adapter = AcpAdapter::new(0, root.clone(), "unused", Vec::new());
+        let result = adapter
+            .terminal_create(&serde_json::json!({
+                "command": "sh",
+                "args": ["-c", "sleep 0.2; printf done"],
+                "cwd": ".",
+            }))
+            .await
+            .expect("terminal create");
+        let id = result["terminalId"].as_str().expect("terminal id");
+        let output = adapter.terminal_output(id).await.expect("terminal output");
+        assert!(output.get("exitStatus").is_none());
+        if let Some(terminal) = adapter.terminals.remove(id) {
+            terminal.stop().await;
+        }
         std::fs::remove_dir_all(root).expect("cleanup workspace");
     }
 
@@ -3273,7 +3377,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_host_pause_and_single_agent_collapse_without_dispatching() {
+    async fn relay_host_pause_and_single_healthy_agent_continues_without_peer_review() {
         let event = [AgentEvent::TurnComplete { slot: 0 }];
         let first = AdapterHost::new(
             Box::new(ScriptedAdapter::new(
@@ -3303,14 +3407,18 @@ mod tests {
 
         relay.resume();
         relay.relay_mut().drop_agent(1).expect("drop reviewer");
-        assert_eq!(
+        assert!(matches!(
             relay
-                .run_turn("collapsed", 0)
+                .run_turn("solo follow-up", 0)
                 .await
-                .expect("collapsed turn"),
-            codeswarm_core::relay::RelayDecision::Collapsed
-        );
-        assert!(relay.dispatches().is_empty());
+                .expect("solo turn"),
+            codeswarm_core::relay::RelayDecision::Dispatch {
+                slot: 0,
+                can_stop: false,
+                ..
+            }
+        ));
+        assert_eq!(relay.dispatches().len(), 1);
     }
 
     #[tokio::test]
