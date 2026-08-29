@@ -713,6 +713,13 @@ fn load_ui_preferences(app: &mut App) {
         app.set_notifications_enabled(enabled);
     }
     if let Some(enabled) = value
+        .get("notifications")
+        .and_then(|notifications| notifications.get("enable_sounds"))
+        .and_then(serde_json::Value::as_bool)
+    {
+        app.set_sounds_enabled(enabled);
+    }
+    if let Some(enabled) = value
         .get("agent")
         .and_then(|agent| agent.get("thoughts"))
         .and_then(serde_json::Value::as_bool)
@@ -789,6 +796,7 @@ fn save_ui_preferences(app: &App) -> std::io::Result<()> {
         // Keep the legacy Python key readable by either client while the
         // Rust UI uses the shorter `enabled` spelling internally.
         notifications["turn_over"] = serde_json::Value::Bool(app.notifications_enabled());
+        notifications["enable_sounds"] = serde_json::Value::Bool(app.sounds_enabled());
         let agent = settings
             .entry("agent")
             .or_insert_with(|| serde_json::json!({}));
@@ -1467,8 +1475,10 @@ fn run_terminal(
                             if !app.terminal_focused() {
                                 notify_turn_complete(&app.active_agent);
                             }
-                            let _ = stdout().write_all(b"\x07");
-                            let _ = stdout().flush();
+                            if app.sounds_enabled() {
+                                let _ = stdout().write_all(b"\x07");
+                                let _ = stdout().flush();
+                            }
                         }
                         if matches!(&event, AgentEvent::TurnComplete { .. })
                             && let Some(queued) = app.next_queued_prompt().cloned()

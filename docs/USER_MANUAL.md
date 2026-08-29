@@ -85,6 +85,7 @@ The configuration panel includes compact/comfortable density, normal/hidden
 scrollbar, thought visibility, tool-detail expansion, diff view, and an
 optional notification toggle. On Linux notifications use `notify-send`; on
 macOS they use `osascript` when the corresponding system tool is available.
+The notification and sound toggles are independent.
 System notifications are emitted only while the terminal reports focus lost;
 the terminal bell remains available on turn completion when notifications are
 enabled. Terminals that do not report focus changes keep the app in the safe

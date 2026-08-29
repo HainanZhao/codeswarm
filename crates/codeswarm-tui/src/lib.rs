@@ -583,6 +583,7 @@ pub struct App {
     config_selected: usize,
     collapse_details: bool,
     notifications: bool,
+    sounds: bool,
     terminal_focused: bool,
     show_thoughts: bool,
     expand_tools: bool,
@@ -626,6 +627,7 @@ impl Default for App {
             config_selected: 0,
             collapse_details: true,
             notifications: false,
+            sounds: true,
             terminal_focused: true,
             show_thoughts: false,
             expand_tools: false,
@@ -909,7 +911,7 @@ impl App {
                 ConfigAction::Changed
             }
             ConfigKey::Down => {
-                self.config_selected = self.config_selected.saturating_add(1).min(11);
+                self.config_selected = self.config_selected.saturating_add(1).min(12);
                 ConfigAction::Changed
             }
             ConfigKey::Confirm => {
@@ -963,7 +965,8 @@ impl App {
                         };
                     }
                     9 => self.show_scrollbar = !self.show_scrollbar,
-                    10..=11 => {}
+                    10 => self.sounds = !self.sounds,
+                    11..=12 => {}
                     _ => return ConfigAction::Ignored,
                 }
                 self.status = "configuration updated".into();
@@ -986,6 +989,14 @@ impl App {
 
     pub fn set_notifications_enabled(&mut self, enabled: bool) {
         self.notifications = enabled;
+    }
+
+    pub fn sounds_enabled(&self) -> bool {
+        self.sounds
+    }
+
+    pub fn set_sounds_enabled(&mut self, enabled: bool) {
+        self.sounds = enabled;
     }
 
     /// Track terminal focus separately from the notification preference. A
@@ -2055,6 +2066,7 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
             },
             true,
         ),
+        ("Sounds", if app.sounds { "On" } else { "Off" }, true),
         ("Renderer", "Inline · tmux safe", false),
         ("Agent store", "Run /agents", false),
     ];
@@ -2066,7 +2078,13 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
             .add_modifier(Modifier::BOLD),
     ));
     lines.push(Line::raw(""));
-    for (index, (label, value, mutable)) in rows.iter().enumerate() {
+    let row_capacity = usize::from(modal.height.saturating_sub(4)).max(1);
+    let start = app
+        .config_selected
+        .saturating_sub(row_capacity.saturating_sub(1))
+        .min(rows.len().saturating_sub(1));
+    let end = (start + row_capacity).min(rows.len());
+    for (index, (label, value, mutable)) in rows.iter().enumerate().take(end).skip(start) {
         let selected = index == app.config_selected;
         let marker = if selected { "▶" } else { " " };
         let value_style = if *mutable {
@@ -2092,6 +2110,7 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
                 "Tool details" => "Tools",
                 "Density" => "Density",
                 "Scrollbar" => "Scroll",
+                "Sounds" => "Sound",
                 "Collaboration" => "Collab",
                 "Renderer" => "Render",
                 "Agent store" => "Agents",
@@ -2111,7 +2130,11 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        " ↑/↓ select · Enter change · Esc close",
+        format!(
+            " ↑/↓ select · Enter change · Esc close  ({}/{})",
+            app.config_selected + 1,
+            rows.len()
+        ),
         Style::default().fg(Color::Gray),
     ));
     Paragraph::new(lines)
@@ -3260,6 +3283,23 @@ mod tests {
     }
 
     #[test]
+    fn sound_preference_is_separate_from_completion_notifications() {
+        let mut app = App::default();
+        assert!(app.sounds_enabled());
+        assert!(!app.notifications_enabled());
+        app.handle_local_command("/config");
+        for _ in 0..10 {
+            app.handle_config_key(ConfigKey::Down);
+        }
+        assert_eq!(
+            app.handle_config_key(ConfigKey::Confirm),
+            ConfigAction::Changed
+        );
+        assert!(!app.sounds_enabled());
+        assert!(!app.notifications_enabled());
+    }
+
+    #[test]
     fn tool_expand_policy_matches_python_fail_always_never_choices() {
         let tool = |status| codeswarm_core::AgentEvent::Tool {
             slot: 0,
@@ -3495,6 +3535,23 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(config.contains("Follow"), "rendered={config:?}");
+        for _ in 0..12 {
+            app.handle_config_key(ConfigKey::Down);
+        }
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw scrolled compact config");
+        let scrolled_config = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            scrolled_config.contains("Sound"),
+            "rendered={scrolled_config:?}"
+        );
         app.handle_config_key(ConfigKey::Cancel);
         app.show_store(vec![StoreAgent {
             identity: "mobile.example".into(),
