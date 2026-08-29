@@ -10,6 +10,7 @@ use codeswarm_adapters::{
     AcpAdapter, AdapterError, AdapterHost, AdapterResult, AgentAdapter, AgyAdapter, RelayHost,
 };
 use codeswarm_core::PermissionAnswer;
+use codeswarm_core::launcher::{LaunchDecision, launch_decision};
 use codeswarm_core::{AgentEvent, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{App, render};
@@ -44,6 +45,7 @@ enum AdapterControl {
 
 enum Launch {
     Preview,
+    Store,
     Agy {
         prompt: String,
     },
@@ -53,7 +55,7 @@ enum Launch {
     },
     Roster {
         specs: Vec<AgentSpec>,
-        prompt: String,
+        prompt: Option<String>,
         first_slot: usize,
         max_rounds: usize,
     },
@@ -68,7 +70,7 @@ enum AgentSpec {
 fn main() -> std::io::Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let alternate_screen = arguments.iter().any(|argument| argument == "--alt-screen");
-    let launch = parse_launch(&arguments);
+    let launch = parse_launch(&arguments).or_else(|| arguments.is_empty().then(bare_launch));
     let Some(launch) = launch else {
         println!(
             "CodeSwarm Rust preview. Use --demo, --agy PROMPT, --acp PROGRAM PROMPT, or repeated --roster agy:COMMAND/acp:PROGRAM PROMPT."
@@ -90,6 +92,7 @@ fn main() -> std::io::Result<()> {
     let mut terminal = Terminal::with_options(backend, TerminalOptions { viewport })?;
     let result = match launch {
         Launch::Preview => run_preview(&mut terminal),
+        Launch::Store => run_store(&mut terminal),
         Launch::Agy { prompt } => run_agy(&mut terminal, prompt),
         Launch::Acp { program, prompt } => run_acp(&mut terminal, program, prompt),
         Launch::Roster {
@@ -126,6 +129,69 @@ fn parse_launch(arguments: &[String]) -> Option<Launch> {
     let program = arguments.get(index + 1)?.clone();
     let prompt = arguments.get(index + 2)?.clone();
     Some(Launch::Acp { program, prompt })
+}
+
+fn bare_launch() -> Launch {
+    let settings = settings_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    bare_launch_from_settings(&settings)
+}
+
+fn bare_launch_from_settings(settings: &str) -> Launch {
+    let catalog = agent_catalog();
+    let identities = catalog
+        .iter()
+        .map(|(identity, _)| (*identity).to_owned())
+        .collect::<Vec<_>>();
+    match launch_decision(settings, &identities) {
+        LaunchDecision::Restore { identities } => {
+            let specs = identities
+                .iter()
+                .filter_map(|identity| {
+                    catalog
+                        .iter()
+                        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(identity))
+                        .map(|(_, spec)| spec.clone())
+                })
+                .collect::<Vec<_>>();
+            if specs.is_empty() {
+                Launch::Store
+            } else {
+                Launch::Roster {
+                    specs,
+                    prompt: None,
+                    first_slot: 0,
+                    max_rounds: 100,
+                }
+            }
+        }
+        LaunchDecision::OpenStore => Launch::Store,
+    }
+}
+
+fn settings_path() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .map(|root| root.join("codeswarm").join("codeswarm.json"))
+}
+
+fn agent_catalog() -> Vec<(&'static str, AgentSpec)> {
+    vec![
+        ("antigravity.google.com", AgentSpec::Agy("agy".into())),
+        (
+            "claude.com",
+            AgentSpec::Acp("npx -y @agentclientprotocol/claude-agent-acp".into()),
+        ),
+        ("geminicli.com", AgentSpec::Acp("gemini --acp".into())),
+        (
+            "openai.com",
+            AgentSpec::Acp("npx -y @agentclientprotocol/codex-acp".into()),
+        ),
+        ("opencode.ai", AgentSpec::Acp("opencode acp".into())),
+        ("qwen.ai", AgentSpec::Acp("qwen --acp".into())),
+    ]
 }
 
 fn parse_roster_launch(arguments: &[String]) -> Option<Launch> {
@@ -168,7 +234,7 @@ fn parse_roster_launch(arguments: &[String]) -> Option<Launch> {
     }
     Some(Launch::Roster {
         specs,
-        prompt: prompt?,
+        prompt: Some(prompt?),
         first_slot,
         max_rounds,
     })
@@ -184,6 +250,23 @@ fn parse_agent_spec(value: &str) -> Option<AgentSpec> {
         "acp" => Some(AgentSpec::Acp(command.to_owned())),
         _ => None,
     }
+}
+
+fn split_command(command: &str) -> (String, Vec<String>) {
+    let mut parts = command.split_whitespace();
+    let program = parts.next().unwrap_or_default().to_owned();
+    (program, parts.map(ToOwned::to_owned).collect())
+}
+
+fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
+    let mut app = App::default();
+    app.set_header("CodeSwarm agent store", "select a roster with --roster");
+    app.transcript.append(
+        BlockKind::Notice,
+        "No usable saved roster was found. Start an explicit roster with repeated --roster flags.",
+        false,
+    );
+    run_terminal(terminal, &mut app, None, None, None)
 }
 
 fn run_preview(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
@@ -206,12 +289,12 @@ fn run_agy(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     prompt: String,
 ) -> std::io::Result<()> {
-    run_agy_command(terminal, prompt, "agy")
+    run_agy_command(terminal, Some(prompt), "agy")
 }
 
 fn run_agy_command(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    prompt: String,
+    prompt: Option<String>,
     command: &str,
 ) -> std::io::Result<()> {
     let (events, controls) = spawn_agy_command(prompt, command.to_owned());
@@ -225,13 +308,13 @@ fn run_acp(
     program: String,
     prompt: String,
 ) -> std::io::Result<()> {
-    run_acp_program(terminal, program, prompt)
+    run_acp_program(terminal, program, Some(prompt))
 }
 
 fn run_acp_program(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     program: String,
-    prompt: String,
+    prompt: Option<String>,
 ) -> std::io::Result<()> {
     let (events, controls) = spawn_acp(program.clone(), prompt);
     let mut app = App::default();
@@ -242,7 +325,7 @@ fn run_acp_program(
 fn run_roster(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     specs: Vec<AgentSpec>,
-    prompt: String,
+    prompt: Option<String>,
     first_slot: usize,
     max_rounds: usize,
 ) -> std::io::Result<()> {
@@ -265,7 +348,7 @@ fn run_roster(
 }
 
 fn spawn_agy_command(
-    prompt: String,
+    prompt: Option<String>,
     command: String,
 ) -> (
     Receiver<AdapterResult<AgentEvent>>,
@@ -280,7 +363,7 @@ fn spawn_agy_command(
 fn run_agy_task(
     sender: Sender<AdapterResult<AgentEvent>>,
     mut controls: tokio::sync::mpsc::UnboundedReceiver<AdapterControl>,
-    prompt: String,
+    prompt: Option<String>,
     command: String,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -302,7 +385,9 @@ fn run_agy_task(
             let _ = sender.send(Err(error));
             return;
         }
-        if let Err(error) = adapter.send_prompt(prompt).await {
+        if let Some(prompt) = prompt
+            && let Err(error) = adapter.send_prompt(prompt).await
+        {
             let _ = sender.send(Err(error));
             return;
         }
@@ -342,14 +427,15 @@ fn run_agy_task(
 
 fn spawn_acp(
     program: String,
-    prompt: String,
+    prompt: Option<String>,
 ) -> (
     Receiver<AdapterResult<AgentEvent>>,
     tokio::sync::mpsc::UnboundedSender<AdapterControl>,
 ) {
     let (sender, receiver) = mpsc::channel();
     let (controls, control_receiver) = tokio::sync::mpsc::unbounded_channel();
-    thread::spawn(move || run_acp_task(sender, control_receiver, program, prompt));
+    let (program, args) = split_command(&program);
+    thread::spawn(move || run_acp_task(sender, control_receiver, program, args, prompt));
     (receiver, controls)
 }
 
@@ -357,7 +443,8 @@ fn run_acp_task(
     sender: Sender<AdapterResult<AgentEvent>>,
     mut controls: tokio::sync::mpsc::UnboundedReceiver<AdapterControl>,
     program: String,
-    prompt: String,
+    args: Vec<String>,
+    prompt: Option<String>,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -373,12 +460,14 @@ fn run_acp_task(
     };
     runtime.block_on(async move {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let mut adapter = AcpAdapter::new(0, cwd, program, Vec::new());
+        let mut adapter = AcpAdapter::new(0, cwd, program, args);
         if let Err(error) = adapter.start().await {
             let _ = sender.send(Err(error));
             return;
         }
-        if let Err(error) = adapter.send_prompt(prompt).await {
+        if let Some(prompt) = prompt
+            && let Err(error) = adapter.send_prompt(prompt).await
+        {
             let _ = sender.send(Err(error));
             return;
         }
@@ -418,7 +507,7 @@ fn run_acp_task(
 
 fn spawn_relay(
     specs: Vec<AgentSpec>,
-    prompt: String,
+    prompt: Option<String>,
     first_slot: usize,
     max_rounds: usize,
 ) -> (
@@ -444,7 +533,7 @@ fn run_relay_task(
     sender: Sender<AdapterResult<AgentEvent>>,
     mut controls: tokio::sync::mpsc::UnboundedReceiver<AdapterControl>,
     specs: Vec<AgentSpec>,
-    prompt: String,
+    prompt: Option<String>,
     first_slot: usize,
     max_rounds: usize,
 ) {
@@ -468,8 +557,9 @@ fn run_relay_task(
                     AgentSpec::Agy(command) => {
                         Box::new(AgyAdapter::new(slot, cwd.clone(), command))
                     }
-                    AgentSpec::Acp(program) => {
-                        Box::new(AcpAdapter::new(slot, cwd.clone(), program, Vec::new()))
+                    AgentSpec::Acp(command) => {
+                        let (program, args) = split_command(&command);
+                        Box::new(AcpAdapter::new(slot, cwd.clone(), program, args))
                     }
                 };
                 AdapterHost::new(adapter, None)
@@ -490,7 +580,9 @@ fn run_relay_task(
             let _ = sender.send(Err(error));
             return;
         }
-        if let Err(error) = relay.run_turn(prompt, first_slot).await {
+        if let Some(prompt) = prompt
+            && let Err(error) = relay.run_turn(prompt, first_slot).await
+        {
             let _ = sender.send(Err(error));
             return;
         }
@@ -723,7 +815,7 @@ fn event_log() -> std::io::Result<EventLog> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentSpec, Launch, parse_launch};
+    use super::{AgentSpec, Launch, bare_launch_from_settings, parse_launch};
 
     #[test]
     fn parses_native_agent_prompt_without_treating_it_as_acp() {
@@ -762,7 +854,7 @@ mod tests {
                 first_slot: 1,
                 max_rounds: 12,
             }) if specs == [AgentSpec::Agy("agy".into()), AgentSpec::Acp("codex-acp".into())]
-                && prompt == "review the patch"
+                && prompt == Some("review the patch".into())
         ));
     }
 
@@ -781,5 +873,28 @@ mod tests {
             ])
             .is_none()
         );
+    }
+
+    #[test]
+    fn bare_launch_restores_catalogued_saved_roster() {
+        assert!(matches!(
+            bare_launch_from_settings(
+                r#"{"launcher":{"roster":"OPENAI.COM\nantigravity.google.com"}}"#
+            ),
+            Launch::Roster { specs, prompt: None, first_slot: 0, max_rounds: 100 }
+                if specs == [
+                    AgentSpec::Acp("npx -y @agentclientprotocol/codex-acp".into()),
+                    AgentSpec::Agy("agy".into())
+                ]
+        ));
+    }
+
+    #[test]
+    fn bare_launch_opens_store_for_missing_or_stale_settings() {
+        assert!(matches!(bare_launch_from_settings("{}"), Launch::Store));
+        assert!(matches!(
+            bare_launch_from_settings(r#"{"launcher":{"roster":"removed.ai"}}"#),
+            Launch::Store
+        ));
     }
 }
