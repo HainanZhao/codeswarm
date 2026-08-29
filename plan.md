@@ -48,6 +48,42 @@ The Python implementation remains the behavior oracle until the Rust client is
 the default. Do not delete Python code as part of the first implementation
 slice.
 
+## Implementation Status — 2026-08-29
+
+Completed on branch \`rewrite/rust-ratatui-architecture\`:
+
+- [x] Created the Rust Cargo workspace and the \`codeswarm-core\`,
+  \`codeswarm-adapters\`, \`codeswarm-transcript\`, \`codeswarm-tui\`, and
+  \`codeswarm-cli\` crates.
+- [x] Added deterministic 5,000-word and 100-turn transcript fixtures, a
+  benchmark binary, a cached viewport transcript renderer, and a real tmux
+  smoke test.
+- [x] Added a 5,000-word cached-scroll regression budget (<100ms), bounded
+  visible rows, and stream-chunk coalescing into one logical transcript block.
+- [x] Added framework-independent normalized events, a replayable JSONL event
+  log, a sequential relay scheduler, shared permission-policy resolution, and
+  bounded per-agent public-context watermarks.
+- [x] Added ACP stdio initialization/session creation/prompt lifecycle and a
+  native Agy stream-JSON adapter under one \`AgentAdapter\` contract.
+- [x] Added an inline Ratatui terminal preview with optional alternate screen,
+  live adapter event rendering, follow-up prompt dispatch, cancellation, and
+  durable user-local event logging.
+- [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
+  \`make rust-tmux\`.
+
+Still required before cutover:
+
+- [ ] Full relay execution wired to live adapters and the public-context
+  journal, including selected-first routing, direct/private turns, pause, and
+  reviewer-only stop handling.
+- [ ] Adapter parity for permission answers, terminal lifecycle, session
+  loading/reload, roster-slot recovery, and capability/mode replacement.
+- [ ] Production terminal UI parity: roster, queue controls, permission UI,
+  lazy tool/diff/terminal detail, launcher/settings, and a complete inline
+  interaction model.
+- [ ] Persistence migration/import, shared trace-corpus comparison, dogfooding,
+  preview release, and staged default cutover.
+
 ## Phase 0 — Baseline and Performance Harness
 
 **Purpose:** Make “fast in tmux” falsifiable before a renderer exists.
