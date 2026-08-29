@@ -11,11 +11,18 @@ use codeswarm_core::AgentEvent;
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{App, render};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
+
+#[derive(Debug)]
+enum AdapterControl {
+    Prompt(String),
+    Cancel,
+    Stop,
+}
 
 enum Launch {
     Preview,
@@ -88,17 +95,17 @@ fn run_preview(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> st
         fixtures::five_thousand_word_reply(),
         false,
     );
-    run_terminal(terminal, &mut app, None)
+    run_terminal(terminal, &mut app, None, None)
 }
 
 fn run_agy(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     prompt: String,
 ) -> std::io::Result<()> {
-    let events = spawn_agy(prompt);
+    let (events, controls) = spawn_agy(prompt);
     let mut app = App::default();
     app.set_header("Antigravity", "starting");
-    run_terminal(terminal, &mut app, Some(events))
+    run_terminal(terminal, &mut app, Some(events), Some(controls))
 }
 
 fn run_acp(
@@ -106,19 +113,29 @@ fn run_acp(
     program: String,
     prompt: String,
 ) -> std::io::Result<()> {
-    let events = spawn_acp(program.clone(), prompt);
+    let (events, controls) = spawn_acp(program.clone(), prompt);
     let mut app = App::default();
     app.set_header(program, "starting");
-    run_terminal(terminal, &mut app, Some(events))
+    run_terminal(terminal, &mut app, Some(events), Some(controls))
 }
 
-fn spawn_agy(prompt: String) -> Receiver<AdapterResult<AgentEvent>> {
+fn spawn_agy(
+    prompt: String,
+) -> (
+    Receiver<AdapterResult<AgentEvent>>,
+    tokio::sync::mpsc::UnboundedSender<AdapterControl>,
+) {
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || run_agy_task(sender, prompt));
-    receiver
+    let (controls, control_receiver) = tokio::sync::mpsc::unbounded_channel();
+    thread::spawn(move || run_agy_task(sender, control_receiver, prompt));
+    (receiver, controls)
 }
 
-fn run_agy_task(sender: Sender<AdapterResult<AgentEvent>>, prompt: String) {
+fn run_agy_task(
+    sender: Sender<AdapterResult<AgentEvent>>,
+    mut controls: tokio::sync::mpsc::UnboundedReceiver<AdapterControl>,
+    prompt: String,
+) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .build()
@@ -142,23 +159,54 @@ fn run_agy_task(sender: Sender<AdapterResult<AgentEvent>>, prompt: String) {
             let _ = sender.send(Err(error));
             return;
         }
-        while let Some(event) = adapter.next_event().await {
-            let complete = matches!(event, Ok(AgentEvent::TurnComplete { .. }));
-            if sender.send(event).is_err() || complete {
-                break;
+        loop {
+            tokio::select! {
+                event = adapter.next_event() => match event {
+                    Some(event) => {
+                        if sender.send(event).is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                },
+                command = controls.recv() => match command {
+                    Some(AdapterControl::Prompt(prompt)) => {
+                        if let Err(error) = adapter.send_prompt(prompt).await {
+                            let _ = sender.send(Err(error));
+                        }
+                    }
+                    Some(AdapterControl::Cancel) => {
+                        if let Err(error) = adapter.cancel().await {
+                            let _ = sender.send(Err(error));
+                        }
+                    }
+                    Some(AdapterControl::Stop) | None => break,
+                },
             }
         }
         let _ = adapter.stop().await;
     });
 }
 
-fn spawn_acp(program: String, prompt: String) -> Receiver<AdapterResult<AgentEvent>> {
+fn spawn_acp(
+    program: String,
+    prompt: String,
+) -> (
+    Receiver<AdapterResult<AgentEvent>>,
+    tokio::sync::mpsc::UnboundedSender<AdapterControl>,
+) {
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || run_acp_task(sender, program, prompt));
-    receiver
+    let (controls, control_receiver) = tokio::sync::mpsc::unbounded_channel();
+    thread::spawn(move || run_acp_task(sender, control_receiver, program, prompt));
+    (receiver, controls)
 }
 
-fn run_acp_task(sender: Sender<AdapterResult<AgentEvent>>, program: String, prompt: String) {
+fn run_acp_task(
+    sender: Sender<AdapterResult<AgentEvent>>,
+    mut controls: tokio::sync::mpsc::UnboundedReceiver<AdapterControl>,
+    program: String,
+    prompt: String,
+) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .build()
@@ -182,10 +230,29 @@ fn run_acp_task(sender: Sender<AdapterResult<AgentEvent>>, program: String, prom
             let _ = sender.send(Err(error));
             return;
         }
-        while let Some(event) = adapter.next_event().await {
-            let complete = matches!(event, Ok(AgentEvent::TurnComplete { .. }));
-            if sender.send(event).is_err() || complete {
-                break;
+        loop {
+            tokio::select! {
+                event = adapter.next_event() => match event {
+                    Some(event) => {
+                        if sender.send(event).is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                },
+                command = controls.recv() => match command {
+                    Some(AdapterControl::Prompt(prompt)) => {
+                        if let Err(error) = adapter.send_prompt(prompt).await {
+                            let _ = sender.send(Err(error));
+                        }
+                    }
+                    Some(AdapterControl::Cancel) => {
+                        if let Err(error) = adapter.cancel().await {
+                            let _ = sender.send(Err(error));
+                        }
+                    }
+                    Some(AdapterControl::Stop) | None => break,
+                },
             }
         }
         let _ = adapter.stop().await;
@@ -196,6 +263,7 @@ fn run_terminal(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
     events: Option<Receiver<AdapterResult<AgentEvent>>>,
+    controls: Option<tokio::sync::mpsc::UnboundedSender<AdapterControl>>,
 ) -> std::io::Result<()> {
     loop {
         if let Some(events) = &events {
@@ -216,7 +284,12 @@ fn run_terminal(
             }
             let size = terminal.size()?;
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    if let Some(controls) = &controls {
+                        let _ = controls.send(AdapterControl::Stop);
+                    }
+                    return Ok(());
+                }
                 KeyCode::Down | KeyCode::Char('j') => app.scroll_by(
                     1,
                     size.width as usize,
@@ -229,6 +302,19 @@ fn run_terminal(
                 ),
                 KeyCode::End => {
                     app.follow_tail(size.width as usize, size.height.saturating_sub(4) as usize)
+                }
+                KeyCode::Enter if !app.prompt.trim().is_empty() => {
+                    if let Some(controls) = &controls {
+                        let prompt = std::mem::take(&mut app.prompt);
+                        let _ = controls.send(AdapterControl::Prompt(prompt));
+                        app.status = "queued".into();
+                    }
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(controls) = &controls {
+                        let _ = controls.send(AdapterControl::Cancel);
+                        app.status = "cancelling".into();
+                    }
                 }
                 KeyCode::Char(character) => app.prompt.push(character),
                 KeyCode::Backspace => {
