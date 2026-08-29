@@ -780,6 +780,22 @@ impl RelayHost {
                 serde_json::Value::String(owner_name.clone()),
             );
             data.insert(
+                "title".into(),
+                serde_json::Value::String(owner_name.clone()),
+            );
+            data.insert(
+                "agent".into(),
+                serde_json::Value::String(owner_name.clone()),
+            );
+            data.insert(
+                "agent_identity".into(),
+                serde_json::Value::String(owner_identity.clone()),
+            );
+            data.insert(
+                "protocol".into(),
+                serde_json::Value::String(owner.adapter().protocol().into()),
+            );
+            data.insert(
                 "agent_data".into(),
                 serde_json::json!({
                     "name": owner_name,
@@ -4141,6 +4157,9 @@ mod tests {
         let agent_data = loaded.get("agent_data").expect("owner metadata");
         assert_eq!(agent_data["identity"], "claude.ai");
         assert_eq!(agent_data["protocol"], "custom");
+        assert_eq!(loaded.get("agent"), Some(&serde_json::json!("Claude Code")));
+        assert_eq!(loaded.get("title"), Some(&serde_json::json!("Claude Code")));
+        assert_eq!(loaded.get("protocol"), Some(&serde_json::json!("custom")));
         assert_eq!(
             loaded.get("agent_supports_load_session"),
             Some(&serde_json::json!(false))
