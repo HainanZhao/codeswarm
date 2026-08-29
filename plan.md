@@ -95,9 +95,9 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 
 Still required before cutover:
 
-- [ ] Full relay execution wired to live adapters and the public-context
-  journal, including selected-first routing, direct/private turns, pause, and
-  reviewer-only stop handling.
+- [ ] Wire the completed relay host into the production CLI roster UX,
+  including selected-first routing, direct/private turns, queued-message
+  controls, and reviewer-only stop handling.
 - [ ] Adapter parity for permission answers, terminal lifecycle, session
   loading/reload, roster-slot recovery, and capability/mode replacement.
 - [ ] Production terminal UI parity: roster, queue controls, permission UI,
