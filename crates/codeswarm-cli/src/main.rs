@@ -250,7 +250,7 @@ fn normalize_arguments(mut arguments: Vec<String>) -> Vec<String> {
 
 fn print_help() {
     println!(
-        "CodeSwarm — fast tmux-first terminal workspace\n\nUsage:\n  codeswarm [OPTIONS] [PROMPT]\n  codeswarm run [PATH] [OPTIONS] [PROMPT]\n  codeswarm acp COMMAND [PATH]\n\nOptions:\n  --demo                         Run the local UI preview\n  --agy PROMPT                   Run the native Agy adapter\n  --acp PROGRAM [PROMPT]         Run an ACP adapter\n  --roster KIND:COMMAND          Add a native/ACP roster member (repeatable)\n  --first N                      Select the first roster slot (zero-based)\n  --max-rounds N                 Limit automated relay turns\n  --project-dir PATH             Use PATH as the workspace\n  --alt-screen                   Use the alternate terminal screen\n  -h, --help                     Show this help\n  -v, --version                  Show the version\n\nPrompt commands include /config, /agents, /mode, /collab, /pause, /resume,\n/reload, /drop, /diff, /export, /clear, /close, and !command."
+        "CodeSwarm — fast tmux-first terminal workspace\n\nUsage:\n  codeswarm [OPTIONS] [PROMPT]\n  codeswarm run [PATH] [OPTIONS] [PROMPT]\n  codeswarm acp COMMAND [PATH]\n\nOptions:\n  -a, --agent NAME                Select a catalog agent (repeatable)\n  --demo                         Run the local UI preview\n  --agy PROMPT                   Run the native Agy adapter\n  --acp PROGRAM [PROMPT]         Run an ACP adapter\n  --roster KIND:COMMAND          Add a native/ACP roster member (repeatable)\n  --first N                      Select the first roster slot (zero-based)\n  --first-agent N                Select the first named agent (one-based)\n  --max-rounds N                 Limit automated relay turns\n  --project-dir PATH             Use PATH as the workspace\n  --alt-screen                   Use the alternate terminal screen\n  -h, --help                     Show this help\n  -v, --version                  Show the version\n\nPrompt commands include /config, /agents, /mode, /collab, /pause, /resume,\n/reload, /drop, /diff, /export, /clear, /close, and !command."
     );
 }
 
@@ -274,6 +274,12 @@ fn parse_launch(arguments: &[String]) -> Option<Launch> {
     if arguments.iter().any(|argument| argument == "--demo") {
         return Some(Launch::Preview);
     }
+    if arguments
+        .iter()
+        .any(|argument| argument == "-a" || argument == "--agent")
+    {
+        return parse_named_agent_launch(arguments);
+    }
     if let Some(index) = arguments.iter().position(|argument| argument == "--agy") {
         let prompt = arguments
             .get(index + 1)
@@ -291,6 +297,70 @@ fn parse_launch(arguments: &[String]) -> Option<Launch> {
         .filter(|prompt| !prompt.starts_with('-'))
         .cloned();
     Some(Launch::Acp { program, prompt })
+}
+
+fn parse_named_agent_launch(arguments: &[String]) -> Option<Launch> {
+    let settings = settings_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let catalog = catalog_from_settings(&settings);
+    let mut specs = Vec::new();
+    let mut first_slot = 0;
+    let mut max_rounds = 100;
+    let mut prompt = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "-a" | "--agent" => {
+                let name = arguments.get(index + 1)?.to_ascii_lowercase();
+                let agent = catalog.iter().find(|agent| {
+                    agent.active
+                        && (agent.identity.eq_ignore_ascii_case(&name)
+                            || agent.short_name.eq_ignore_ascii_case(&name)
+                            || agent
+                                .aliases
+                                .iter()
+                                .any(|alias| alias.eq_ignore_ascii_case(&name)))
+                })?;
+                specs.push(agent_spec(agent));
+                index += 2;
+            }
+            "--first-agent" => {
+                first_slot = arguments
+                    .get(index + 1)?
+                    .parse::<usize>()
+                    .ok()?
+                    .checked_sub(1)?;
+                index += 2;
+            }
+            "--max-rounds" => {
+                max_rounds = arguments.get(index + 1)?.parse().ok()?;
+                if max_rounds == 0 {
+                    return None;
+                }
+                index += 2;
+            }
+            "--project-dir" => index += 2,
+            "--alt-screen" => index += 1,
+            value if !value.starts_with('-') => {
+                if prompt.is_some() {
+                    return None;
+                }
+                prompt = Some(value.to_owned());
+                index += 1;
+            }
+            _ => return None,
+        }
+    }
+    if specs.is_empty() || first_slot >= specs.len() {
+        return None;
+    }
+    Some(Launch::Roster {
+        specs,
+        prompt,
+        first_slot,
+        max_rounds,
+    })
 }
 
 fn bare_launch() -> Launch {
@@ -2001,6 +2071,26 @@ mod tests {
                 max_rounds: 12,
             }) if specs == [AgentSpec::Agy("agy".into()), AgentSpec::Acp("codex-acp".into())]
                 && prompt == Some("review the patch".into())
+        ));
+    }
+
+    #[test]
+    fn parses_python_named_agent_selection_into_the_same_mixed_roster() {
+        assert!(matches!(
+            parse_launch(&[
+                "-a".into(),
+                "claude".into(),
+                "--agent".into(),
+                "codex".into(),
+                "--first-agent".into(),
+                "2".into(),
+                "review the patch".into(),
+            ]),
+            Some(Launch::Roster { specs, prompt: Some(prompt), first_slot: 1, .. })
+                if specs == [
+                    AgentSpec::Acp("npx -y @agentclientprotocol/claude-agent-acp".into()),
+                    AgentSpec::Acp("npx -y @agentclientprotocol/codex-acp".into()),
+                ] && prompt == "review the patch"
         ));
     }
 

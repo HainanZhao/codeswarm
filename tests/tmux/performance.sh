@@ -15,9 +15,11 @@ pane_target="${session_name}:0.0"
 frame_budget_ms="${CODESWARM_TMUX_FRAME_BUDGET_MS:-100}"
 resize_budget_ms="${CODESWARM_TMUX_RESIZE_BUDGET_MS:-500}"
 scroll_key_count=20
+state_dir="$(mktemp -d "${TMPDIR:-/tmp}/codeswarm-performance-state.XXXXXX")"
 
 cleanup() {
   tmux -L "$socket_name" kill-server 2>/dev/null || true
+  rm -rf -- "$state_dir"
 }
 trap cleanup EXIT INT TERM
 
@@ -48,7 +50,7 @@ fi
 echo "5k-word cached scroll: ${scroll_ms}ms (${scroll_rows} rows; budget <100ms)"
 
 binary="$project_root/target/debug/codeswarm"
-command="cd $(printf '%q' "$project_root") && TERM=xterm-256color $(printf '%q' "$binary") --demo"
+command="cd $(printf '%q' "$project_root") && XDG_STATE_HOME=$(printf '%q' "$state_dir") TERM=xterm-256color $(printf '%q' "$binary") --demo"
 tmux -L "$socket_name" new-session -d -x 80 -y 24 -s "$session_name" "$command"
 
 capture() {

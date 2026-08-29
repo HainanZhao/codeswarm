@@ -45,6 +45,9 @@ Launch a mixed roster with repeated `--roster` arguments:
 codeswarm --roster "acp:codex-acp" --roster "agy:agy" "review the patch"
 ```
 
+Catalog agents can also be selected by name with repeated `-a`/`--agent`
+options, for example `codeswarm run -a claude -a codex "review the patch"`.
+
 Adapters are intentionally not forced through ACP. Native adapters and custom
 ACP commands can coexist in one roster.
 
