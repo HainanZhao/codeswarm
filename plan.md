@@ -163,8 +163,15 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 - [x] Restore Python-compatible notification policy (`blur`, `always`,
   `never`) for completion and permission events, with independent sound
   control and persisted settings.
+- [x] Restore title-blink preference and reference-counted, sanitized terminal
+  alerts for unattended permission prompts.
 - [x] Restore the Python path-completion threshold and lightweight source-file
   reference styling without putting repository indexing on the scroll path.
+- [x] Add a bounded asynchronous workspace path index and picker with
+  `.gitignore` filtering, quoted/directory insertion, and stale-generation
+  protection across workspace changes.
+- [x] Harden session metadata writes with fsynced temporary files and atomic
+  replacement, including parent-directory creation.
 - [x] Integrated resize settling and latest-state frame recovery into a
   reusable TUI render loop with deterministic backpressure tests.
 - [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
