@@ -117,6 +117,9 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 - [x] Enhanced the production preview HUD with typed transcript colors,
   conversation/prompt framing, status-state colors, and a tmux-verified
   inline release build; styling remains on the cached viewport path.
+- [x] Replaced the display-only prompt with a Ratatui/tui-textarea editor:
+  multiline Unicode-safe editing, bounded history, slash completion, local
+  commands, and readable command/config/help feedback.
 - [x] Added terminal queue/help interaction state: queued and direct prompts,
   target selection, cancellation, follow-tail behavior, and inline keyboard
   help rendering.
