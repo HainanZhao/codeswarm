@@ -21,6 +21,10 @@ session in a different workspace.
 compatibility with the previous launcher. `codeswarm --help` and
 `codeswarm --version` work before the terminal UI starts.
 
+`codeswarm resume [PATH]` restores the saved roster and provider conversation
+for the project when the previous owner supports session loading. A normal
+`codeswarm` launch always starts a fresh provider session.
+
 The store reads custom agents from
 `$XDG_CONFIG_HOME/codeswarm/codeswarm.json` (default:
 `~/.config/codeswarm/codeswarm.json`). Add an `agents` array or object with
@@ -72,7 +76,7 @@ bounded to preserve tmux responsiveness.
 - `/mode` — focus mode settings; `/mode chat` selects chat mode.
 - `/collab` — focus collaboration settings;
   `/collab roster`, `/collab manual`, and `/collab pair` select a strategy.
-- `/pause` and `/resume` — pause or resume a multi-agent relay.
+- `codeswarm resume [PATH]` — reopen the last provider-backed session for a project.
 - `/reload` — retry the most recently crashed adapter in place.
 - `/drop` — remove the most recently crashed peer; `/drop SLOT` removes a
   peer by zero-based roster slot (slot 0 is the owner).

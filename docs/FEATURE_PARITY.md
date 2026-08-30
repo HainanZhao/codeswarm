@@ -20,7 +20,7 @@ matrix records behavior, not widget-level implementation details.
 | Relay manual mode | Implemented | Explicitly targeted follow-ups; no implicit handoff. |
 | Relay pair mode | Implemented | Owner/reviewer alternation. |
 | Reviewer stop token | Implemented | Prompt guidance, filtering, and batch termination tests. |
-| Pause/resume/cancel/queue | Implemented | CLI controls and relay cancellation. |
+| Resume/cancel/queue | Implemented | Project-session resume, turn cancellation, and queued prompts. |
 | Mode policy synchronization | Implemented | Advertised catalogs drive the config picker, Auto pilot synchronizes once per loaded slot, and semantic selections translate through adapter-native IDs. |
 | First-turn roster guidance | Implemented | Each relay agent receives a one-time identity/collaborator introduction; reloads receive it again. |
 | Adapter crash attribution | Implemented | Native result failures, ACP transport errors, and relay EOFs tombstone their slot and emit a reloadable failure event; Unix children run in isolated process groups for descendant cleanup. |

@@ -84,8 +84,6 @@ pub enum LocalCommand {
     Handled,
     Close,
     Cancel,
-    Pause,
-    Resume,
     Mode,
     Collaboration,
     Export,
@@ -889,8 +887,6 @@ impl App {
         let result = match command.as_str() {
             "/quit" | "/exit" | "/close" => LocalCommand::Close,
             "/cancel" => LocalCommand::Cancel,
-            "/pause" => LocalCommand::Pause,
-            "/resume" => LocalCommand::Resume,
             "/mode" => {
                 if argument.is_empty() {
                     self.config_visible = true;
@@ -3220,7 +3216,7 @@ fn render_keyboard_help(buffer: &mut Buffer, area: Rect) {
     let lines = [
         " keys: ↑/↓ scroll · End follow tail · Tab details · Ctrl+K cancel queue · ? hide help",
         " commands: /help  /config  /agents  /add  /export  /diff  /mode  /collab  /reload  /drop  /promote  /swap  /cd",
-        " /mode chat · /collab roster|manual|pair · /pause · /resume",
+        " /mode chat · /collab roster|manual|pair",
         " /clear clears the local transcript · /close exits the session",
         " Ctrl+Enter sends to the selected agent · Ctrl+C cancels active work",
         " Tab completes a slash command · Shift+Enter inserts a newline",
@@ -5022,14 +5018,6 @@ mod tests {
             Some(LocalCommand::Agents)
         );
         assert_eq!(
-            app.handle_local_command("/pause"),
-            Some(LocalCommand::Pause)
-        );
-        assert_eq!(
-            app.handle_local_command("/resume"),
-            Some(LocalCommand::Resume)
-        );
-        assert_eq!(
             app.handle_local_command("/add acp:reviewer --acp"),
             Some(LocalCommand::Add("acp:reviewer --acp".into()))
         );
@@ -5459,7 +5447,6 @@ mod tests {
         assert!(rendered.contains("/export"), "rendered={rendered:?}");
         assert!(rendered.contains("/collab"), "rendered={rendered:?}");
         assert!(rendered.contains("/mode"), "rendered={rendered:?}");
-        assert!(rendered.contains("/resume"), "rendered={rendered:?}");
         assert!(rendered.contains("/clear"), "rendered={rendered:?}");
     }
 

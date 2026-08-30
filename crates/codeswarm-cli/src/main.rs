@@ -145,8 +145,6 @@ enum AdapterControl {
         request_id: String,
         answer: PermissionAnswer,
     },
-    Pause,
-    Resume,
     SetStrategy(CollaborationStrategy),
     SetMode(String),
     Reload(usize),
@@ -257,7 +255,19 @@ enum AgentSpec {
 
 fn main() -> std::io::Result<()> {
     let raw_arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    let arguments = prepare_launch_arguments(raw_arguments);
+    let resume_requested = raw_arguments.first().is_some_and(|value| value == "resume");
+    let arguments = if resume_requested {
+        match raw_arguments.as_slice() {
+            [_] => Vec::new(),
+            [_, path] => vec!["--project-dir".into(), path.clone()],
+            _ => {
+                eprintln!("Usage: codeswarm resume [PATH]");
+                return Ok(());
+            }
+        }
+    } else {
+        prepare_launch_arguments(raw_arguments)
+    };
     if arguments
         .iter()
         .any(|argument| argument == "-h" || argument == "--help")
@@ -283,14 +293,18 @@ fn main() -> std::io::Result<()> {
         validate_project_directory(&path)?;
         std::env::set_current_dir(path)?;
     }
-    let launch = parse_launch(&arguments).or_else(|| {
-        (arguments.is_empty()
-            || (arguments.len() == 2 && arguments.first()? == "--project-dir")
-            || (arguments.len() == 1
-                && !arguments[0].starts_with('-')
-                && PathBuf::from(&arguments[0]).is_dir()))
-        .then(bare_launch)
-    });
+    let launch = if resume_requested {
+        Some(resume_launch()?)
+    } else {
+        parse_launch(&arguments).or_else(|| {
+            (arguments.is_empty()
+                || (arguments.len() == 2 && arguments.first()? == "--project-dir")
+                || (arguments.len() == 1
+                    && !arguments[0].starts_with('-')
+                    && PathBuf::from(&arguments[0]).is_dir()))
+            .then(bare_launch)
+        })
+    };
     let Some(launch) = launch else {
         eprintln!("Unknown or incomplete command. Run `codeswarm --help`.");
         return Ok(());
@@ -306,14 +320,23 @@ fn main() -> std::io::Result<()> {
     let result = match launch {
         Launch::Preview => run_preview(&mut terminal),
         Launch::Store => run_store(&mut terminal),
-        Launch::Agy { prompt } => run_agy(&mut terminal, prompt),
-        Launch::Acp { program, prompt } => run_acp(&mut terminal, program, prompt),
+        Launch::Agy { prompt } => run_agy(&mut terminal, prompt, resume_requested),
+        Launch::Acp { program, prompt } => {
+            run_acp(&mut terminal, program, prompt, resume_requested)
+        }
         Launch::Roster {
             specs,
             prompt,
             first_slot,
             max_rounds,
-        } => run_roster(&mut terminal, specs, prompt, first_slot, max_rounds),
+        } => run_roster(
+            &mut terminal,
+            specs,
+            prompt,
+            first_slot,
+            max_rounds,
+            resume_requested,
+        ),
     };
     let restore_result = terminal_session.restore();
     result.and(restore_result)
@@ -391,6 +414,7 @@ fn print_help() {
 
 Usage:
   codeswarm [OPTIONS] [PROMPT]
+  codeswarm resume [PATH]
   codeswarm run [PATH] [OPTIONS] [PROMPT]
   codeswarm acp COMMAND [PATH]
 
@@ -407,8 +431,8 @@ Options:
   -h, --help                      Show this help
   -v, --version                   Show the version
 
-Prompt commands include /config, /agents, /add, /mode, /collab, /pause, /resume,
-/reload, /drop, /promote, /swap, /diff, /export, /clear, /close, and !command."#
+Prompt commands include /config, /agents, /add, /mode, /collab, /reload, /drop,
+/promote, /swap, /diff, /export, /clear, /close, and !command."#
     );
 }
 
@@ -536,6 +560,80 @@ fn bare_launch() -> Launch {
         .and_then(|path| std::fs::read_to_string(path).ok())
         .unwrap_or_default();
     bare_launch_from_settings(&settings)
+}
+
+fn resume_launch() -> std::io::Result<Launch> {
+    let cwd = std::env::current_dir()?;
+    let metadata = SessionMetadataStore::open(session_metadata_path())
+        .read()
+        .map_err(|error| std::io::Error::other(error.to_string()))?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "No resumable CodeSwarm session for this project",
+            )
+        })?;
+    let settings = settings_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    resume_launch_from_metadata(&metadata, &cwd, &settings).map_err(std::io::Error::other)
+}
+
+fn resume_launch_from_metadata(
+    metadata: &SessionMetadata,
+    cwd: &Path,
+    settings: &str,
+) -> Result<Launch, String> {
+    let stored_cwd = metadata
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Saved session has no workspace".to_owned())?;
+    let stored_cwd = Path::new(stored_cwd)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(stored_cwd));
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    if stored_cwd != cwd {
+        return Err("No resumable CodeSwarm session for this project".into());
+    }
+    if metadata
+        .get("agent_supports_load_session")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+        || metadata
+            .get("owner_session_id")
+            .or_else(|| metadata.get("agent_session_id"))
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        return Err("The previous agent did not provide a resumable session".into());
+    }
+    let identities = metadata
+        .get("roster")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Saved session has no roster".to_owned())?;
+    let catalog = catalog_from_settings(settings);
+    let specs = identities
+        .iter()
+        .map(|identity| {
+            let identity = identity
+                .as_str()
+                .ok_or_else(|| "Saved session roster is invalid".to_owned())?;
+            catalog
+                .iter()
+                .find(|agent| agent.active && agent.identity.eq_ignore_ascii_case(identity))
+                .map(agent_spec)
+                .ok_or_else(|| format!("Saved agent is no longer available: {identity}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if specs.is_empty() {
+        return Err("Saved session has no active agents".into());
+    }
+    Ok(Launch::Roster {
+        specs,
+        prompt: None,
+        first_slot: 0,
+        max_rounds: 100,
+    })
 }
 
 fn bare_launch_from_settings(settings: &str) -> Launch {
@@ -952,7 +1050,7 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
                     })
                     .map(agent_spec)
                     .collect::<Vec<_>>();
-                return run_roster(terminal, specs, None, 0, 100);
+                return run_roster(terminal, specs, None, 0, 100, false);
             }
             StoreAction::Close => return Ok(()),
             StoreAction::Directory(_) => {}
@@ -1366,17 +1464,19 @@ fn run_preview(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> st
 fn run_agy(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     prompt: Option<String>,
+    resume: bool,
 ) -> std::io::Result<()> {
-    run_agy_command(terminal, prompt, "agy")
+    run_agy_command(terminal, prompt, "agy", resume)
 }
 
 fn run_agy_command(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     prompt: Option<String>,
     command: &str,
+    resume: bool,
 ) -> std::io::Result<()> {
     let initial_prompt = prompt.clone();
-    let (events, controls, worker) = spawn_agy_command(prompt, command.to_owned());
+    let (events, controls, worker) = spawn_agy_command(prompt, command.to_owned(), resume);
     let mut app = App::default();
     app.set_agent_name(0, display_agent_name(command));
     app.set_header(command, "starting");
@@ -1394,17 +1494,19 @@ fn run_acp(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     program: String,
     prompt: Option<String>,
+    resume: bool,
 ) -> std::io::Result<()> {
-    run_acp_program(terminal, program, prompt)
+    run_acp_program(terminal, program, prompt, resume)
 }
 
 fn run_acp_program(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     program: String,
     prompt: Option<String>,
+    resume: bool,
 ) -> std::io::Result<()> {
     let initial_prompt = prompt.clone();
-    let (events, controls, worker) = spawn_acp(program.clone(), prompt);
+    let (events, controls, worker) = spawn_acp(program.clone(), prompt, resume);
     let mut app = App::default();
     app.set_agent_name(0, display_agent_name(&program));
     app.set_header(program, "starting");
@@ -1426,11 +1528,12 @@ fn run_roster(
     prompt: Option<String>,
     first_slot: usize,
     max_rounds: usize,
+    resume: bool,
 ) -> std::io::Result<()> {
     if specs.len() == 1 {
         return match &specs[0] {
-            AgentSpec::Agy(command) => run_agy_command(terminal, prompt, command),
-            AgentSpec::Acp(program) => run_acp_program(terminal, program.clone(), prompt),
+            AgentSpec::Agy(command) => run_agy_command(terminal, prompt, command, resume),
+            AgentSpec::Acp(program) => run_acp_program(terminal, program.clone(), prompt, resume),
         };
     }
     let mut app = App::default();
@@ -1443,7 +1546,7 @@ fn run_roster(
     if let Some(prompt) = prompt.as_ref() {
         app.record_human_message(prompt, false);
     }
-    let (events, controls, worker) = spawn_relay(specs, prompt, first_slot, max_rounds);
+    let (events, controls, worker) = spawn_relay(specs, prompt, first_slot, max_rounds, resume);
     app.set_header("CodeSwarm roster", "starting");
     let shutdown = controls.clone();
     let result = run_terminal(
@@ -1461,6 +1564,7 @@ fn run_roster(
 fn spawn_agy_command(
     prompt: Option<String>,
     command: String,
+    resume: bool,
 ) -> (
     Receiver<AdapterResult<AgentEvent>>,
     tokio::sync::mpsc::UnboundedSender<AdapterControl>,
@@ -1468,7 +1572,8 @@ fn spawn_agy_command(
 ) {
     let (sender, receiver) = mpsc::channel();
     let (controls, control_receiver) = tokio::sync::mpsc::unbounded_channel();
-    let worker = thread::spawn(move || run_agy_task(sender, control_receiver, prompt, command));
+    let worker =
+        thread::spawn(move || run_agy_task(sender, control_receiver, prompt, command, resume));
     (receiver, controls, worker)
 }
 
@@ -1524,6 +1629,7 @@ fn run_agy_task(
     mut controls: tokio::sync::mpsc::UnboundedReceiver<AdapterControl>,
     prompt: Option<String>,
     command: String,
+    resume: bool,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -1541,7 +1647,7 @@ fn run_agy_task(
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let name = display_agent_name(&command);
         let identity = catalog_identity_for_command(&command);
-        let session_id = load_owner_session_id(&cwd, &name);
+        let session_id = resume.then(|| load_owner_session_id(&cwd, &name)).flatten();
         let mut adapter = session_id.map_or_else(
             || AgyAdapter::new(0, cwd.clone(), command.clone()),
             |session_id| AgyAdapter::with_session_id(0, cwd.clone(), command.clone(), session_id),
@@ -1630,8 +1736,6 @@ fn run_agy_task(
                     | Some(AdapterControl::Add(_)) => {}
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
-                    | Some(AdapterControl::Pause)
-                    | Some(AdapterControl::Resume)
                     | Some(AdapterControl::SetStrategy(_)) => {}
                     Some(AdapterControl::Stop) | None => break,
                 },
@@ -1647,6 +1751,7 @@ fn run_agy_task(
 fn spawn_acp(
     program: String,
     prompt: Option<String>,
+    resume: bool,
 ) -> (
     Receiver<AdapterResult<AgentEvent>>,
     tokio::sync::mpsc::UnboundedSender<AdapterControl>,
@@ -1663,8 +1768,9 @@ fn spawn_acp(
             return (receiver, controls, None);
         }
     };
-    let worker =
-        thread::spawn(move || run_acp_task(sender, control_receiver, program, args, prompt));
+    let worker = thread::spawn(move || {
+        run_acp_task(sender, control_receiver, program, args, prompt, resume)
+    });
     (receiver, controls, Some(worker))
 }
 
@@ -1674,6 +1780,7 @@ fn run_acp_task(
     program: String,
     args: Vec<String>,
     prompt: Option<String>,
+    resume: bool,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -1695,7 +1802,7 @@ fn run_acp_task(
             .join(" ");
         let name = display_agent_name(&command);
         let identity = catalog_identity_for_command(&command);
-        let session_id = load_owner_session_id(&cwd, &name);
+        let session_id = resume.then(|| load_owner_session_id(&cwd, &name)).flatten();
         let mut adapter = session_id.map_or_else(
             || AcpAdapter::new(0, cwd.clone(), program.clone(), args.clone()),
             |session_id| {
@@ -1792,8 +1899,6 @@ fn run_acp_task(
                     | Some(AdapterControl::Add(_)) => {}
                     Some(AdapterControl::Queue { .. })
                     | Some(AdapterControl::Direct { .. })
-                    | Some(AdapterControl::Pause)
-                    | Some(AdapterControl::Resume)
                     | Some(AdapterControl::SetStrategy(_)) => {}
                     Some(AdapterControl::Stop) | None => break,
                 },
@@ -1811,6 +1916,7 @@ fn spawn_relay(
     prompt: Option<String>,
     first_slot: usize,
     max_rounds: usize,
+    resume: bool,
 ) -> (
     Receiver<AdapterResult<AgentEvent>>,
     tokio::sync::mpsc::UnboundedSender<AdapterControl>,
@@ -1826,6 +1932,7 @@ fn spawn_relay(
             prompt,
             first_slot,
             max_rounds,
+            resume,
         )
     });
     (receiver, controls, worker)
@@ -1902,6 +2009,7 @@ fn run_relay_task(
     prompt: Option<String>,
     first_slot: usize,
     max_rounds: usize,
+    resume: bool,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -1921,9 +2029,13 @@ fn run_relay_task(
                 AgentSpec::Agy(command) | AgentSpec::Acp(command) => display_agent_name(command),
             })
             .collect::<Vec<_>>();
-        let owner_session_id = roster_names
-            .first()
-            .and_then(|name| load_owner_session_id(&cwd, name));
+        let owner_session_id = resume
+            .then(|| {
+                roster_names
+                    .first()
+                    .and_then(|name| load_owner_session_id(&cwd, name))
+            })
+            .flatten();
         let hosts = specs
             .into_iter()
             .enumerate()
@@ -2130,8 +2242,6 @@ fn run_relay_task(
                         let _ = sender.send(Err(error));
                     }
                 }
-                Some(AdapterControl::Pause) => relay.pause(),
-                Some(AdapterControl::Resume) => relay.resume(),
                 Some(AdapterControl::SetStrategy(strategy)) => relay.set_strategy(strategy),
                 Some(AdapterControl::SetMode(mode)) => {
                     if let Err(error) = relay.set_policy(mode).await {
@@ -2223,8 +2333,7 @@ fn run_terminal(
     app.load_prompt_history(load_prompt_history(&history_project_root));
     let completion_candidates = [
         "/add", "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/diff",
-        "/exit", "/export", "/help", "/mode", "/pause", "/quit", "/reload", "/drop", "/promote",
-        "/swap", "/resume",
+        "/exit", "/export", "/help", "/mode", "/quit", "/reload", "/drop", "/promote", "/swap",
     ]
     .into_iter()
     .map(String::from)
@@ -2720,23 +2829,6 @@ fn run_terminal(
                                         }
                                         app.status = "cancelling".into();
                                     }
-                                    LocalCommand::Pause => {
-                                        if let Some(controls) = &controls {
-                                            let _ = controls.send(AdapterControl::Pause);
-                                            app.status = "relay paused".into();
-                                        } else {
-                                            app.status = "pause unavailable in solo session".into();
-                                        }
-                                    }
-                                    LocalCommand::Resume => {
-                                        if let Some(controls) = &controls {
-                                            let _ = controls.send(AdapterControl::Resume);
-                                            app.status = "relay resumed".into();
-                                        } else {
-                                            app.status =
-                                                "resume unavailable in solo session".into();
-                                        }
-                                    }
                                     LocalCommand::Mode => {
                                         if let Some(mode) = app.take_requested_mode()
                                             && let Some(controls) = &controls
@@ -2928,34 +3020,6 @@ fn run_terminal(
                                     }
                                 }
                             }
-                        }
-                    }
-                    KeyCode::Char('p')
-                        if selected_slot.is_some()
-                            && key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
-                        if let Some(controls) = &controls {
-                            let _ = controls.send(AdapterControl::Pause);
-                            app.status = "relay paused".into();
-                        }
-                    }
-                    KeyCode::Char('P')
-                        if selected_slot.is_some()
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                            && key.modifiers.contains(KeyModifiers::SHIFT) =>
-                    {
-                        if let Some(controls) = &controls {
-                            let _ = controls.send(AdapterControl::Pause);
-                            app.status = "relay paused".into();
-                        }
-                    }
-                    KeyCode::Char('r')
-                        if selected_slot.is_some()
-                            && key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
-                        if let Some(controls) = &controls {
-                            let _ = controls.send(AdapterControl::Resume);
-                            app.status = "relay resumed".into();
                         }
                     }
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -3251,8 +3315,9 @@ mod tests {
         bare_launch_from_settings, consume_one_shot_route, dispatch_permission_action,
         dispatch_queued_prompt, drain_bounded_sync, normalize_arguments, normalize_selected_slot,
         parse_launch, prepare_launch_arguments, project_dir_argument, project_prompt_history_path,
-        reconcile_config_roster, run_relay_sequence_with_controls, sanitize_direct_event,
-        standalone_session_metadata, terminal_capture_enabled_for, validate_project_directory,
+        reconcile_config_roster, resume_launch_from_metadata, run_relay_sequence_with_controls,
+        sanitize_direct_event, standalone_session_metadata, terminal_capture_enabled_for,
+        validate_project_directory,
     };
     use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
     use codeswarm_core::persistence::{SessionMetadata, SessionMetadataStore};
@@ -3309,6 +3374,32 @@ mod tests {
         selected = Some(0);
         consume_one_shot_route(&app, &mut selected);
         assert_eq!(selected, Some(0));
+    }
+
+    #[test]
+    fn resume_launch_requires_matching_workspace_and_loadable_owner_session() {
+        let root =
+            std::env::temp_dir().join(format!("codeswarm-resume-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("create workspace");
+        let mut data = serde_json::Map::new();
+        data.insert("cwd".into(), serde_json::json!(root));
+        data.insert("roster".into(), serde_json::json!(["openai.com"]));
+        data.insert(
+            "agent_supports_load_session".into(),
+            serde_json::json!(true),
+        );
+        data.insert("owner_session_id".into(), serde_json::json!("session-1"));
+        let metadata = SessionMetadata::new(data);
+        assert!(matches!(
+            resume_launch_from_metadata(&metadata, &root, "{}"),
+            Ok(Launch::Roster { specs, prompt: None, first_slot: 0, .. })
+                if specs.len() == 1
+        ));
+
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).expect("create other workspace");
+        assert!(resume_launch_from_metadata(&metadata, &other, "{}").is_err());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -20,6 +20,7 @@ CodeSwarm supports macOS and Linux with a recent stable Rust toolchain.
 
 ```bash
 codeswarm
+codeswarm resume
 ```
 
 The first launch opens agent selection. A saved roster is restored on later
@@ -96,7 +97,7 @@ Inside the conversation prompt:
 - `/diff split|unified` switches the lazy diff view.
 - `/mode` and `/mode chat` select or show the current mode state.
 - `/collab roster|manual|pair` selects collaboration routing.
-- `/pause` and `/resume` control a relay.
+- `codeswarm resume [PATH]` reopens the last provider-backed session for a project.
 - `/reload` retries the most recently crashed agent in its roster slot.
 - `/drop` removes the most recently crashed peer; `/drop SLOT` removes a
   peer by zero-based roster slot (the owner is protected).
