@@ -88,7 +88,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
     vec![
         builtin(
             "antigravity.google.com",
-            "Antigravity CLI",
+            "Antigravity",
             "antigravity",
             AdapterKind::Native,
             "agy",
@@ -98,7 +98,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
         ),
         builtin(
             "claude.com",
-            "Claude Code",
+            "Claude",
             "claude",
             AdapterKind::Acp,
             "npx -y @agentclientprotocol/claude-agent-acp",
@@ -108,7 +108,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
         ),
         builtin(
             "geminicli.com",
-            "Gemini CLI",
+            "Gemini",
             "gemini",
             AdapterKind::Acp,
             "gemini --experimental-acp",
@@ -118,7 +118,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
         ),
         builtin(
             "openai.com",
-            "Codex CLI",
+            "Codex",
             "codex",
             AdapterKind::Acp,
             "npx -y --package=@agentclientprotocol/codex-acp codex-acp",
@@ -138,7 +138,7 @@ pub fn default_catalog() -> Vec<AgentDefinition> {
         ),
         builtin(
             "qwen.ai",
-            "Qwen Code",
+            "Qwen",
             "qwen",
             AdapterKind::Acp,
             "qwen --acp",

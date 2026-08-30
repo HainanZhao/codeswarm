@@ -4197,7 +4197,7 @@ mod tests {
             AdapterHost::new(Box::new(second), None),
         ];
         let mut relay = super::RelayHost::new(hosts, 4).expect("relay");
-        relay.set_roster_names(vec!["Claude Code".into(), "Codex CLI".into()]);
+        relay.set_roster_names(vec!["Claude".into(), "Codex".into()]);
         relay.start().await.expect("start");
         assert!(matches!(
             relay.run_turn("task", 0).await.expect("first turn"),
@@ -4219,8 +4219,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             [0, 1]
         );
-        assert!(relay.dispatches()[0].1.contains("You are Claude Code"));
-        assert!(relay.dispatches()[0].1.contains("Codex CLI"));
+        assert!(relay.dispatches()[0].1.contains("You are Claude"));
+        assert!(relay.dispatches()[0].1.contains("Codex"));
         assert!(relay.dispatches()[0].1.contains("active collaborators"));
         assert!(relay.dispatches()[1].1.contains(STOP_TOKEN));
         assert!(relay.dispatches()[0].1.contains("Do not use"));
@@ -4574,7 +4574,7 @@ mod tests {
             None,
         );
         let mut relay = RelayHost::new(vec![first, second], 4).expect("relay");
-        relay.set_roster_names(vec!["Claude Code".into(), "Codex CLI".into()]);
+        relay.set_roster_names(vec!["Claude".into(), "Codex".into()]);
         relay.set_roster_identities(vec!["claude.ai".into(), "openai.com".into()]);
         relay.set_session_metadata_writer(writer);
         relay.start().await.expect("start");
@@ -4592,8 +4592,8 @@ mod tests {
         let agent_data = loaded.get("agent_data").expect("owner metadata");
         assert_eq!(agent_data["identity"], "claude.ai");
         assert_eq!(agent_data["protocol"], "custom");
-        assert_eq!(loaded.get("agent"), Some(&serde_json::json!("Claude Code")));
-        assert_eq!(loaded.get("title"), Some(&serde_json::json!("Claude Code")));
+        assert_eq!(loaded.get("agent"), Some(&serde_json::json!("Claude")));
+        assert_eq!(loaded.get("title"), Some(&serde_json::json!("Claude")));
         assert_eq!(loaded.get("protocol"), Some(&serde_json::json!("custom")));
         assert_eq!(
             loaded.get("agent_supports_load_session"),
@@ -4717,7 +4717,7 @@ mod tests {
             None,
         );
         let mut relay = RelayHost::new(vec![first, second], 4).expect("relay");
-        relay.set_roster_names(vec!["Claude Code".into(), "Codex CLI".into()]);
+        relay.set_roster_names(vec!["Claude".into(), "Codex".into()]);
         relay.set_roster_identities(vec!["claude.com".into(), "openai.com".into()]);
         let writer = SessionMetadataStore::open(&path)
             .buffered()

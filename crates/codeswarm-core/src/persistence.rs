@@ -730,13 +730,13 @@ mod tests {
         let store = SessionMetadataStore::open(&path);
 
         let mut first = serde_json::Map::new();
-        first.insert("owner".into(), json!("Claude Code"));
+        first.insert("owner".into(), json!("Claude"));
         store
             .write(&SessionMetadata::new(first))
             .expect("first write");
 
         let mut second = serde_json::Map::new();
-        second.insert("owner".into(), json!("Codex CLI"));
+        second.insert("owner".into(), json!("Codex"));
         second.insert("roster".into(), json!(["openai.com", "claude.ai"]));
         store
             .write(&SessionMetadata::new(second))
@@ -744,7 +744,7 @@ mod tests {
 
         let loaded = store.read().expect("read").expect("snapshot");
         assert_eq!(loaded.source_version, CURRENT_SCHEMA_VERSION);
-        assert_eq!(loaded.get("owner"), Some(&json!("Codex CLI")));
+        assert_eq!(loaded.get("owner"), Some(&json!("Codex")));
         assert_eq!(
             loaded.get("roster"),
             Some(&json!(["openai.com", "claude.ai"]))
@@ -763,12 +763,12 @@ mod tests {
             .expect("create snapshot");
         store
             .update(|metadata| {
-                metadata.insert("owner", json!("Claude Code"));
+                metadata.insert("owner", json!("Claude"));
                 metadata.remove("roster");
             })
             .expect("merge snapshot");
         let loaded = store.read().expect("read").expect("snapshot");
-        assert_eq!(loaded.get("owner"), Some(&json!("Claude Code")));
+        assert_eq!(loaded.get("owner"), Some(&json!("Claude")));
         assert_eq!(loaded.get("roster"), None);
         std::fs::remove_dir_all(path.parent().expect("parent")).expect("cleanup");
     }

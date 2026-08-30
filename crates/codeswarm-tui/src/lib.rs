@@ -4561,7 +4561,7 @@ mod tests {
         let backend = TestBackend::new(100, 12);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::default();
-        app.set_agent_name(0, "Claude Code");
+        app.set_agent_name(0, "Claude");
         app.apply_event(&codeswarm_core::AgentEvent::UsageUpdated {
             slot: 0,
             usage: codeswarm_core::UsageUpdate {
@@ -4569,7 +4569,7 @@ mod tests {
                 size: 128_000,
             },
         });
-        app.active_agent = "Claude Code".into();
+        app.active_agent = "Claude".into();
         terminal
             .draw(|frame| super::render(frame, &mut app))
             .expect("draw");
@@ -4759,8 +4759,8 @@ mod tests {
         let backend = TestBackend::new(120, 12);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut app = App::default();
-        app.set_agent_name(0, "Claude Code");
-        app.set_agent_name(1, "Codex CLI");
+        app.set_agent_name(0, "Claude");
+        app.set_agent_name(1, "Codex");
         app.set_selected_agent(Some(1));
         app.set_workspace_root("/work/codeswarm");
         app.set_collaboration("Roster relay");
@@ -4778,8 +4778,8 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>();
         let footer = rows.last().expect("footer row");
-        assert!(footer.contains("Claude Code"), "footer={footer:?}");
-        assert!(footer.contains("→ … Codex CLI"), "footer={footer:?}");
+        assert!(footer.contains("Claude"), "footer={footer:?}");
+        assert!(footer.contains("→ … Codex"), "footer={footer:?}");
         assert!(footer.contains("/work/codeswarm"), "footer={footer:?}");
         assert!(footer.contains("Roster"), "footer={footer:?}");
         assert!(footer.contains("Auto pilot"), "footer={footer:?}");
@@ -4792,8 +4792,8 @@ mod tests {
     #[test]
     fn footer_clicks_route_agents_and_open_configuration_controls() {
         let mut app = App::default();
-        app.set_agent_name(0, "Claude Code");
-        app.set_agent_name(1, "Codex CLI");
+        app.set_agent_name(0, "Claude");
+        app.set_agent_name(1, "Codex");
         app.set_selected_agent(Some(1));
 
         assert_eq!(app.footer_action(20, 120), FooterAction::SelectAgent(1));
@@ -4840,12 +4840,12 @@ mod tests {
     #[test]
     fn ready_event_preserves_human_readable_agent_name() {
         let mut app = App::default();
-        app.set_agent_name(0, "Codex CLI");
+        app.set_agent_name(0, "Codex");
         app.apply_event(&codeswarm_core::AgentEvent::Ready {
             slot: 0,
             capabilities: codeswarm_core::AgentCapabilities::default(),
         });
-        assert_eq!(app.active_agent, "Codex CLI");
+        assert_eq!(app.active_agent, "Codex");
     }
 
     #[test]
@@ -4853,8 +4853,8 @@ mod tests {
         let backend = TestBackend::new(96, 12);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut app = App::default();
-        app.set_agent_name(0, "Claude Code");
-        app.set_agent_name(1, "Codex CLI");
+        app.set_agent_name(0, "Claude");
+        app.set_agent_name(1, "Codex");
         app.set_header("CodeSwarm roster", "starting");
         terminal
             .draw(|frame| render(frame, &mut app))
@@ -4866,33 +4866,30 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("Claude Code"), "rendered={rendered:?}");
-        assert!(rendered.contains("Codex CLI"), "rendered={rendered:?}");
+        assert!(rendered.contains("Claude"), "rendered={rendered:?}");
+        assert!(rendered.contains("Codex"), "rendered={rendered:?}");
     }
 
     #[test]
     fn agent_headers_use_deterministic_distinct_identity_colors() {
-        assert_eq!(
-            agent_header_color("Claude Code"),
-            agent_header_color("Claude Code")
-        );
+        assert_eq!(agent_header_color("Claude"), agent_header_color("Claude"));
         assert_ne!(agent_header_color("a"), agent_header_color("b"));
     }
 
     #[test]
     fn duplicate_agent_names_are_numbered_and_keep_distinct_colors() {
         let mut app = App::default();
-        app.set_agent_name(0, "Claude Code");
-        app.set_agent_name(1, "Claude Code");
+        app.set_agent_name(0, "Claude");
+        app.set_agent_name(1, "Claude");
 
-        assert_eq!(app.agent_name(0), "Claude Code #1");
-        assert_eq!(app.agent_name(1), "Claude Code #2");
+        assert_eq!(app.agent_name(0), "Claude #1");
+        assert_eq!(app.agent_name(1), "Claude #2");
         assert_ne!(
             agent_header_color(&app.agent_name(0)),
             agent_header_color(&app.agent_name(1))
         );
-        assert!(app.roster_summary().contains("Claude Code #1"));
-        assert!(app.roster_summary().contains("Claude Code #2"));
+        assert!(app.roster_summary().contains("Claude #1"));
+        assert!(app.roster_summary().contains("Claude #2"));
     }
 
     #[test]
@@ -4900,8 +4897,8 @@ mod tests {
         let backend = TestBackend::new(96, 14);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut app = App::default();
-        app.set_agent_name(0, "Codex CLI");
-        app.set_agent_name(1, "Gemini CLI");
+        app.set_agent_name(0, "Codex");
+        app.set_agent_name(1, "Gemini");
         app.apply_event(&codeswarm_core::AgentEvent::Text {
             slot: 1,
             text: "review".into(),
@@ -4922,8 +4919,8 @@ mod tests {
     #[test]
     fn promoting_a_live_agent_moves_its_identity_and_marks_old_owner_dropped() {
         let mut app = App::default();
-        app.set_agent_name(0, "Claude Code");
-        app.set_agent_name(1, "Codex CLI");
+        app.set_agent_name(0, "Claude");
+        app.set_agent_name(1, "Codex");
         app.apply_event(&codeswarm_core::AgentEvent::Ready {
             slot: 0,
             capabilities: codeswarm_core::AgentCapabilities::default(),
@@ -4934,28 +4931,28 @@ mod tests {
         });
 
         assert!(app.promote_agent(1));
-        assert_eq!(app.agent_name(0), "Codex CLI");
-        assert_eq!(app.agent_name(1), "Claude Code");
+        assert_eq!(app.agent_name(0), "Codex");
+        assert_eq!(app.agent_name(1), "Claude");
         assert_eq!(
             app.agent_states.get(&1).map(String::as_str),
             Some("dropped")
         );
-        assert_eq!(app.active_agent, "Codex CLI");
+        assert_eq!(app.active_agent, "Codex");
         assert!(!app.promote_agent(1));
     }
 
     #[test]
     fn swapping_live_agents_moves_their_visible_state_without_touching_dropped_slots() {
         let mut app = App::default();
-        app.set_agent_name(0, "Claude Code");
-        app.set_agent_name(1, "Codex CLI");
-        app.set_agent_name(2, "Gemini CLI");
+        app.set_agent_name(0, "Claude");
+        app.set_agent_name(1, "Codex");
+        app.set_agent_name(2, "Gemini");
         app.mark_agent_dropped(2);
         assert!(app.swap_agents(0, 1));
-        assert_eq!(app.agent_name(0), "Codex CLI");
-        assert_eq!(app.agent_name(1), "Claude Code");
+        assert_eq!(app.agent_name(0), "Codex");
+        assert_eq!(app.agent_name(1), "Claude");
         assert!(!app.swap_agents(0, 2));
-        assert_eq!(app.agent_name(2), "Gemini CLI");
+        assert_eq!(app.agent_name(2), "Gemini");
     }
 
     #[test]
@@ -5381,7 +5378,7 @@ mod tests {
         let mut app = App::default();
         app.set_config_agents(vec![StoreAgent {
             identity: "codex.example".into(),
-            name: "Codex CLI".into(),
+            name: "Codex".into(),
             adapter: "ACP".into(),
             command: "codex --acp".into(),
             available: true,
@@ -5405,7 +5402,7 @@ mod tests {
             "rendered={rendered:?}"
         );
         assert!(rendered.contains("Roster"), "rendered={rendered:?}");
-        assert!(rendered.contains("Codex CLI"), "rendered={rendered:?}");
+        assert!(rendered.contains("Codex"), "rendered={rendered:?}");
         assert!(
             !rendered.contains("No messages yet"),
             "rendered={rendered:?}"

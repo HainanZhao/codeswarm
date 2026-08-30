@@ -792,17 +792,6 @@ fn resolve_live_agent_spec(value: &str) -> Option<AgentSpec> {
     })
 }
 
-fn concise_agent_name(name: &str) -> String {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "claude code" => "Claude".into(),
-        "codex cli" => "Codex".into(),
-        "qwen code" => "Qwen".into(),
-        "gemini cli" => "Gemini".into(),
-        "antigravity cli" => "Antigravity".into(),
-        _ => name.trim().to_owned(),
-    }
-}
-
 fn display_agent_name(command: &str) -> String {
     let lower = command.to_ascii_lowercase();
     if lower.contains("claude") {
@@ -959,7 +948,7 @@ fn run_store(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
             );
             StoreAgent {
                 identity: agent.identity.clone(),
-                name: concise_agent_name(&agent.name),
+                name: agent.name.clone(),
                 adapter: match agent.adapter {
                     AdapterKind::Native => "native".into(),
                     AdapterKind::Acp => "ACP".into(),
@@ -1206,17 +1195,15 @@ fn load_config_agents(app: &mut App) {
     let agents = catalog
         .into_iter()
         .map(|agent| {
-            let display_name = concise_agent_name(&agent.name);
             let selected = saved
                 .iter()
                 .any(|identity| identity.eq_ignore_ascii_case(&agent.identity))
-                || current_names.iter().any(|name| {
-                    name.eq_ignore_ascii_case(&agent.name)
-                        || name.eq_ignore_ascii_case(&display_name)
-                });
+                || current_names
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(&agent.name));
             StoreAgent {
                 identity: agent.identity,
-                name: display_name,
+                name: agent.name,
                 adapter: match agent.adapter {
                     AdapterKind::Native => "native".into(),
                     AdapterKind::Acp => "ACP".into(),
@@ -2146,10 +2133,7 @@ fn run_relay_task(
             .map(|name| {
                 catalog
                     .iter()
-                    .find(|agent| {
-                        agent.name.eq_ignore_ascii_case(name)
-                            || concise_agent_name(&agent.name).eq_ignore_ascii_case(name)
-                    })
+                    .find(|agent| agent.name.eq_ignore_ascii_case(name))
                     .map(|agent| agent.identity.clone())
                     .unwrap_or_else(|| name.clone())
             })
@@ -3211,10 +3195,7 @@ fn load_owner_session_id_from(
     let owner_matches = ["owner", "agent", "agent_identity"]
         .into_iter()
         .filter_map(|key| loaded.get(key).and_then(serde_json::Value::as_str))
-        .any(|stored_owner| {
-            stored_owner.eq_ignore_ascii_case(owner_name)
-                || concise_agent_name(stored_owner).eq_ignore_ascii_case(owner_name)
-        });
+        .any(|stored_owner| stored_owner.eq_ignore_ascii_case(owner_name));
     if !owner_matches {
         return None;
     }
@@ -3600,7 +3581,7 @@ mod tests {
             "cwd".into(),
             serde_json::Value::String(root.display().to_string()),
         );
-        data.insert("owner".into(), serde_json::json!("Codex CLI"));
+        data.insert("owner".into(), serde_json::json!("Codex"));
         data.insert("agent_session_id".into(), serde_json::json!("session-42"));
         codeswarm_core::persistence::SessionMetadataStore::open(&metadata_path)
             .write(&codeswarm_core::persistence::SessionMetadata::new(data))
@@ -3626,7 +3607,7 @@ mod tests {
             "cwd".into(),
             serde_json::Value::String(root.display().to_string()),
         );
-        data.insert("owner".into(), serde_json::json!("Gemini CLI"));
+        data.insert("owner".into(), serde_json::json!("Gemini"));
         data.insert(
             "owner_session_id".into(),
             serde_json::json!("stale-session"),
@@ -3639,7 +3620,7 @@ mod tests {
             .write(&SessionMetadata::new(data))
             .expect("write metadata");
         assert_eq!(
-            super::load_owner_session_id_from(&metadata_path, &root, "Gemini CLI"),
+            super::load_owner_session_id_from(&metadata_path, &root, "Gemini"),
             None
         );
         let _ = std::fs::remove_dir_all(root);
@@ -3705,11 +3686,11 @@ mod tests {
     #[test]
     fn config_roster_reconciliation_promotes_selected_live_peer() {
         let mut app = codeswarm_tui::App::default();
-        app.set_agent_name(0, "Claude Code");
-        app.set_agent_name(1, "Codex CLI");
+        app.set_agent_name(0, "Claude");
+        app.set_agent_name(1, "Codex");
         app.set_config_agents(vec![StoreAgent {
             identity: "openai.com".into(),
-            name: "Codex CLI".into(),
+            name: "Codex".into(),
             adapter: "ACP".into(),
             command: "codex --acp".into(),
             available: true,
@@ -3724,18 +3705,18 @@ mod tests {
             receiver.try_recv(),
             Ok(AdapterControl::Promote(1))
         ));
-        assert_eq!(app.agent_name(0), "Codex CLI");
+        assert_eq!(app.agent_name(0), "Codex");
         assert_eq!(app.active_roster_slots(), vec![0]);
     }
 
     #[test]
     fn config_roster_reconciliation_starts_a_new_owner_before_transfer() {
         let mut app = codeswarm_tui::App::default();
-        app.set_agent_name(0, "Claude Code");
-        app.set_agent_name(1, "Gemini CLI");
+        app.set_agent_name(0, "Claude");
+        app.set_agent_name(1, "Gemini");
         app.set_config_agents(vec![StoreAgent {
             identity: "openai.com".into(),
-            name: "Codex CLI".into(),
+            name: "Codex".into(),
             adapter: "ACP".into(),
             command: "codex --acp".into(),
             available: true,
@@ -3749,7 +3730,7 @@ mod tests {
         assert!(matches!(receiver.try_recv(), Ok(AdapterControl::Add(_))));
         assert_eq!(pending_owner, Some(2));
         assert!(pending.contains(&2));
-        assert_eq!(app.agent_name(2), "Codex CLI");
+        assert_eq!(app.agent_name(2), "Codex");
     }
 
     #[test]
