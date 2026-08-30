@@ -11,14 +11,12 @@ Run the complete gate before opening a pull request:
 make verify
 ```
 
-This runs `cargo fmt`, all workspace tests, Clippy with warnings denied, and
-the real tmux smoke/config/performance harnesses.
+This runs `cargo fmt`, all workspace tests, and Clippy with warnings denied.
 
 For UI, adapter, or CLI changes, add a regression at the integration boundary
-that failed. Use Ratatui's `TestBackend` for deterministic rendering and the
-tmux scripts for terminal-mode, resize, and latency behavior. Keep transcript
-tests focused on logical blocks and bounded viewport work rather than exact
-terminal cell counts.
+that failed. Use Ratatui's `TestBackend` for deterministic rendering. Keep
+transcript tests focused on logical blocks and bounded viewport work rather
+than exact terminal cell counts.
 
 ## Performance rules
 

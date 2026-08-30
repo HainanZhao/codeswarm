@@ -14,7 +14,7 @@ use codeswarm_transcript::{RenderRow, Transcript};
 use ratatui::{
     Frame,
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Widget},
@@ -313,6 +313,15 @@ pub enum PathPickerAction {
     Changed,
     Insert(String),
     Dismiss,
+}
+
+/// Action represented by a click on the information row below the composer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FooterAction {
+    Ignored,
+    SelectAgent(usize),
+    OpenCollaboration,
+    OpenMode,
 }
 
 /// A low-churn, multiline prompt editor backed by `tui-textarea`.
@@ -792,6 +801,8 @@ pub struct App {
     path_matches: Vec<PathMatch>,
     path_selection: usize,
     base_prompt_completions: Vec<String>,
+    workspace_root: PathBuf,
+    selected_agent: Option<usize>,
 }
 
 const CONFIG_SETTING_COUNT: usize = 14;
@@ -852,6 +863,8 @@ impl Default for App {
             path_matches: Vec::new(),
             path_selection: 0,
             base_prompt_completions: Vec::new(),
+            workspace_root: PathBuf::new(),
+            selected_agent: None,
         }
     }
 }
@@ -1897,6 +1910,8 @@ impl App {
     /// this index never scans synchronously; callers may invoke it when a
     /// session starts or after `/cd` changes the workspace.
     pub fn set_workspace_root(&mut self, root: impl Into<PathBuf>) {
+        let root = root.into();
+        self.workspace_root = root.clone();
         self.path_index = Some(PathIndex::new(root));
         self.path_query.clear();
         self.path_matches.clear();
@@ -1906,11 +1921,60 @@ impl App {
     /// Request a fresh index after the workspace changes.  Existing matches
     /// remain visible until replacement results arrive.
     pub fn refresh_workspace_root(&mut self, root: impl Into<PathBuf>) {
+        let root = root.into();
+        self.workspace_root = root.clone();
         if let Some(index) = &mut self.path_index {
             index.rescan(root);
         } else {
             self.set_workspace_root(root);
         }
+    }
+
+    /// Select the roster member that will receive the next normal prompt.
+    /// The footer uses this to mirror the Python client's routing arrow.
+    pub fn set_selected_agent(&mut self, slot: Option<usize>) {
+        self.selected_agent = slot;
+    }
+
+    /// Resolve a footer click using the same compact geometry as the renderer.
+    /// Agent markers and names are forgiving targets, matching the Python UI.
+    pub fn footer_action(&self, column: u16, width: u16) -> FooterAction {
+        let metrics = footer_metrics(self, width);
+        if metrics.inner_width == 0 || column == 0 || column > metrics.inner_width {
+            return FooterAction::Ignored;
+        }
+        let relative = usize::from(column - 1);
+        let right_start = metrics.left_width;
+        if metrics.right_width > 0 && relative >= right_start {
+            let collaboration_end = right_start + metrics.collaboration_width;
+            if relative < collaboration_end {
+                return FooterAction::OpenCollaboration;
+            }
+            if relative > collaboration_end {
+                return FooterAction::OpenMode;
+            }
+            return FooterAction::Ignored;
+        }
+
+        if self.collaboration == "Pair review" {
+            return FooterAction::Ignored;
+        }
+        let active = footer_active_slots(self);
+        if relative >= metrics.agent_width {
+            return FooterAction::Ignored;
+        }
+        let mut cursor = 1usize;
+        for (index, slot) in active.iter().enumerate() {
+            if index > 0 {
+                cursor = cursor.saturating_add(3);
+            }
+            let entry_width = cell_width(&footer_agent_label(self, *slot, active.len()));
+            if relative >= cursor && relative < cursor.saturating_add(entry_width) {
+                return FooterAction::SelectAgent(*slot);
+            }
+            cursor = cursor.saturating_add(entry_width);
+        }
+        FooterAction::Ignored
     }
 
     /// Drain background index messages without waiting.  This is safe to call
@@ -2506,11 +2570,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
     let total_height = usize::from(area.height);
-    let status_height = if area.height == 0 {
-        0
-    } else {
-        1 + usize::from(app.agent_names.len() > 1)
-    };
+    // Match the Python composer: one quiet information row below the prompt,
+    // regardless of roster size. Agent state belongs in the compact roster,
+    // not in a second full-width status row.
+    let status_height = usize::from(area.height > 0);
     let minimum_prompt_height = total_height.saturating_sub(status_height).min(2);
     let reserve_content =
         usize::from(total_height > status_height.saturating_add(minimum_prompt_height));
@@ -2543,12 +2606,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         preferred_prompt_height.min(available_for_prompt.saturating_sub(content_height));
     let rows = Layout::vertical([
         Constraint::Min(0),
-        Constraint::Length(status_height as u16),
         Constraint::Length(queue_height as u16),
         Constraint::Length(permission_height as u16),
         Constraint::Length(help_height as u16),
         Constraint::Length(path_picker_height as u16),
         Constraint::Length(prompt_height as u16),
+        Constraint::Length(status_height as u16),
     ])
     .split(area);
     let content_width = rows[0]
@@ -2573,112 +2636,299 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         );
     }
 
-    let follow_label = if app.follow_tail {
-        "FOLLOWING"
-    } else {
-        "SCROLLING"
-    };
-    let status_line = Line::from(vec![
-        Span::styled(" ✈ ", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(
-            app.active_agent.as_str(),
-            Style::default()
-                .fg(agent_color_for_name(app, &app.active_agent))
-                .bold(),
-        ),
-        Span::styled("  ·  ", Style::default().fg(Color::Gray)),
-        Span::styled(
-            app.status.as_str(),
-            Style::default().fg(status_color(&app.status)),
-        ),
-        Span::styled("  ·  ", Style::default().fg(Color::Gray)),
-        Span::styled(
-            follow_label,
-            Style::default().fg(if app.follow_tail {
-                Color::Green
-            } else {
-                Color::Yellow
-            }),
-        ),
-        if let Some(usage) = app.active_agent_usage() {
-            let percent = usage
-                .used
-                .saturating_mul(100)
-                .checked_div(usage.size)
-                .unwrap_or(0);
-            Span::styled(
-                format!(
-                    "  ·  context {}K/{}K ({percent}%)",
-                    usage.used / 1000,
-                    usage.size / 1000
-                ),
-                Style::default().fg(Color::Gray),
-            )
-        } else {
-            Span::raw("")
-        },
-        if app.roster_summary().is_empty() {
-            Span::raw("")
-        } else {
-            Span::styled(
-                format!("  ·  {}", app.roster_summary()),
-                Style::default().fg(Color::Gray),
-            )
-        },
-        if app.queued_count() > 0 {
-            Span::styled(
-                format!("  ·  {} queued", app.queued_count()),
-                Style::default().fg(Color::Yellow),
-            )
-        } else {
-            Span::raw("")
-        },
-    ]);
-    Paragraph::new(status_line)
-        .style(Style::default().bg(STATUS_BG))
-        .render(
-            Rect::new(rows[1].x, rows[1].y, rows[1].width, 1),
-            frame.buffer_mut(),
-        );
-    if app.agent_names.len() > 1 && rows[1].height > 1 {
-        let mut active_spans = vec![Span::styled(" active: ", Style::default().fg(Color::Gray))];
-        for (index, (slot, _)) in app.agent_names.iter().enumerate() {
-            let name = app.agent_name(*slot);
-            let state = app
-                .agent_states
-                .get(slot)
-                .map(String::as_str)
-                .unwrap_or("starting");
-            let marker = if state == "working" { "●" } else { "○" };
-            let separator = if index == 0 { "" } else { "   " };
-            active_spans.push(Span::styled(
-                format!("{separator}{marker} {name} · {state}"),
-                Style::default()
-                    .fg(agent_color_for_slot(app, *slot, &name))
-                    .bold(),
-            ));
-        }
-        let active_line = Line::from(active_spans);
-        Paragraph::new(active_line)
-            .style(Style::default().bg(STATUS_BG))
-            .render(
-                Rect::new(rows[1].x, rows[1].y.saturating_add(1), rows[1].width, 1),
-                frame.buffer_mut(),
-            );
-    }
     if app.queued_count() > 0 {
-        render_queue(frame.buffer_mut(), rows[2], app);
+        render_queue(frame.buffer_mut(), rows[1], app);
     }
     if let Some(permission) = &app.permission {
-        render_permission(frame.buffer_mut(), rows[3], permission);
+        render_permission(frame.buffer_mut(), rows[2], permission);
     }
     if app.keyboard_help_visible() {
-        render_keyboard_help(frame.buffer_mut(), rows[4]);
+        render_keyboard_help(frame.buffer_mut(), rows[3]);
     }
     if app.path_picker_visible() {
-        render_path_picker(frame.buffer_mut(), rows[5], app);
+        render_path_picker(frame.buffer_mut(), rows[4], app);
     }
-    app.prompt_editor.render(frame, rows[6]);
+    app.prompt_editor.render(frame, rows[5]);
+    render_footer(frame.buffer_mut(), rows[6], app);
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct FooterMetrics {
+    inner_width: u16,
+    left_width: usize,
+    right_width: usize,
+    agent_width: usize,
+    path_width: usize,
+    status_width: usize,
+    collaboration_width: usize,
+}
+
+fn cell_width(value: &str) -> usize {
+    Span::raw(value).width()
+}
+
+fn footer_control_labels(app: &App) -> (String, String) {
+    let collaboration = match app.collaboration.as_str() {
+        "Roster relay" => "Roster",
+        "Manual routing" => "Manual",
+        "Pair review" => "Pair",
+        value => value,
+    };
+    (format!(" {collaboration} "), format!(" {} ", app.mode))
+}
+
+fn footer_metrics(app: &App, outer_width: u16) -> FooterMetrics {
+    let inner_width = outer_width.saturating_sub(2);
+    if inner_width == 0 {
+        return FooterMetrics::default();
+    }
+    let (collaboration_label, mode_label) = footer_control_labels(app);
+    let collaboration_width = cell_width(&collaboration_label);
+    let right_width = if inner_width >= 64 {
+        collaboration_width
+            .saturating_add(cell_width(&mode_label))
+            .saturating_add(1)
+            .min(usize::from(inner_width))
+    } else if inner_width >= 24 {
+        collaboration_width.min(usize::from(inner_width))
+    } else {
+        0
+    };
+    let left_width = usize::from(inner_width).saturating_sub(right_width);
+    let agent_length = footer_agent_spans(app)
+        .iter()
+        .map(Span::width)
+        .sum::<usize>();
+    let status = footer_status(app);
+    // Match the Python flex order: controls, roster, and status keep their
+    // intrinsic width; the working directory consumes only what remains.
+    // Under pressure the path disappears first, then status yields to the
+    // actionable roster.
+    let status_budget = left_width.saturating_add(1) / 2;
+    let status_width = cell_width(&status).min(status_budget);
+    let agent_width = agent_length.min(left_width.saturating_sub(status_width));
+    let path_width = left_width
+        .saturating_sub(agent_width)
+        .saturating_sub(status_width);
+    FooterMetrics {
+        inner_width,
+        left_width,
+        right_width,
+        agent_width,
+        path_width,
+        status_width,
+        collaboration_width: collaboration_width.min(right_width),
+    }
+}
+
+fn compact_cell_label(value: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if cell_width(value) <= width {
+        return value.to_owned();
+    }
+    let ellipsis = '…';
+    let content_budget = width.saturating_sub(cell_width(&ellipsis.to_string()));
+    let mut label = String::new();
+    let mut used = 0usize;
+    for character in value.chars() {
+        let character_width = cell_width(&character.to_string());
+        if used.saturating_add(character_width) > content_budget {
+            break;
+        }
+        label.push(character);
+        used = used.saturating_add(character_width);
+    }
+    label.push(ellipsis);
+    label
+}
+
+fn render_footer(buffer: &mut Buffer, area: Rect, app: &App) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    Paragraph::new("")
+        .style(Style::default().bg(TRANSCRIPT_BG))
+        .render(area, buffer);
+
+    let inner = Rect::new(
+        area.x.saturating_add(u16::from(area.width > 2)),
+        area.y,
+        area.width.saturating_sub(2),
+        1,
+    );
+    if inner.width == 0 {
+        return;
+    }
+
+    let metrics = footer_metrics(app, area.width);
+    let (collaboration_label, mode_label) = footer_control_labels(app);
+    let agent_spans = footer_agent_spans(app);
+    let status = footer_status(app);
+
+    let mut x = inner.x;
+    if metrics.agent_width > 0 {
+        Paragraph::new(Line::from(agent_spans))
+            .style(Style::default().bg(STATUS_BG))
+            .render(Rect::new(x, area.y, metrics.agent_width as u16, 1), buffer);
+        x = x.saturating_add(metrics.agent_width as u16);
+    }
+    if metrics.path_width > 0 {
+        let path =
+            compact_workspace_path(&app.workspace_root, metrics.path_width.saturating_sub(2));
+        Paragraph::new(format!("  {path}"))
+            .style(Style::default().fg(Color::Gray).bg(TRANSCRIPT_BG))
+            .render(Rect::new(x, area.y, metrics.path_width as u16, 1), buffer);
+        x = x.saturating_add(metrics.path_width as u16);
+    }
+    if metrics.status_width > 0 {
+        Paragraph::new(compact_cell_label(&status, metrics.status_width))
+            .alignment(Alignment::Right)
+            .style(
+                Style::default()
+                    .fg(status_color(&app.status))
+                    .bg(TRANSCRIPT_BG),
+            )
+            .render(Rect::new(x, area.y, metrics.status_width as u16, 1), buffer);
+    }
+
+    if metrics.right_width == 0 {
+        return;
+    }
+    let right_x = inner.right().saturating_sub(metrics.right_width as u16);
+    Paragraph::new(compact_cell_label(
+        &collaboration_label,
+        metrics.collaboration_width,
+    ))
+    .style(Style::default().fg(Color::White).bg(STATUS_BG).bold())
+    .render(
+        Rect::new(right_x, area.y, metrics.collaboration_width as u16, 1),
+        buffer,
+    );
+    let mode_width = metrics
+        .right_width
+        .saturating_sub(metrics.collaboration_width.saturating_add(1));
+    if mode_width > 0 {
+        Paragraph::new(compact_cell_label(&mode_label, mode_width))
+            .style(Style::default().fg(Color::Gray).bg(STATUS_BG))
+            .render(
+                Rect::new(
+                    right_x.saturating_add(metrics.collaboration_width as u16 + 1),
+                    area.y,
+                    mode_width as u16,
+                    1,
+                ),
+                buffer,
+            );
+    }
+}
+
+fn footer_active_slots(app: &App) -> Vec<usize> {
+    app.agent_names
+        .keys()
+        .filter(|slot| {
+            !app.agent_states
+                .get(slot)
+                .is_some_and(|state| state == "dropped")
+        })
+        .copied()
+        .collect()
+}
+
+fn footer_agent_label(app: &App, slot: usize, active_count: usize) -> String {
+    let state = app
+        .agent_states
+        .get(&slot)
+        .map(String::as_str)
+        .unwrap_or("starting");
+    let selected =
+        app.selected_agent == Some(slot) || (active_count == 1 && app.selected_agent.is_none());
+    let marker = match state {
+        "working" => "●",
+        "starting" => "…",
+        "error" => "!",
+        _ if app.collaboration == "Manual routing" && selected => "⌖",
+        _ => "○",
+    };
+    let arrow = if selected && app.collaboration != "Manual routing" {
+        "→ "
+    } else {
+        ""
+    };
+    format!("{arrow}{marker} {}", app.agent_name(slot))
+}
+
+fn footer_agent_spans(app: &App) -> Vec<Span<'static>> {
+    let active = footer_active_slots(app);
+    if active.is_empty() {
+        return vec![Span::styled(" shell ", Style::default().fg(Color::Gray))];
+    }
+    let mut spans = vec![Span::raw(" ")];
+    for (index, slot) in active.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
+        }
+        let state = app
+            .agent_states
+            .get(slot)
+            .map(String::as_str)
+            .unwrap_or("starting");
+        let working = state == "working";
+        let name = app.agent_name(*slot);
+        let mut style = Style::default().fg(agent_color_for_slot(app, *slot, &name));
+        if working {
+            style = style.bold();
+        }
+        spans.push(Span::styled(
+            footer_agent_label(app, *slot, active.len()),
+            style,
+        ));
+    }
+    spans.push(Span::raw(" "));
+    spans
+}
+
+fn footer_status(app: &App) -> String {
+    let usage = app.active_agent_usage().map(|usage| {
+        let percent = usage
+            .used
+            .saturating_mul(100)
+            .checked_div(usage.size)
+            .unwrap_or(0);
+        format!("{:.1}K ({percent}%)", usage.used as f64 / 1000.0)
+    });
+    match (app.status.as_str(), usage) {
+        ("idle" | "ready" | "starting" | "streaming", Some(usage)) => usage,
+        ("idle" | "ready" | "starting", None) => String::new(),
+        (status, Some(usage)) => format!("{status} · {usage}"),
+        (status, None) => status.to_owned(),
+    }
+}
+
+fn compact_workspace_path(path: &std::path::Path, width: usize) -> String {
+    if width == 0 || path.as_os_str().is_empty() {
+        return String::new();
+    }
+    let mut display = path.display().to_string();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::Path::new(&home);
+        if let Ok(relative) = path.strip_prefix(home) {
+            display = if relative.as_os_str().is_empty() {
+                "~".into()
+            } else {
+                format!("~/{}", relative.display())
+            };
+        }
+    }
+    if cell_width(&display) <= width {
+        return display;
+    }
+    let tail = display
+        .rsplit_once('/')
+        .map(|(_, tail)| tail)
+        .unwrap_or(display.as_str());
+    compact_cell_label(&format!("…/{tail}"), width)
 }
 
 fn render_path_picker(buffer: &mut Buffer, area: Rect, app: &App) {
@@ -2785,40 +3035,8 @@ fn render_compact(frame: &mut Frame, app: &mut App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    // Keep the state users need to act on visible before the less important
-    // agent label when a narrow pane clips the line.
-    let status_width = usize::from(area.width).saturating_sub(5);
-    let status_text = compact_label(&app.status, status_width);
-    let roster = app.roster_summary();
-    let agent_text = if roster.is_empty() {
-        app.active_agent.clone()
-    } else {
-        roster
-    };
-    let label_width =
-        usize::from(area.width).saturating_sub(status_text.chars().count().saturating_add(8));
-    let status = Line::from(vec![
-        Span::styled(" ✈ ", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(status_text, Style::default().fg(status_color(&app.status))),
-        Span::styled(" · ", Style::default().fg(Color::Gray)),
-        Span::styled(
-            compact_label(&agent_text, label_width),
-            Style::default()
-                .fg(agent_color_for_name(app, &app.active_agent))
-                .bold(),
-        ),
-    ]);
-    Paragraph::new(status)
-        .style(Style::default().bg(STATUS_BG))
-        .render(Rect::new(area.x, area.y, area.width, 1), frame.buffer_mut());
-
     if area.height > 2 {
-        let transcript_area = Rect::new(
-            area.x,
-            area.y.saturating_add(1),
-            area.width,
-            area.height.saturating_sub(2),
-        );
+        let transcript_area = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(2));
         let width = transcript_area.width.saturating_sub(2) as usize;
         let height = usize::from(transcript_area.height.saturating_sub(1));
         if app.follow_tail {
@@ -2835,11 +3053,16 @@ fn render_compact(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     if area.height > 1 {
-        let prompt_area = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+        let prompt_area = Rect::new(area.x, area.bottom().saturating_sub(2), area.width, 1);
         let prompt = compact_prompt(&app.prompt, area.width as usize);
         Paragraph::new(prompt)
             .style(Style::default().fg(Color::White).bg(PANEL_BG))
             .render(prompt_area, frame.buffer_mut());
+        render_footer(
+            frame.buffer_mut(),
+            Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
+            app,
+        );
 
         // Keep the path picker usable in a narrow tmux/mobile pane too.  It
         // overlays the lower transcript rows, but never covers the prompt,
@@ -2856,6 +3079,8 @@ fn render_compact(frame: &mut Frame, app: &mut App, area: Rect) {
                 render_path_picker(frame.buffer_mut(), picker_area, app);
             }
         }
+    } else {
+        render_footer(frame.buffer_mut(), area, app);
     }
 }
 
@@ -3852,10 +4077,10 @@ mod tests {
     use tui_textarea::{Input, Key};
 
     use super::{
-        App, ConfigAction, ConfigKey, LocalCommand, PathPickerAction, PermissionAction,
-        PermissionKey, PromptAction, PromptEditor, StoreAction, StoreAgent, StoreKey,
-        agent_header_color, agent_slot_color, file_reference_spans, markdown_spans, markdown_style,
-        render, row_style,
+        App, ConfigAction, ConfigKey, FooterAction, LocalCommand, PathPickerAction,
+        PermissionAction, PermissionKey, PromptAction, PromptEditor, StoreAction, StoreAgent,
+        StoreKey, agent_header_color, agent_slot_color, cell_width, compact_cell_label,
+        file_reference_spans, markdown_spans, markdown_style, render, row_style,
     };
 
     fn key(key: Key) -> Input {
@@ -4351,7 +4576,7 @@ mod tests {
     }
 
     #[test]
-    fn context_usage_is_visible_in_the_active_status_hud() {
+    fn context_usage_uses_the_compact_python_footer_format() {
         let backend = TestBackend::new(100, 12);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::default();
@@ -4374,10 +4599,8 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(
-            rendered.contains("context 4K/128K (3%)"),
-            "rendered={rendered:?}"
-        );
+        assert!(rendered.contains("4.2K (3%)"), "rendered={rendered:?}");
+        assert!(!rendered.contains("128K"), "rendered={rendered:?}");
     }
 
     #[test]
@@ -4548,6 +4771,66 @@ mod tests {
         assert!(rendered.contains("streaming"));
         assert!(rendered.contains("response"));
         assert!(rendered.contains("> check status"));
+    }
+
+    #[test]
+    fn footer_matches_python_information_order_below_the_prompt() {
+        let backend = TestBackend::new(120, 12);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        app.set_agent_name(0, "Claude Code");
+        app.set_agent_name(1, "Codex CLI");
+        app.set_selected_agent(Some(1));
+        app.set_workspace_root("/work/codeswarm");
+        app.set_collaboration("Roster relay");
+        app.set_mode("Auto pilot");
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw footer");
+
+        let width = terminal.backend().buffer().area.width as usize;
+        let rows = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        let footer = rows.last().expect("footer row");
+        assert!(footer.contains("Claude Code"), "footer={footer:?}");
+        assert!(footer.contains("→ … Codex CLI"), "footer={footer:?}");
+        assert!(footer.contains("/work/codeswarm"), "footer={footer:?}");
+        assert!(footer.contains("Roster"), "footer={footer:?}");
+        assert!(footer.contains("Auto pilot"), "footer={footer:?}");
+        assert!(
+            rows[rows.len() - 2].contains("How can I help you today?"),
+            "rows={rows:?}"
+        );
+    }
+
+    #[test]
+    fn footer_clicks_route_agents_and_open_configuration_controls() {
+        let mut app = App::default();
+        app.set_agent_name(0, "Claude Code");
+        app.set_agent_name(1, "Codex CLI");
+        app.set_selected_agent(Some(1));
+
+        assert_eq!(app.footer_action(20, 120), FooterAction::SelectAgent(1));
+        assert_eq!(app.footer_action(98, 120), FooterAction::OpenCollaboration);
+        assert_eq!(app.footer_action(110, 120), FooterAction::OpenMode);
+
+        app.set_collaboration("Pair review");
+        assert_eq!(app.footer_action(3, 120), FooterAction::Ignored);
+    }
+
+    #[test]
+    fn footer_geometry_uses_terminal_cell_width_for_unicode_names() {
+        assert_eq!(cell_width("智能体"), 6);
+        assert_eq!(compact_cell_label("智能体", 5), "智能…");
+
+        let mut app = App::default();
+        app.set_agent_name(0, "智能体");
+        assert_eq!(app.footer_action(10, 80), FooterAction::SelectAgent(0));
     }
 
     #[test]

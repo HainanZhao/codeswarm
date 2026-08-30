@@ -180,10 +180,9 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   can reuse the owner handle.
 - [x] Integrated resize settling and latest-state frame recovery into a
   reusable TUI render loop with deterministic backpressure tests.
-- [x] Verified the current branch with \`make verify\`, \`make rust-test\`, and
-  \`make rust-tmux\`.
-- [x] Final verification: legacy compatibility coverage passed, Rust workspace tests and
-  Clippy passed, formatting passed, and the real tmux smoke test passed.
+- [x] Verified the current branch with `make verify` and `make rust-test`.
+- [x] Final verification: legacy compatibility coverage passed, Rust workspace
+  tests and Clippy passed, and formatting passed.
 
 Still required before cutover:
 
@@ -240,9 +239,8 @@ remains provider-account dependent.
 - [ ] Add a Rust benchmark binary that feeds those fixtures to the transcript
   model and records render time, input-to-paint latency, RSS, allocations (in
   CI where available), and bytes emitted to the terminal backend.
-- [ ] Add a real-tmux harness that starts a disposable server/socket, drives a
-  pane with `send-keys`, captures output, resizes the pane, and always cleans
-  it up. Keep deterministic unit benchmarks separate from this black-box test.
+- [x] Keep terminal verification deterministic and process-local with
+  Ratatui's `TestBackend`; do not automate tmux servers or sessions.
 - [ ] Establish and enforce these initial budgets on the reference CI machine;
   record machine details with benchmark output rather than comparing machines
   blindly:
@@ -376,10 +374,8 @@ any advanced panel or alternate-screen implementation.
 - Bare launch now opens a real keyboard-driven agent store when no roster is
   saved: `Space` selects, `Alt+↑/↓` reorders, and `Enter` persists and starts
   the highlighted roster. `/agents` returns to that store from a session.
-- `tests/tmux/config.sh` exercises the release binary through a real tmux pane,
-  including opening, navigating, toggling, closing, and exporting.
-- `tests/tmux/store.sh` verifies that a fresh bare launch exposes an actionable
-  agent catalog and selection controls.
+- Ratatui integration tests exercise configuration, export, store selection,
+  compact layouts, and terminal state without controlling a tmux server.
 
 ## Phase 5 — Collaboration and Lazy Detail Views
 

@@ -111,14 +111,6 @@ viewport. Streamed chunks extend one logical block, and tool/thought details
 start collapsed. Scrolling therefore touches only the visible slice rather than
 reparsing the full conversation.
 
-Run the real-pane checks with:
-
-```bash
-bash tests/tmux/smoke.sh
-bash tests/tmux/config.sh
-bash tests/tmux/performance.sh
-```
-
 ## Development and verification
 
 Cargo is the canonical build and test tool:
@@ -130,8 +122,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 make verify
 ```
 
-The tmux tests use the release binary for the config path and enforce bounded
-input, capture, scroll, and resize latency.
+Renderer behavior is covered with deterministic Ratatui backends and bounded
+viewport tests.
 
 ## Privacy
 

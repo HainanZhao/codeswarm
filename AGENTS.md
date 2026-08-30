@@ -94,11 +94,10 @@ make verify
 ```
 
 For TUI, ACP, and CLI changes, add a Cargo-native regression test at the
-integration boundary that failed. Use Ratatui's `TestBackend` for rendering,
-Rust unit/integration tests for contracts, and the scripts under `tests/tmux`
-for real terminal behavior. Test invalid and replacement external state as
-well as the nominal state; adapters may omit, reorder, or replace values
-between messages.
+integration boundary that failed. Use Ratatui's `TestBackend` for rendering
+and Rust unit/integration tests for contracts. Test invalid and replacement
+external state as well as the nominal state; adapters may omit, reorder, or
+replace values between messages.
 
 `cargo test --workspace` is the regression gate for the relay ring. Preserve
 two-agent alternation except when intentionally changing a documented relay

@@ -52,12 +52,7 @@ impl TerminalProcess {
     async fn kill(&self) {
         if let Some(child) = self.child.lock().await.as_mut() {
             #[cfg(unix)]
-            if let Some(pid) = child.id() {
-                let _ = Command::new("kill")
-                    .args(["-TERM", &format!("-{pid}")])
-                    .status()
-                    .await;
-            }
+            signal_isolated_process_group(child, nix::sys::signal::Signal::SIGTERM);
             let _ = child.start_kill();
         }
     }
@@ -225,21 +220,33 @@ pub fn parse_command_line(command: &str) -> Result<(String, Vec<String>), Comman
 /// helper before releasing the handle.
 async fn terminate_child(child: &mut Child) -> AdapterResult<()> {
     #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        // Kill the isolated process group first so shell/terminal descendants
-        // do not survive cancellation. `start_kill` below remains the
-        // fallback for platforms where the group signal is unavailable.
-        let _ = Command::new("kill")
-            .args(["-TERM", &format!("-{pid}")])
-            .status()
-            .await;
-    }
+    signal_isolated_process_group(child, nix::sys::signal::Signal::SIGTERM);
     let kill_error = child.start_kill().err();
     let wait_error = child.wait().await.err();
     if let Some(error) = kill_error.or(wait_error) {
         return Err(AdapterError::Transport(error.to_string()));
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn signal_isolated_process_group(child: &Child, signal: nix::sys::signal::Signal) {
+    use nix::{
+        sys::signal::killpg,
+        unistd::{Pid, getpgid, getpgrp},
+    };
+
+    let Some(raw_pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) else {
+        return;
+    };
+    let pid = Pid::from_raw(raw_pid);
+    // `process_group(0)` makes the child its own group leader. Verify that
+    // invariant at signal time and also reject CodeSwarm's own group. This
+    // keeps descendant cleanup without any possibility of reaching the
+    // containing shell or terminal multiplexer.
+    if getpgid(Some(pid)).ok() == Some(pid) && pid != getpgrp() {
+        let _ = killpg(pid, signal);
+    }
 }
 
 fn isolate_process_group(command: &mut Command) {
@@ -3060,8 +3067,8 @@ fn rpc_id_to_string(value: &Value) -> String {
 mod tests {
     use super::{
         AcpAdapter, AdapterHost, AgentAdapter, AgyAdapter, MAX_ACP_LINE_BYTES, MAX_FILE_READ_BYTES,
-        RelayHost, ScriptedAdapter, parse_acp_notification, parse_agy_line, parse_command_line,
-        prompt_content_blocks, read_bounded_line,
+        RelayHost, ScriptedAdapter, isolate_process_group, parse_acp_notification, parse_agy_line,
+        parse_command_line, prompt_content_blocks, read_bounded_line, terminate_child,
     };
     use async_trait::async_trait;
     use codeswarm_core::TerminalEvent;
@@ -3082,6 +3089,46 @@ mod tests {
             .expect("clock")
             .as_nanos();
         std::env::temp_dir().join(format!("{stem}-{}-{nonce}.{extension}", std::process::id()))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn termination_kills_only_the_verified_isolated_child_group() {
+        use nix::unistd::{Pid, getpgid, getpgrp};
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let own_group = getpgrp();
+        let mut command = tokio::process::Command::new("sh");
+        isolate_process_group(&mut command);
+        command
+            .arg("-c")
+            .arg("sleep 60 & echo $!; wait")
+            .stdout(std::process::Stdio::piped());
+        let mut child = command.spawn().expect("spawn isolated shell");
+        let leader = Pid::from_raw(child.id().expect("leader pid") as i32);
+        assert_eq!(getpgid(Some(leader)).expect("leader group"), leader);
+        assert_ne!(leader, own_group);
+
+        let stdout = child.stdout.take().expect("child stdout");
+        let mut lines = BufReader::new(stdout).lines();
+        let descendant = lines
+            .next_line()
+            .await
+            .expect("read descendant pid")
+            .expect("descendant pid")
+            .parse::<i32>()
+            .expect("numeric descendant pid");
+        let descendant = Pid::from_raw(descendant);
+        assert_eq!(getpgid(Some(descendant)).expect("descendant group"), leader);
+
+        terminate_child(&mut child).await.expect("terminate group");
+        for _ in 0..100 {
+            if !std::path::Path::new(&format!("/proc/{descendant}")).exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("descendant {descendant} survived isolated group termination");
     }
 
     #[test]

@@ -13,7 +13,7 @@ matrix records behavior, not widget-level implementation details.
 | Bare launch and saved roster | Implemented | Rust catalog/store and atomic `launcher.roster` persistence. |
 | Agent store selection/order | Implemented | Ratatui store; Space, Ctrl+S, Alt+Up/Down, Enter. |
 | Prompt editing/history/completion | Implemented | `tui-textarea`, bounded history, slash completion. |
-| Cached transcript/long output | Implemented | Logical blocks, lazy details, viewport cache, tmux benchmark. |
+| Cached transcript/long output | Implemented | Logical blocks, lazy details, viewport cache, deterministic benchmark. |
 | Tool/terminal/thought lifecycle | Implemented | Normalized events, collapsed detail blocks, root-bound ACP filesystem mediation, and client-mediated terminal create/output/wait/kill/release. |
 | Permission prompts | Implemented | Keyboard focus, readable option labels, stable ACP `optionId` routing, and cancellation. |
 | Relay roster mode | Implemented | Sequential automatic ring with max-round safety. |

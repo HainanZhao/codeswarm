@@ -152,6 +152,7 @@ dependencies = [
  "async-trait",
  "base64",
  "codeswarm-core",
+ "nix",
  "serde_json",
  "tokio",
 ]

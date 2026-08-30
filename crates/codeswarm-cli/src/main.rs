@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, VecDeque},
-    io::{Write, stdout},
+    ffi::OsStr,
+    io::{Read, Write, stdout},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     thread,
@@ -21,13 +22,15 @@ use codeswarm_core::settings;
 use codeswarm_core::{AgentEvent, BufferedEventLog, EventLog};
 use codeswarm_transcript::{BlockKind, fixtures};
 use codeswarm_tui::{
-    App, ConfigAction, ConfigKey, Input, Key as TuiKey, LocalCommand, PermissionAction,
-    PermissionKey, PromptAction, QueuedPrompt, StoreAction, StoreAgent, StoreKey, render,
+    App, ConfigAction, ConfigKey, FooterAction, Input, Key as TuiKey, LocalCommand,
+    PermissionAction, PermissionKey, PromptAction, QueuedPrompt, StoreAction, StoreAgent, StoreKey,
+    render,
 };
 use crossterm::{
+    cursor::Show,
     event::{
         self, DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
-        Event, KeyCode, KeyEventKind, KeyModifiers,
+        Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
     },
     execute,
     terminal::{
@@ -35,6 +38,104 @@ use crossterm::{
     },
 };
 use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
+
+fn terminal_capture_enabled_for(
+    tmux: Option<&OsStr>,
+    term: Option<&OsStr>,
+    term_program: Option<&OsStr>,
+) -> bool {
+    if tmux.is_some() {
+        return false;
+    }
+    let term = term.and_then(OsStr::to_str).unwrap_or_default();
+    let term_program = term_program.and_then(OsStr::to_str).unwrap_or_default();
+    !term.starts_with("tmux")
+        && !term.starts_with("screen")
+        && !term_program.eq_ignore_ascii_case("tmux")
+}
+
+fn terminal_capture_enabled() -> bool {
+    terminal_capture_enabled_for(
+        std::env::var_os("TMUX").as_deref(),
+        std::env::var_os("TERM").as_deref(),
+        std::env::var_os("TERM_PROGRAM").as_deref(),
+    )
+}
+
+/// Own terminal modes from setup through teardown. Drop is the last line of
+/// defense for early-return and panic paths, which is especially important
+/// when CodeSwarm runs inside a long-lived tmux pane.
+struct TerminalSession {
+    alternate_screen: bool,
+    capture_enabled: bool,
+    active: bool,
+}
+
+impl TerminalSession {
+    fn enter(alternate_screen: bool) -> std::io::Result<Self> {
+        enable_raw_mode()?;
+        let mut session = Self {
+            alternate_screen: false,
+            // tmux owns mouse/focus routing for its client. Avoid changing
+            // those modes from a nested application; keyboard input remains
+            // fully available and raw mode is still restored by this guard.
+            capture_enabled: terminal_capture_enabled(),
+            active: true,
+        };
+        let mut output = stdout();
+        if session.capture_enabled
+            && let Err(error) = execute!(output, EnableFocusChange, EnableMouseCapture)
+        {
+            let _ = session.restore();
+            return Err(error);
+        }
+        if alternate_screen {
+            // Treat the mode as entered before writing the escape sequence so
+            // even a partial write is paired with a best-effort leave.
+            session.alternate_screen = true;
+            if let Err(error) = execute!(output, EnterAlternateScreen) {
+                let _ = session.restore();
+                return Err(error);
+            }
+        }
+        Ok(session)
+    }
+
+    fn restore(&mut self) -> std::io::Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        let mut output = stdout();
+        let terminal_result = execute!(output, SetTitle("CodeSwarm"), Show);
+        let capture_result = if self.capture_enabled {
+            execute!(output, DisableFocusChange, DisableMouseCapture)
+        } else {
+            Ok(())
+        };
+        let screen_result = if self.alternate_screen {
+            execute!(output, LeaveAlternateScreen)
+        } else {
+            Ok(())
+        };
+        let raw_result = disable_raw_mode();
+        let result = terminal_result
+            .and(capture_result)
+            .and(screen_result)
+            .and(raw_result);
+        // A failed write may be transient. Keep the guard armed so Drop gets
+        // one final best-effort restoration attempt during scope teardown.
+        if result.is_ok() {
+            self.active = false;
+        }
+        result
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
 
 #[derive(Debug)]
 enum AdapterControl {
@@ -124,6 +225,21 @@ fn collaboration_strategy(label: &str) -> CollaborationStrategy {
     }
 }
 
+fn normalize_selected_slot(app: &App, selected: Option<usize>) -> Option<usize> {
+    let active = app.active_roster_slots();
+    match selected {
+        Some(slot) if active.contains(&slot) => Some(slot),
+        Some(_) => active.first().copied(),
+        None => None,
+    }
+}
+
+fn consume_one_shot_route(app: &App, selected: &mut Option<usize>) {
+    if app.collaboration() != "Manual routing" {
+        *selected = None;
+    }
+}
+
 enum Launch {
     Preview,
     Store,
@@ -192,16 +308,11 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     };
 
-    enable_raw_mode()?;
-    let mut output = stdout();
     // Ask terminals that support it (including tmux when configured) to
-    // report focus changes. The renderer remains correct when a terminal does
-    // not answer: App defaults to focused, so OS notifications are never
-    // emitted based on an unknown focus state.
-    execute!(output, EnableFocusChange, EnableMouseCapture)?;
-    if alternate_screen {
-        execute!(output, EnterAlternateScreen)?;
-    }
+    // report focus changes. The session guard restores every mode on normal,
+    // error, and unwind paths so the containing pane is never left raw.
+    let mut terminal_session = TerminalSession::enter(alternate_screen)?;
+    let output = stdout();
     let backend = CrosstermBackend::new(output);
     let viewport = if alternate_screen {
         Viewport::Fullscreen
@@ -221,20 +332,8 @@ fn main() -> std::io::Result<()> {
             max_rounds,
         } => run_roster(&mut terminal, specs, prompt, first_slot, max_rounds),
     };
-    // Do not leave an agent-specific or blinking OSC title behind after the
-    // inline viewport exits back to the user's shell.
-    execute!(terminal.backend_mut(), SetTitle("CodeSwarm"))?;
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        DisableFocusChange,
-        DisableMouseCapture
-    )?;
-    if alternate_screen {
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    }
-    terminal.show_cursor()?;
-    result
+    let restore_result = terminal_session.restore();
+    result.and(restore_result)
 }
 
 /// Keep the compact flag-based interface while accepting the two documented
@@ -1274,14 +1373,18 @@ fn run_agy_command(
     command: &str,
 ) -> std::io::Result<()> {
     let initial_prompt = prompt.clone();
-    let (events, controls) = spawn_agy_command(prompt, command.to_owned());
+    let (events, controls, worker) = spawn_agy_command(prompt, command.to_owned());
     let mut app = App::default();
     app.set_agent_name(0, display_agent_name(command));
     app.set_header(command, "starting");
     if let Some(prompt) = initial_prompt {
         app.record_human_message(&prompt, false);
     }
-    run_terminal(terminal, &mut app, Some(events), Some(controls), None)
+    let shutdown = controls.clone();
+    let result = run_terminal(terminal, &mut app, Some(events), Some(controls), None);
+    let _ = shutdown.send(AdapterControl::Stop);
+    let _ = worker.join();
+    result
 }
 
 fn run_acp(
@@ -1298,14 +1401,20 @@ fn run_acp_program(
     prompt: Option<String>,
 ) -> std::io::Result<()> {
     let initial_prompt = prompt.clone();
-    let (events, controls) = spawn_acp(program.clone(), prompt);
+    let (events, controls, worker) = spawn_acp(program.clone(), prompt);
     let mut app = App::default();
     app.set_agent_name(0, display_agent_name(&program));
     app.set_header(program, "starting");
     if let Some(prompt) = initial_prompt {
         app.record_human_message(&prompt, false);
     }
-    run_terminal(terminal, &mut app, Some(events), Some(controls), None)
+    let shutdown = controls.clone();
+    let result = run_terminal(terminal, &mut app, Some(events), Some(controls), None);
+    let _ = shutdown.send(AdapterControl::Stop);
+    if let Some(worker) = worker {
+        let _ = worker.join();
+    }
+    result
 }
 
 fn run_roster(
@@ -1331,15 +1440,19 @@ fn run_roster(
     if let Some(prompt) = prompt.as_ref() {
         app.record_human_message(prompt, false);
     }
-    let (events, controls) = spawn_relay(specs, prompt, first_slot, max_rounds);
+    let (events, controls, worker) = spawn_relay(specs, prompt, first_slot, max_rounds);
     app.set_header("CodeSwarm roster", "starting");
-    run_terminal(
+    let shutdown = controls.clone();
+    let result = run_terminal(
         terminal,
         &mut app,
         Some(events),
         Some(controls),
         Some(first_slot),
-    )
+    );
+    let _ = shutdown.send(AdapterControl::Stop);
+    let _ = worker.join();
+    result
 }
 
 fn spawn_agy_command(
@@ -1348,11 +1461,12 @@ fn spawn_agy_command(
 ) -> (
     Receiver<AdapterResult<AgentEvent>>,
     tokio::sync::mpsc::UnboundedSender<AdapterControl>,
+    thread::JoinHandle<()>,
 ) {
     let (sender, receiver) = mpsc::channel();
     let (controls, control_receiver) = tokio::sync::mpsc::unbounded_channel();
-    thread::spawn(move || run_agy_task(sender, control_receiver, prompt, command));
-    (receiver, controls)
+    let worker = thread::spawn(move || run_agy_task(sender, control_receiver, prompt, command));
+    (receiver, controls, worker)
 }
 
 /// Hide CodeSwarm's relay marker when an adapter is run directly. Relay turns
@@ -1441,10 +1555,14 @@ fn run_agy_task(
             && let Err(error) = adapter.send_prompt(prompt).await
         {
             let _ = sender.send(Err(error));
+            let _ = adapter.stop().await;
+            if let Some(writer) = &metadata_writer {
+                let _ = writer.flush();
+            }
             return;
         }
         let mut response_tail = String::new();
-        loop {
+        'events: loop {
             tokio::select! {
                 event = adapter.next_event() => match event {
                     Some(event) => {
@@ -1454,7 +1572,7 @@ fn run_agy_task(
                                     matches!(&event, AgentEvent::TurnComplete { .. });
                                 for event in sanitize_direct_event(event, &mut response_tail) {
                                     if sender.send(Ok(event)).is_err() {
-                                        return;
+                                        break 'events;
                                     }
                                 }
                                 if turn_complete {
@@ -1470,7 +1588,7 @@ fn run_agy_task(
                             Err(error) => {
                                 response_tail.clear();
                                 if sender.send(Err(error)).is_err() {
-                                    return;
+                                    break 'events;
                                 }
                             }
                         }
@@ -1529,6 +1647,7 @@ fn spawn_acp(
 ) -> (
     Receiver<AdapterResult<AgentEvent>>,
     tokio::sync::mpsc::UnboundedSender<AdapterControl>,
+    Option<thread::JoinHandle<()>>,
 ) {
     let (sender, receiver) = mpsc::channel();
     let (controls, control_receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -1538,11 +1657,12 @@ fn spawn_acp(
             let _ = sender.send(Err(AdapterError::Spawn(format!(
                 "invalid ACP command: {error}"
             ))));
-            return (receiver, controls);
+            return (receiver, controls, None);
         }
     };
-    thread::spawn(move || run_acp_task(sender, control_receiver, program, args, prompt));
-    (receiver, controls)
+    let worker =
+        thread::spawn(move || run_acp_task(sender, control_receiver, program, args, prompt));
+    (receiver, controls, Some(worker))
 }
 
 fn run_acp_task(
@@ -1597,10 +1717,14 @@ fn run_acp_task(
             && let Err(error) = adapter.send_prompt(prompt).await
         {
             let _ = sender.send(Err(error));
+            let _ = adapter.stop().await;
+            if let Some(writer) = &metadata_writer {
+                let _ = writer.flush();
+            }
             return;
         }
         let mut response_tail = String::new();
-        loop {
+        'events: loop {
             tokio::select! {
                 event = adapter.next_event() => match event {
                     Some(event) => {
@@ -1610,7 +1734,7 @@ fn run_acp_task(
                                     matches!(&event, AgentEvent::TurnComplete { .. });
                                 for event in sanitize_direct_event(event, &mut response_tail) {
                                     if sender.send(Ok(event)).is_err() {
-                                        return;
+                                        break 'events;
                                     }
                                 }
                                 if turn_complete {
@@ -1626,7 +1750,7 @@ fn run_acp_task(
                             Err(error) => {
                                 response_tail.clear();
                                 if sender.send(Err(error)).is_err() {
-                                    return;
+                                    break 'events;
                                 }
                             }
                         }
@@ -1687,10 +1811,11 @@ fn spawn_relay(
 ) -> (
     Receiver<AdapterResult<AgentEvent>>,
     tokio::sync::mpsc::UnboundedSender<AdapterControl>,
+    thread::JoinHandle<()>,
 ) {
     let (sender, receiver) = mpsc::channel();
     let (controls, control_receiver) = tokio::sync::mpsc::unbounded_channel();
-    thread::spawn(move || {
+    let worker = thread::spawn(move || {
         run_relay_task(
             sender,
             control_receiver,
@@ -1700,7 +1825,7 @@ fn spawn_relay(
             max_rounds,
         )
     });
-    (receiver, controls)
+    (receiver, controls, worker)
 }
 
 async fn run_relay_turn_with_controls(
@@ -1923,11 +2048,11 @@ fn run_relay_task(
             };
             match command {
                 Some(AdapterControl::Prompt(prompt)) => {
-                    // If the configured first slot crashed, continue an
-                    // untagged human prompt with the first healthy slot
-                    // rather than stranding the session behind a tombstone.
+                    // No explicit target means the relay's live routing state
+                    // chooses the next recipient. Footer selections use Queue
+                    // and are consumed after one message.
                     let selected = relay.relay().active_slots().next().unwrap_or(first_slot);
-                    if !relay.relay_mut().enqueue_human(prompt, Some(selected)) {
+                    if !relay.relay_mut().enqueue_human(prompt, None) {
                         let _ = sender.send(Err(AdapterError::Transport(
                             "unable to queue prompt for roster".into(),
                         )));
@@ -2115,6 +2240,8 @@ fn run_terminal(
     let mut title_blink_at = Instant::now();
     let mut last_terminal_title = String::new();
     loop {
+        selected_slot = normalize_selected_slot(app, selected_slot);
+        app.set_selected_agent(selected_slot);
         if let Some(events) = &events {
             while let Ok(event) = events.try_recv() {
                 match event {
@@ -2281,7 +2408,7 @@ fn run_terminal(
             execute!(terminal.backend_mut(), SetTitle(terminal_title.as_str()))?;
             last_terminal_title = terminal_title;
         }
-        terminal.draw(|frame| render(frame, app))?;
+        let frame_area = terminal.draw(|frame| render(frame, app))?.area;
         if !event::poll(Duration::from_millis(50))? {
             continue;
         }
@@ -2296,6 +2423,29 @@ fn run_terminal(
             }
             Event::Mouse(_) if app.path_picker_visible() => {
                 app.dismiss_path_picker();
+                continue;
+            }
+            Event::Mouse(mouse)
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                    && mouse.row == frame_area.bottom().saturating_sub(1)
+                    && mouse.column >= frame_area.x
+                    && mouse.column < frame_area.right() =>
+            {
+                match app.footer_action(mouse.column.saturating_sub(frame_area.x), frame_area.width)
+                {
+                    FooterAction::SelectAgent(slot) => {
+                        selected_slot = Some(slot);
+                        app.set_selected_agent(selected_slot);
+                        app.status = format!("selected {}", app.agent_name(slot));
+                    }
+                    FooterAction::OpenCollaboration => {
+                        let _ = app.handle_local_command("/collab");
+                    }
+                    FooterAction::OpenMode => {
+                        let _ = app.handle_local_command("/mode");
+                    }
+                    FooterAction::Ignored => {}
+                }
                 continue;
             }
             Event::Key(key) => {
@@ -2514,6 +2664,7 @@ fn run_terminal(
                             if turn_active {
                                 if app.queue_prompt(prompt, Some(slot), true).is_some() {
                                     let _ = app.take_prompt();
+                                    consume_one_shot_route(app, &mut selected_slot);
                                     app.status = "direct prompt queued".into();
                                 } else {
                                     app.status = "queue full or prompt empty".into();
@@ -2526,6 +2677,7 @@ fn run_terminal(
                                 .is_ok()
                             {
                                 turn_active = true;
+                                consume_one_shot_route(app, &mut selected_slot);
                                 app.status = "direct turn queued".into();
                             }
                         }
@@ -2755,6 +2907,7 @@ fn run_terminal(
                                 app.record_human_message(&prompt, false);
                                 if turn_active {
                                     if app.queue_prompt(prompt, selected_slot, false).is_some() {
+                                        consume_one_shot_route(app, &mut selected_slot);
                                         app.status = "prompt queued".into();
                                     } else {
                                         app.status = "queue full or prompt empty".into();
@@ -2767,6 +2920,7 @@ fn run_terminal(
                                     };
                                     if controls.send(command).is_ok() {
                                         turn_active = true;
+                                        consume_one_shot_route(app, &mut selected_slot);
                                         app.status = "queued".into();
                                     }
                                 }
@@ -2853,21 +3007,35 @@ fn export_conversation(app: &App) -> std::io::Result<PathBuf> {
 fn spawn_local_shell(sender: Sender<AdapterResult<AgentEvent>>, command: String) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     thread::spawn(move || {
-        let output = std::process::Command::new("sh")
+        const MAX_SHELL_OUTPUT: usize = 64 * 1024;
+        let child = std::process::Command::new("sh")
             .arg("-c")
             .arg(&command)
             .current_dir(cwd)
-            .output();
-        match output {
-            Ok(output) => {
-                const MAX_SHELL_OUTPUT: usize = 64 * 1024;
-                let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-                if text.len() > MAX_SHELL_OUTPUT {
-                    text.truncate(MAX_SHELL_OUTPUT);
-                    text.push_str("\n[CodeSwarm truncated local command output]\n");
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        match child {
+            Ok(mut child) => {
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+                let stdout_reader = thread::spawn(move || {
+                    stdout.map(|pipe| drain_bounded_sync(pipe, MAX_SHELL_OUTPUT / 2))
+                });
+                let stderr_reader = thread::spawn(move || {
+                    stderr.map(|pipe| drain_bounded_sync(pipe, MAX_SHELL_OUTPUT / 2))
+                });
+                let status = child.wait();
+                let (stdout, stdout_truncated) =
+                    stdout_reader.join().ok().flatten().unwrap_or_default();
+                let (stderr, stderr_truncated) =
+                    stderr_reader.join().ok().flatten().unwrap_or_default();
+                let mut text = String::from_utf8_lossy(&stdout).into_owned();
+                if !stderr.is_empty() {
+                    text.push_str(&String::from_utf8_lossy(&stderr));
                 }
-                if !output.stderr.is_empty() {
-                    text.push_str(&String::from_utf8_lossy(&output.stderr));
+                if stdout_truncated || stderr_truncated {
+                    text.push_str("\n[CodeSwarm truncated local command output]\n");
                 }
                 if !text.is_empty() {
                     let _ = sender.send(Ok(AgentEvent::Terminal {
@@ -2882,7 +3050,7 @@ fn spawn_local_shell(sender: Sender<AdapterResult<AgentEvent>>, command: String)
                     slot: 0,
                     event: codeswarm_core::TerminalEvent::Exited {
                         id: "local-shell".into(),
-                        code: output.status.code().unwrap_or(-1),
+                        code: status.ok().and_then(|status| status.code()).unwrap_or(-1),
                     },
                 }));
                 let _ = sender.send(Ok(AgentEvent::TurnComplete { slot: 0 }));
@@ -2894,6 +3062,22 @@ fn spawn_local_shell(sender: Sender<AdapterResult<AgentEvent>>, command: String)
             }
         }
     });
+}
+
+fn drain_bounded_sync<R: Read>(mut reader: R, limit: usize) -> (Vec<u8>, bool) {
+    let mut retained = Vec::with_capacity(limit.min(8 * 1024));
+    let mut truncated = false;
+    let mut chunk = [0_u8; 8 * 1024];
+    while let Ok(count) = reader.read(&mut chunk) {
+        if count == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(retained.len());
+        let keep = count.min(remaining);
+        retained.extend_from_slice(&chunk[..keep]);
+        truncated |= keep < count;
+    }
+    (retained, truncated)
 }
 
 fn state_directory() -> PathBuf {
@@ -3061,17 +3245,68 @@ fn notify_permission_request(agent: &str) {
 mod tests {
     use super::{
         AdapterControl, AgentSpec, Launch, apply_notification_preferences,
-        bare_launch_from_settings, dispatch_permission_action, dispatch_queued_prompt,
-        normalize_arguments, parse_launch, prepare_launch_arguments, project_dir_argument,
-        project_prompt_history_path, reconcile_config_roster, run_relay_sequence_with_controls,
-        sanitize_direct_event, standalone_session_metadata, validate_project_directory,
+        bare_launch_from_settings, consume_one_shot_route, dispatch_permission_action,
+        dispatch_queued_prompt, drain_bounded_sync, normalize_arguments, normalize_selected_slot,
+        parse_launch, prepare_launch_arguments, project_dir_argument, project_prompt_history_path,
+        reconcile_config_roster, run_relay_sequence_with_controls, sanitize_direct_event,
+        standalone_session_metadata, terminal_capture_enabled_for, validate_project_directory,
     };
     use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
     use codeswarm_core::persistence::{SessionMetadata, SessionMetadataStore};
     use codeswarm_core::{AgentCapabilities, AgentEvent, PermissionAnswer};
     use codeswarm_tui::{PermissionAction, QueuedPrompt, StoreAgent};
     use std::collections::BTreeSet;
+    use std::ffi::OsStr;
     use std::path::PathBuf;
+
+    #[test]
+    fn terminal_capture_stays_disabled_for_multiplexers_when_tmux_is_stripped() {
+        assert!(!terminal_capture_enabled_for(
+            None,
+            Some(OsStr::new("screen-256color")),
+            None,
+        ));
+        assert!(!terminal_capture_enabled_for(
+            None,
+            Some(OsStr::new("xterm-256color")),
+            Some(OsStr::new("tmux")),
+        ));
+        assert!(!terminal_capture_enabled_for(
+            Some(OsStr::new("/tmp/tmux/default,1,0")),
+            Some(OsStr::new("xterm-256color")),
+            None,
+        ));
+        assert!(terminal_capture_enabled_for(
+            None,
+            Some(OsStr::new("xterm-256color")),
+            None,
+        ));
+    }
+
+    #[test]
+    fn local_shell_drain_caps_retained_bytes_but_consumes_the_stream() {
+        let source = vec![b'x'; 128 * 1024];
+        let (retained, truncated) = drain_bounded_sync(std::io::Cursor::new(source), 1024);
+        assert_eq!(retained.len(), 1024);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn dropped_routing_target_falls_back_and_roster_override_is_one_shot() {
+        let mut app = codeswarm_tui::App::default();
+        app.set_agent_name(0, "Owner");
+        app.set_agent_name(1, "Peer");
+        app.mark_agent_dropped(1);
+        assert_eq!(normalize_selected_slot(&app, Some(1)), Some(0));
+
+        let mut selected = Some(0);
+        consume_one_shot_route(&app, &mut selected);
+        assert_eq!(selected, None);
+        app.set_collaboration("Manual routing");
+        selected = Some(0);
+        consume_one_shot_route(&app, &mut selected);
+        assert_eq!(selected, Some(0));
+    }
 
     #[test]
     fn parses_native_agent_prompt_without_treating_it_as_acp() {

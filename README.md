@@ -109,8 +109,7 @@ Inside the conversation prompt:
 - `!command` runs a bounded local shell command in the selected workspace.
 
 The interface keeps streamed output coalesced and transcript rows cached, so a
-5,000-word response remains interactive in tmux. Run the performance harness
-with `bash tests/tmux/performance.sh`.
+5,000-word response remains interactive in constrained terminals.
 
 Prompt history is persisted locally and capped at the last 50 entries.
 
@@ -122,8 +121,7 @@ Cargo is the canonical build and test tool:
 make verify
 ```
 
-This runs formatting, workspace tests, Clippy, and the tmux smoke/config/
-performance harnesses.
+This runs formatting, workspace tests, and Clippy.
 
 ## License
 

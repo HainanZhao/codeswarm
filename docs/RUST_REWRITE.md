@@ -36,6 +36,6 @@ every CLI.
 make verify
 ```
 
-The gate runs Cargo formatting, workspace tests, Clippy, and real tmux smoke,
-config, and performance checks. The 5,000-word benchmark validates cached
-scrolling and interactive input latency.
+The gate runs Cargo formatting, workspace tests, and Clippy. Deterministic
+Ratatui and transcript benchmarks validate cached scrolling and interaction
+without managing external tmux servers or sessions.
