@@ -3518,19 +3518,6 @@ fn render_store(frame: &mut Frame, app: &App, area: Rect) {
                 ),
             ]));
         }
-        if index == app.store_selected {
-            lines.push(Line::styled(
-                if compact {
-                    format!(
-                        "   {}",
-                        compact_label(&agent.identity, usize::from(modal.width).saturating_sub(6))
-                    )
-                } else {
-                    format!("     {} · {}", agent.identity, agent.command)
-                },
-                Style::default().fg(Color::Gray),
-            ));
-        }
     }
     Paragraph::new(lines)
         .style(Style::default().bg(PANEL_BG))
@@ -5508,7 +5495,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_store_renders_availability_and_command_details() {
+    fn agent_store_renders_clean_identity_without_launch_command() {
         let backend = TestBackend::new(72, 18);
         let mut terminal = Terminal::new(backend).expect("test terminal");
         let mut app = App::default();
@@ -5537,9 +5524,10 @@ mod tests {
         assert!(rendered.contains("Custom Agent"), "rendered={rendered:?}");
         assert!(rendered.contains("not found"), "rendered={rendered:?}");
         assert!(
-            rendered.contains("custom-agent --acp"),
+            !rendered.contains("custom.example"),
             "rendered={rendered:?}"
         );
+        assert!(!rendered.contains("custom-agent"), "rendered={rendered:?}");
     }
 
     #[test]

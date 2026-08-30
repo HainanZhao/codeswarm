@@ -805,7 +805,16 @@ fn display_agent_name(command: &str) -> String {
     } else if lower.split_whitespace().next() == Some("agy") || lower.contains("antigravity") {
         "Antigravity CLI".into()
     } else {
-        command.into()
+        parse_command_line(command)
+            .ok()
+            .and_then(|(program, _)| {
+                Path::new(&program)
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .map(str::to_owned)
+            })
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Agent".into())
     }
 }
 
@@ -1478,8 +1487,9 @@ fn run_agy_command(
     let initial_prompt = prompt.clone();
     let (events, controls, worker) = spawn_agy_command(prompt, command.to_owned(), resume);
     let mut app = App::default();
-    app.set_agent_name(0, display_agent_name(command));
-    app.set_header(command, "starting");
+    let name = display_agent_name(command);
+    app.set_agent_name(0, name.clone());
+    app.set_header(name, "starting");
     if let Some(prompt) = initial_prompt {
         app.record_human_message(&prompt, false);
     }
@@ -1508,8 +1518,9 @@ fn run_acp_program(
     let initial_prompt = prompt.clone();
     let (events, controls, worker) = spawn_acp(program.clone(), prompt, resume);
     let mut app = App::default();
-    app.set_agent_name(0, display_agent_name(&program));
-    app.set_header(program, "starting");
+    let name = display_agent_name(&program);
+    app.set_agent_name(0, name.clone());
+    app.set_header(name, "starting");
     if let Some(prompt) = initial_prompt {
         app.record_human_message(&prompt, false);
     }
@@ -3515,6 +3526,10 @@ mod tests {
         assert_eq!(
             super::display_agent_name("agy --dangerously-skip-permissions"),
             "Antigravity CLI"
+        );
+        assert_eq!(
+            super::display_agent_name("/opt/company/bin/reviewer-agent --stdio"),
+            "reviewer-agent"
         );
     }
 
