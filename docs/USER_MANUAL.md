@@ -68,7 +68,7 @@ bounded to preserve tmux responsiveness.
 
 - `/help` — show the complete keyboard and command guide.
 - `/config` — open settings.
-- `/agents` — return to the agent store and edit the saved roster.
+- `/agents` — open roster settings without stopping the session.
 - `/add AGENT`, `/add agy:COMMAND`, or `/add acp:COMMAND` — append a live peer
   without restarting the current conversation.
 - `/export` — write the retained transcript to a timestamped Markdown file.

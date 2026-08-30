@@ -87,7 +87,6 @@ pub enum LocalCommand {
     Mode,
     Collaboration,
     Export,
-    Agents,
     Add(String),
     Reload,
     Drop,
@@ -112,7 +111,8 @@ pub enum ConfigKey {
 pub enum ConfigAction {
     Ignored,
     Changed,
-    Close,
+    Save,
+    Cancel,
 }
 
 /// When CodeSwarm may forward completion and permission events to the
@@ -737,6 +737,23 @@ impl PermissionPrompt {
     }
 }
 
+#[derive(Clone, Debug)]
+struct ConfigSnapshot {
+    follow_tail: bool,
+    collapse_details: bool,
+    notification_policy: NotificationPolicy,
+    mode: String,
+    collaboration: String,
+    diff_split: bool,
+    show_thoughts: bool,
+    tool_expand_policy: ToolExpandPolicy,
+    density: Density,
+    show_scrollbar: bool,
+    sounds: bool,
+    blink_title: bool,
+    agents: Vec<StoreAgent>,
+}
+
 #[derive(Debug)]
 pub struct App {
     pub transcript: Transcript,
@@ -773,6 +790,7 @@ pub struct App {
     store_editing_directory: bool,
     config_agents: Vec<StoreAgent>,
     config_roster_dirty: bool,
+    config_snapshot: Option<ConfigSnapshot>,
     prompt_editor: PromptEditor,
     agent_names: BTreeMap<usize, String>,
     agent_states: BTreeMap<usize, String>,
@@ -841,6 +859,7 @@ impl Default for App {
             store_editing_directory: false,
             config_agents: Vec::new(),
             config_roster_dirty: false,
+            config_snapshot: None,
             prompt_editor: PromptEditor::default(),
             agent_names: BTreeMap::new(),
             agent_states: BTreeMap::new(),
@@ -888,7 +907,7 @@ impl App {
             "/cancel" => LocalCommand::Cancel,
             "/mode" => {
                 if argument.is_empty() {
-                    self.config_visible = true;
+                    self.begin_config();
                     self.config_selected = 3;
                     self.status = "mode configuration".into();
                     LocalCommand::Handled
@@ -912,7 +931,7 @@ impl App {
             }
             "/collab" | "/collaboration" => {
                 if argument.is_empty() {
-                    self.config_visible = true;
+                    self.begin_config();
                     self.config_selected = 4;
                     self.status = "collaboration configuration".into();
                     LocalCommand::Handled
@@ -932,7 +951,12 @@ impl App {
                 }
             }
             "/export" => LocalCommand::Export,
-            "/agents" => LocalCommand::Agents,
+            "/agents" => {
+                self.begin_config();
+                self.config_selected = CONFIG_SETTING_COUNT;
+                self.status = "roster settings".into();
+                LocalCommand::Handled
+            }
             "/add" => {
                 if argument.is_empty() {
                     self.status = "usage: /add AGENT, agy:COMMAND, or acp:COMMAND".into();
@@ -993,7 +1017,7 @@ impl App {
                 LocalCommand::Handled
             }
             "/config" => {
-                self.config_visible = true;
+                self.begin_config();
                 self.config_selected = 0;
                 self.status = "configuration".into();
                 LocalCommand::Handled
@@ -1028,7 +1052,24 @@ impl App {
         self.config_visible
     }
 
-    pub fn reopen_config(&mut self) {
+    fn begin_config(&mut self) {
+        if !self.config_visible {
+            self.config_snapshot = Some(ConfigSnapshot {
+                follow_tail: self.follow_tail,
+                collapse_details: self.collapse_details,
+                notification_policy: self.notification_policy,
+                mode: self.mode.clone(),
+                collaboration: self.collaboration.clone(),
+                diff_split: self.diff_split,
+                show_thoughts: self.show_thoughts,
+                tool_expand_policy: self.tool_expand_policy,
+                density: self.density,
+                show_scrollbar: self.show_scrollbar,
+                sounds: self.sounds,
+                blink_title: self.blink_title,
+                agents: self.config_agents.clone(),
+            });
+        }
         self.config_visible = true;
     }
 
@@ -1050,6 +1091,12 @@ impl App {
 
     pub fn config_roster_dirty(&self) -> bool {
         self.config_roster_dirty
+    }
+
+    pub fn config_collaboration_changed(&self) -> bool {
+        self.config_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| self.collaboration != snapshot.collaboration)
     }
 
     pub fn mark_config_roster_saved(&mut self) {
@@ -1123,14 +1170,18 @@ impl App {
     }
 
     pub fn handle_store_key(&mut self, key: StoreKey) -> StoreAction {
-        if !self.store_visible || self.store_agents.is_empty() {
+        if !self.store_visible {
+            return StoreAction::Ignored;
+        }
+        if key == StoreKey::Cancel {
+            self.store_visible = false;
+            return StoreAction::Close;
+        }
+        if self.store_agents.is_empty() {
             return StoreAction::Ignored;
         }
         match key {
-            StoreKey::Cancel => {
-                self.store_visible = false;
-                StoreAction::Close
-            }
+            StoreKey::Cancel => unreachable!("cancel handled before empty-store guard"),
             StoreKey::Up => {
                 self.store_selected = self.store_selected.saturating_sub(1);
                 StoreAction::Changed
@@ -1207,13 +1258,32 @@ impl App {
         match key {
             ConfigKey::Cancel => {
                 self.config_visible = false;
-                self.status = "configuration closed".into();
-                ConfigAction::Close
+                if let Some(snapshot) = self.config_snapshot.take() {
+                    self.follow_tail = snapshot.follow_tail;
+                    self.collapse_details = snapshot.collapse_details;
+                    self.notification_policy = snapshot.notification_policy;
+                    self.mode = snapshot.mode;
+                    self.collaboration = snapshot.collaboration;
+                    self.diff_split = snapshot.diff_split;
+                    self.show_thoughts = snapshot.show_thoughts;
+                    self.tool_expand_policy = snapshot.tool_expand_policy;
+                    self.expand_tools = snapshot.tool_expand_policy == ToolExpandPolicy::Always;
+                    self.density = snapshot.density;
+                    self.show_scrollbar = snapshot.show_scrollbar;
+                    self.sounds = snapshot.sounds;
+                    self.blink_title = snapshot.blink_title;
+                    self.config_agents = snapshot.agents;
+                    self.config_roster_dirty = false;
+                }
+                self.requested_mode = None;
+                self.status = "changes discarded".into();
+                ConfigAction::Cancel
             }
             ConfigKey::Save => {
                 self.config_visible = false;
+                self.config_snapshot = None;
                 self.status = "configuration saved".into();
-                ConfigAction::Close
+                ConfigAction::Save
             }
             ConfigKey::Up => {
                 self.config_selected = self.config_selected.saturating_sub(1);
@@ -2330,7 +2400,7 @@ impl App {
     pub fn scroll_by(&mut self, delta: isize, width: usize, height: usize) {
         let max_scroll = self
             .transcript
-            .row_count(width.saturating_sub(2))
+            .row_count(self.transcript_content_width(width))
             .saturating_sub(height);
         self.scroll_y = self.scroll_y.saturating_add_signed(delta).min(max_scroll);
         self.follow_tail = self.scroll_y == max_scroll;
@@ -2339,9 +2409,13 @@ impl App {
     pub fn follow_tail(&mut self, width: usize, height: usize) {
         self.scroll_y = self
             .transcript
-            .row_count(width.saturating_sub(2))
+            .row_count(self.transcript_content_width(width))
             .saturating_sub(height);
         self.follow_tail = true;
+    }
+
+    fn transcript_content_width(&self, outer_width: usize) -> usize {
+        outer_width.saturating_sub(2 + usize::from(self.show_scrollbar))
     }
 
     pub fn toggle_focused_detail(&mut self) -> Option<bool> {
@@ -2601,9 +2675,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Constraint::Length(status_height as u16),
     ])
     .split(area);
-    let content_width = rows[0]
-        .width
-        .saturating_sub(2 + u16::from(app.show_scrollbar)) as usize;
+    let content_width = app.transcript_content_width(usize::from(rows[0].width));
     let content_height = usize::from(rows[0].height.saturating_sub(1));
     if app.follow_tail {
         app.follow_tail(rows[0].width as usize, content_height);
@@ -4979,7 +5051,7 @@ mod tests {
         assert!(!app.follow_tail);
         assert_eq!(
             app.handle_config_key(ConfigKey::Cancel),
-            ConfigAction::Close
+            ConfigAction::Cancel
         );
         assert_eq!(
             app.handle_local_command("/close"),
@@ -5007,8 +5079,10 @@ mod tests {
         );
         assert_eq!(
             app.handle_local_command("/agents"),
-            Some(LocalCommand::Agents)
+            Some(LocalCommand::Handled)
         );
+        assert!(app.config_visible());
+        app.handle_config_key(ConfigKey::Cancel);
         assert_eq!(
             app.handle_local_command("/add acp:reviewer --acp"),
             Some(LocalCommand::Add("acp:reviewer --acp".into()))
@@ -5031,6 +5105,29 @@ mod tests {
             Some(LocalCommand::Diff)
         );
         assert!(app.diff_split());
+    }
+
+    #[test]
+    fn cancelling_configuration_restores_mode_and_collaboration() {
+        let mut app = App::default();
+        app.handle_local_command("/config");
+        app.handle_config_key(ConfigKey::Confirm);
+        assert!(!app.follow_tail);
+        for _ in 0..3 {
+            app.handle_config_key(ConfigKey::Down);
+        }
+        app.handle_config_key(ConfigKey::Confirm);
+        app.handle_config_key(ConfigKey::Down);
+        app.handle_config_key(ConfigKey::Confirm);
+        assert_ne!(app.mode(), "Auto pilot");
+        assert_ne!(app.collaboration(), "Roster relay");
+        assert_eq!(
+            app.handle_config_key(ConfigKey::Cancel),
+            ConfigAction::Cancel
+        );
+        assert_eq!(app.mode(), "Auto pilot");
+        assert_eq!(app.collaboration(), "Roster relay");
+        assert!(app.follow_tail);
     }
 
     #[test]
@@ -5107,7 +5204,7 @@ mod tests {
             app.config_roster_identities(),
             ["two.example", "one.example"]
         );
-        assert_eq!(app.handle_config_key(ConfigKey::Save), ConfigAction::Close);
+        assert_eq!(app.handle_config_key(ConfigKey::Save), ConfigAction::Save);
         assert!(!app.config_visible());
     }
 
@@ -5493,6 +5590,14 @@ mod tests {
         );
         assert!(app.store_visible());
         assert_eq!(app.store_status, "Not detected: Missing Agent");
+    }
+
+    #[test]
+    fn empty_agent_store_can_always_be_closed() {
+        let mut app = App::default();
+        app.show_store(Vec::new());
+        assert_eq!(app.handle_store_key(StoreKey::Cancel), StoreAction::Close);
+        assert!(!app.store_visible());
     }
 
     #[test]
@@ -5913,6 +6018,7 @@ mod tests {
         );
         app.follow_tail(80, 10);
         let tail = app.scroll_y;
+        assert_eq!(tail, app.transcript.row_count(77).saturating_sub(10));
         assert!(app.follow_tail);
         app.scroll_by(-1, 80, 10);
         assert!(!app.follow_tail);
@@ -5923,6 +6029,12 @@ mod tests {
         app.follow_tail(80, 10);
         assert!(app.follow_tail);
         assert!(app.scroll_y >= tail);
+        app.set_scrollbar_visible(false);
+        app.follow_tail(80, 10);
+        assert_eq!(
+            app.scroll_y,
+            app.transcript.row_count(78).saturating_sub(10)
+        );
         let base_height = app.content_height(24);
         app.queue_prompt("queued", Some(1), false);
         assert!(app.content_height(24) < base_height);

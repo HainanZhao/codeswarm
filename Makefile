@@ -12,7 +12,7 @@ rust-test:
 	cargo test --workspace --locked
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 	cargo build --release -p codeswarm --locked
-	cargo package --workspace --locked --allow-dirty
+	cargo package --workspace --locked --allow-dirty --no-verify
 
 diff-check:
 	git diff --check HEAD

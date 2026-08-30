@@ -12,7 +12,7 @@ CodeSwarm is now a Rust-only Cargo workspace. The production entry point is
   cached viewport rows.
 - `codeswarm-tui` owns prompt editing, config/help surfaces, permissions, and
   low-churn rendering.
-- `codeswarm-cli` owns process startup, terminal input, adapter lifecycle, and
+- the `codeswarm` package owns process startup, terminal input, adapter lifecycle, and
   command routing.
 
 The renderer uses a guarded full-screen alternate screen. The transcript path

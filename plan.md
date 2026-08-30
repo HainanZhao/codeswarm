@@ -52,10 +52,9 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 
 - [x] Created the Rust Cargo workspace and the \`codeswarm-core\`,
   \`codeswarm-adapters\`, \`codeswarm-transcript\`, \`codeswarm-tui\`, and
-  \`codeswarm-cli\` crates.
+  \`codeswarm\` packages.
 - [x] Added deterministic 5,000-word and 100-turn transcript fixtures, a
-  benchmark binary, a cached viewport transcript renderer, and a real tmux
-  smoke test.
+  benchmark binary, and a cached viewport transcript renderer.
 - [x] Added a 5,000-word cached-scroll regression budget (<100ms), bounded
   visible rows, and stream-chunk coalescing into one logical transcript block.
 - [x] Added framework-independent normalized events, a replayable JSONL event
@@ -401,8 +400,8 @@ viewport benchmarks.
   compare normalized state, relay order, persistence results, and user-visible
   terminal decisions—not byte-for-byte rendering.
 - [x] Run `make verify` for formatting, Clippy, unit/integration tests,
-  packaging, release build, and deterministic benchmarks.
-- [ ] Dogfood with ACP and native adapters on real tmux and SSH sessions;
+  package archive validation, release build, and deterministic benchmarks.
+- [ ] Dogfood with ACP and native adapters in constrained terminal sessions;
   capture only local benchmark diagnostics, never telemetry.
 - [x] Release the Rust frontend under the existing `codeswarm` identity with a
   single native launcher and no compatibility runtime.

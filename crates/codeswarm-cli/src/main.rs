@@ -38,6 +38,7 @@ use crossterm::{
     },
 };
 use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
+use sha2::{Digest, Sha256};
 
 fn terminal_capture_enabled_for(
     tmux: Option<&OsStr>,
@@ -1514,8 +1515,7 @@ fn run_agy_command(
     }
     let shutdown = controls.clone();
     let result = run_terminal(terminal, &mut app, Some(events), Some(controls), None);
-    let _ = shutdown.send(AdapterControl::Stop);
-    let _ = worker.join();
+    stop_worker(shutdown, Some(worker));
     result
 }
 
@@ -1545,10 +1545,7 @@ fn run_acp_program(
     }
     let shutdown = controls.clone();
     let result = run_terminal(terminal, &mut app, Some(events), Some(controls), None);
-    let _ = shutdown.send(AdapterControl::Stop);
-    if let Some(worker) = worker {
-        let _ = worker.join();
-    }
+    stop_worker(shutdown, worker);
     result
 }
 
@@ -1586,9 +1583,23 @@ fn run_roster(
         Some(controls),
         Some(first_slot),
     );
-    let _ = shutdown.send(AdapterControl::Stop);
-    let _ = worker.join();
+    stop_worker(shutdown, Some(worker));
     result
+}
+
+fn stop_worker(
+    shutdown: tokio::sync::mpsc::UnboundedSender<AdapterControl>,
+    worker: Option<thread::JoinHandle<()>>,
+) {
+    let _ = shutdown.send(AdapterControl::Stop);
+    let Some(worker) = worker else { return };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !worker.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    if worker.is_finished() {
+        let _ = worker.join();
+    }
 }
 
 fn spawn_agy_command(
@@ -2593,14 +2604,17 @@ fn run_terminal(
                         _ => None,
                     };
                     if let Some(config_key) = config_key {
-                        let previous_collaboration = app.collaboration().to_owned();
                         let config_action = app.handle_config_key(config_key);
-                        if config_action == ConfigAction::Close
-                            && let Err(error) = save_ui_preferences(app)
-                        {
+                        if config_action == ConfigAction::Cancel {
+                            continue;
+                        }
+                        if config_action != ConfigAction::Save {
+                            continue;
+                        }
+                        if let Err(error) = save_ui_preferences(app) {
                             app.status = format!("unable to save preferences: {error}");
                         }
-                        if config_action == ConfigAction::Close && app.config_roster_dirty() {
+                        if app.config_roster_dirty() {
                             let roster = app.config_roster_identities();
                             let save_result = save_roster(&roster);
                             let reconcile = if turn_active {
@@ -2637,7 +2651,7 @@ fn run_terminal(
                         {
                             let _ = controls.send(AdapterControl::SetMode(mode));
                         }
-                        if previous_collaboration != app.collaboration()
+                        if app.config_collaboration_changed()
                             && let Some(controls) = &controls
                         {
                             let _ = controls.send(AdapterControl::SetStrategy(
@@ -2874,12 +2888,6 @@ fn run_terminal(
                                             app.status = "unable to add agent".into();
                                         }
                                     }
-                                    LocalCommand::Agents => {
-                                        if let Some(controls) = &controls {
-                                            let _ = controls.send(AdapterControl::Stop);
-                                        }
-                                        return run_store(terminal);
-                                    }
                                     LocalCommand::Reload => {
                                         if let Some(slot) = app.failed_agent()
                                             && let Some(controls) = &controls
@@ -3058,12 +3066,36 @@ fn state_directory() -> PathBuf {
 }
 
 fn project_path_key(project_root: &Path) -> String {
-    project_root
+    let canonical = project_root
         .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf())
-        .to_string_lossy()
-        .trim_start_matches('/')
-        .replace('/', "-")
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    let label = canonical
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("project")
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .take(32)
+        .collect::<String>();
+    #[cfg(unix)]
+    let bytes = {
+        use std::os::unix::ffi::OsStrExt;
+        canonical.as_os_str().as_bytes().to_vec()
+    };
+    #[cfg(not(unix))]
+    let bytes = canonical.to_string_lossy().as_bytes().to_vec();
+    let digest = Sha256::digest(&bytes);
+    let hash = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{label}-{}", &hash[..16])
 }
 
 fn session_metadata_path_for(project_root: &Path) -> PathBuf {
@@ -3309,6 +3341,14 @@ mod tests {
             session_metadata_path_for(&root),
             session_metadata_path_for(&other)
         );
+        let collision_left = root.join("a-b/c");
+        let collision_right = root.join("a/b-c");
+        std::fs::create_dir_all(&collision_left).expect("create left collision path");
+        std::fs::create_dir_all(&collision_right).expect("create right collision path");
+        assert_ne!(
+            session_metadata_path_for(&collision_left),
+            session_metadata_path_for(&collision_right)
+        );
         assert!(resume_launch_from_metadata(&metadata, &other, "{}").is_err());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3398,8 +3438,14 @@ mod tests {
             PathBuf::from("/workspace/project").as_path(),
         );
         assert_eq!(
-            path,
-            PathBuf::from("/tmp/codeswarm-data/codeswarm/workspace-project/prompt_history.jsonl")
+            path.file_name().and_then(OsStr::to_str),
+            Some("prompt_history.jsonl")
+        );
+        assert!(
+            path.parent()
+                .and_then(|parent| parent.file_name())
+                .and_then(OsStr::to_str)
+                .is_some_and(|name| name.starts_with("project-"))
         );
     }
 

@@ -1292,7 +1292,9 @@ impl RelayHost {
                     }
                 },
                 _ = self.cancel_notify.notified() => {
-                    self.cancel_requested.store(false, Ordering::Release);
+                    if !self.cancel_requested.swap(false, Ordering::AcqRel) {
+                        continue;
+                    }
                     let _ = cancel_with_timeout(host).await?;
                     return Err(AdapterError::Transport("relay turn cancelled".into()));
                 }
@@ -1766,6 +1768,17 @@ impl AgentAdapter for AgyAdapter {
         // kill keeps repeated prompts from accumulating zombies, especially
         // when cancellation happens before the stream reader observes EOF.
         terminate_child(&mut child).await?;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(event) = self.receiver.recv().await {
+                if matches!(
+                    event,
+                    Ok(AgentEvent::TurnComplete { .. } | AgentEvent::Failed { .. })
+                ) {
+                    break;
+                }
+            }
+        })
+        .await;
         Ok(true)
     }
 
@@ -2699,6 +2712,23 @@ impl AgentAdapter for AcpAdapter {
             "params": {"sessionId": session_id, "_meta": {}},
         }))
         .await?;
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match <Self as AgentAdapter>::next_event(self).await {
+                    Some(Ok(AgentEvent::TurnComplete { .. })) | None => break,
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) => break,
+                }
+            }
+        })
+        .await
+        .is_ok();
+        if !settled {
+            // A peer that never acknowledges cancellation cannot safely share
+            // its stream with the next prompt. Restart the transport while
+            // preserving a loadable provider session when supported.
+            self.reload().await?;
+        }
         Ok(true)
     }
 

@@ -11,7 +11,8 @@ Build the release binary with Cargo:
 
 ```bash
 cargo build --release -p codeswarm --locked
-install -Dm755 target/release/codeswarm ~/.local/bin/codeswarm
+mkdir -p "$HOME/.local/bin"
+install -m 755 target/release/codeswarm "$HOME/.local/bin/codeswarm"
 ```
 
 CodeSwarm supports macOS and Linux with a recent stable Rust toolchain.
@@ -90,7 +91,7 @@ Inside the conversation prompt:
 - `/config` opens settings, including the
   catalog-backed roster editor (Enter toggles, Alt+↑/↓ reorders, Ctrl+S saves
   and applies idle-session changes when possible).
-- `/agents` returns to the agent store to edit the saved roster.
+- `/agents` opens the roster section in settings without stopping the session.
 - `/add AGENT`, `/add agy:COMMAND`, or `/add acp:COMMAND` starts a new peer in
   the live roster.
 - `/export` writes the retained conversation to Markdown.
@@ -121,7 +122,7 @@ make verify
 ```
 
 This runs formatting, workspace tests, Clippy, a locked release build, and
-workspace package verification.
+workspace package archive validation.
 
 ## License
 
