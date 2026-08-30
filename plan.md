@@ -14,8 +14,8 @@ the remaining parity work.
 
 ## Operating Rules
 
-- Default to compact inline output that works well in tmux and SSH. Alternate
-  screen is optional, never the only UI.
+- Default to a guarded full-screen alternate screen. Compact inline output is
+  available explicitly through `--inline`.
 - The scroll hot path may read cached rows and draw the viewport; it may not
   parse Markdown, rewrap historical text, rebuild a transcript tree, inspect
   SQLite, or await an adapter.
@@ -39,11 +39,9 @@ crates/
   codeswarm-core/       # events, reducer, relay, persistence interfaces
   codeswarm-adapters/   # AgentAdapter trait, ACP and native implementations
   codeswarm-transcript/ # immutable blocks, wrapping cache, viewport index
-  codeswarm-tui/        # Ratatui/Crossterm inline + optional alt-screen UI
+  codeswarm-tui/        # Ratatui/Crossterm full-screen + inline fallback UI
   codeswarm-cli/        # `codeswarm` command, config and migration wiring
-tests/
-  rust/                 # behavior, adapter-contract, transcript tests
-  tmux/                 # black-box pane benchmarks and regression scripts
+crate-local tests/      # behavior, adapter-contract, transcript, renderer tests
 ```
 
 Cargo-native unit/integration tests and tmux black-box checks are the behavior
@@ -66,7 +64,7 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   bounded per-agent public-context watermarks.
 - [x] Added ACP stdio initialization/session creation/prompt lifecycle and a
   native Agy stream-JSON adapter under one \`AgentAdapter\` contract.
-- [x] Added an inline Ratatui terminal preview with optional alternate screen,
+- [x] Added a full-screen Ratatui terminal with an inline fallback,
   live adapter event rendering, follow-up prompt dispatch, cancellation, and
   durable user-local event logging.
 - [x] Added \`AdapterHost\`, which consumes ACP/native adapter events, reduces
@@ -336,8 +334,8 @@ agent reply; no optimization may rely only on having many small messages.
 
 **Purpose:** Ship one usable end-to-end vertical slice before advanced UI.
 
-- [ ] Build the `codeswarm` CLI and inline Ratatui renderer. It must run in
-  tmux/SSH without requiring mouse support or an alternate screen.
+- [ ] Build the `codeswarm` CLI and Ratatui renderer. It must retain keyboard
+  operation and restore terminal state on every exit path.
 - [ ] Implement a compact fixed status line: active agent, permission policy,
   working directory, queued count, streaming/paused state, and elapsed time.
 - [ ] Implement prompt editing, history, slash-command completion, submit,

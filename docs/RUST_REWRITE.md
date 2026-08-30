@@ -15,8 +15,8 @@ CodeSwarm is now a Rust-only Cargo workspace. The production entry point is
 - `codeswarm-cli` owns process startup, terminal input, adapter lifecycle, and
   command routing.
 
-The default inline renderer avoids an alternate screen and is suitable for
-tmux/SSH. The transcript path is viewport-bounded: long streamed responses do
+The default renderer uses a guarded full-screen alternate screen; `--inline`
+provides a 24-row embedded fallback. The transcript path is viewport-bounded: long streamed responses do
 not cause a full-history redraw, and expensive details remain lazy.
 
 ## Build and run

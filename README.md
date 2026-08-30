@@ -2,7 +2,7 @@
 
 CodeSwarm is a fast terminal workspace for one or more coding agents. It is a
 Rust application built around Ratatui, with ACP and native adapter support,
-sequential relay turns, lazy transcript details, and a tmux/SSH-first inline
+sequential relay turns, lazy transcript details, and a full-screen terminal
 interface. It collects no telemetry.
 
 ## Install

@@ -240,6 +240,18 @@ fn consume_one_shot_route(app: &App, selected: &mut Option<usize>) {
     }
 }
 
+fn alternate_screen_enabled(arguments: &[String]) -> bool {
+    !arguments.iter().any(|argument| argument == "--inline")
+}
+
+fn without_display_flags(arguments: &[String]) -> Vec<String> {
+    arguments
+        .iter()
+        .filter(|argument| argument.as_str() != "--inline" && argument.as_str() != "--alt-screen")
+        .cloned()
+        .collect()
+}
+
 enum Launch {
     Preview,
     Store,
@@ -292,13 +304,14 @@ fn main() -> std::io::Result<()> {
         validate_project_directory(&path)?;
         std::env::set_current_dir(path)?;
     }
-    let alternate_screen = arguments.iter().any(|argument| argument == "--alt-screen");
-    let launch = parse_launch(&arguments).or_else(|| {
-        (arguments.is_empty()
-            || (arguments.len() == 2 && arguments.first()? == "--project-dir")
-            || (arguments.len() == 1
-                && !arguments[0].starts_with('-')
-                && PathBuf::from(&arguments[0]).is_dir()))
+    let alternate_screen = alternate_screen_enabled(&arguments);
+    let launch_arguments = without_display_flags(&arguments);
+    let launch = parse_launch(&launch_arguments).or_else(|| {
+        (launch_arguments.is_empty()
+            || (launch_arguments.len() == 2 && launch_arguments.first()? == "--project-dir")
+            || (launch_arguments.len() == 1
+                && !launch_arguments[0].starts_with('-')
+                && PathBuf::from(&launch_arguments[0]).is_dir()))
         .then(bare_launch)
     });
     let Some(launch) = launch else {
@@ -308,9 +321,9 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     };
 
-    // Ask terminals that support it (including tmux when configured) to
-    // report focus changes. The session guard restores every mode on normal,
-    // error, and unwind paths so the containing pane is never left raw.
+    // Ask supported terminals to report focus changes. Multiplexers retain
+    // their own capture policy; the session guard restores raw/fullscreen
+    // modes on normal, error, and unwind paths.
     let mut terminal_session = TerminalSession::enter(alternate_screen)?;
     let output = stdout();
     let backend = CrosstermBackend::new(output);
@@ -404,7 +417,30 @@ fn looks_like_project_path(argument: &str) -> bool {
 
 fn print_help() {
     println!(
-        "CodeSwarm — fast tmux-first terminal workspace\n\nUsage:\n  codeswarm [OPTIONS] [PROMPT]\n  codeswarm run [PATH] [OPTIONS] [PROMPT]\n  codeswarm acp COMMAND [PATH]\n\nOptions:\n  -a, --agent NAME                Select a catalog agent (repeatable)\n  --demo                         Run the local UI preview\n  --agy PROMPT                   Run the native Agy adapter\n  --acp PROGRAM [PROMPT]         Run an ACP adapter\n  --roster KIND:COMMAND          Add a native/ACP roster member (repeatable)\n  --first N                      Select the first roster slot (zero-based)\n  --first-agent N                Select the first named agent (one-based)\n  --max-rounds N                 Limit automated relay turns\n  --project-dir PATH             Use PATH as the workspace\n  --alt-screen                   Use the alternate terminal screen\n  -h, --help                     Show this help\n  -v, --version                  Show the version\n\nPrompt commands include /config, /agents, /add, /mode, /collab, /pause, /resume,\n/reload, /drop, /promote, /swap, /diff, /export, /clear, /close, and !command."
+        r#"CodeSwarm — fast full-screen terminal workspace
+
+Usage:
+  codeswarm [OPTIONS] [PROMPT]
+  codeswarm run [PATH] [OPTIONS] [PROMPT]
+  codeswarm acp COMMAND [PATH]
+
+Options:
+  -a, --agent NAME                Select a catalog agent (repeatable)
+  --demo                          Run the local UI preview
+  --agy PROMPT                    Run the native Agy adapter
+  --acp PROGRAM [PROMPT]          Run an ACP adapter
+  --roster KIND:COMMAND           Add a native/ACP roster member (repeatable)
+  --first N                       Select the first roster slot (zero-based)
+  --first-agent N                 Select the first named agent (one-based)
+  --max-rounds N                  Limit automated relay turns
+  --project-dir PATH              Use PATH as the workspace
+  --inline                        Embed a 24-row UI instead of using full screen
+  --alt-screen                    Compatibility alias for the full-screen default
+  -h, --help                      Show this help
+  -v, --version                   Show the version
+
+Prompt commands include /config, /agents, /add, /mode, /collab, /pause, /resume,
+/reload, /drop, /promote, /swap, /diff, /export, /clear, /close, and !command."#
     );
 }
 
@@ -3244,12 +3280,13 @@ fn notify_permission_request(agent: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdapterControl, AgentSpec, Launch, apply_notification_preferences,
-        bare_launch_from_settings, consume_one_shot_route, dispatch_permission_action,
-        dispatch_queued_prompt, drain_bounded_sync, normalize_arguments, normalize_selected_slot,
-        parse_launch, prepare_launch_arguments, project_dir_argument, project_prompt_history_path,
-        reconcile_config_roster, run_relay_sequence_with_controls, sanitize_direct_event,
-        standalone_session_metadata, terminal_capture_enabled_for, validate_project_directory,
+        AdapterControl, AgentSpec, Launch, alternate_screen_enabled,
+        apply_notification_preferences, bare_launch_from_settings, consume_one_shot_route,
+        dispatch_permission_action, dispatch_queued_prompt, drain_bounded_sync,
+        normalize_arguments, normalize_selected_slot, parse_launch, prepare_launch_arguments,
+        project_dir_argument, project_prompt_history_path, reconcile_config_roster,
+        run_relay_sequence_with_controls, sanitize_direct_event, standalone_session_metadata,
+        terminal_capture_enabled_for, validate_project_directory, without_display_flags,
     };
     use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
     use codeswarm_core::persistence::{SessionMetadata, SessionMetadataStore};
@@ -3281,6 +3318,14 @@ mod tests {
             Some(OsStr::new("xterm-256color")),
             None,
         ));
+    }
+
+    #[test]
+    fn full_screen_is_default_and_inline_is_an_explicit_opt_out() {
+        assert!(alternate_screen_enabled(&[]));
+        assert!(alternate_screen_enabled(&["--alt-screen".into()]));
+        assert!(!alternate_screen_enabled(&["--inline".into()]));
+        assert!(without_display_flags(&["--inline".into()]).is_empty());
     }
 
     #[test]

@@ -1,8 +1,8 @@
 # CodeSwarm User Manual
 
 CodeSwarm is a Rust terminal workspace for collaborating with coding agents.
-The default renderer is inline and deliberately optimized for tmux, SSH, and
-slow terminal links.
+The default renderer uses the complete terminal in a guarded alternate screen.
+Pass `--inline` to embed a 24-row view in the current shell instead.
 
 ## Quick start
 
