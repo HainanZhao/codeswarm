@@ -14,8 +14,7 @@ the remaining parity work.
 
 ## Operating Rules
 
-- Default to a guarded full-screen alternate screen. Compact inline output is
-  available explicitly through `--inline`.
+- Use one guarded full-screen alternate-screen experience.
 - The scroll hot path may read cached rows and draw the viewport; it may not
   parse Markdown, rewrap historical text, rebuild a transcript tree, inspect
   SQLite, or await an adapter.
@@ -39,7 +38,7 @@ crates/
   codeswarm-core/       # events, reducer, relay, persistence interfaces
   codeswarm-adapters/   # AgentAdapter trait, ACP and native implementations
   codeswarm-transcript/ # immutable blocks, wrapping cache, viewport index
-  codeswarm-tui/        # Ratatui/Crossterm full-screen + inline fallback UI
+  codeswarm-tui/        # Ratatui/Crossterm full-screen UI
   codeswarm-cli/        # `codeswarm` command, config and migration wiring
 crate-local tests/      # behavior, adapter-contract, transcript, renderer tests
 ```
@@ -64,7 +63,7 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   bounded per-agent public-context watermarks.
 - [x] Added ACP stdio initialization/session creation/prompt lifecycle and a
   native Agy stream-JSON adapter under one \`AgentAdapter\` contract.
-- [x] Added a full-screen Ratatui terminal with an inline fallback,
+- [x] Added a full-screen Ratatui terminal,
   live adapter event rendering, follow-up prompt dispatch, cancellation, and
   durable user-local event logging.
 - [x] Added \`AdapterHost\`, which consumes ACP/native adapter events, reduces

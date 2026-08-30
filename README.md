@@ -86,7 +86,7 @@ to `launcher.roster` without overwriting other settings.
 Inside the conversation prompt:
 
 - `/help` shows keyboard and command help.
-- `/config` opens the lightweight inline settings panel, including the
+- `/config` opens settings, including the
   catalog-backed roster editor (Enter toggles, Alt+↑/↓ reorders, Ctrl+S saves
   and applies idle-session changes when possible).
 - `/agents` returns to the agent store to edit the saved roster.

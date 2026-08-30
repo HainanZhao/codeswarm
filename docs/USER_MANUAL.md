@@ -1,8 +1,7 @@
 # CodeSwarm User Manual
 
 CodeSwarm is a Rust terminal workspace for collaborating with coding agents.
-The default renderer uses the complete terminal in a guarded alternate screen.
-Pass `--inline` to embed a 24-row view in the current shell instead.
+It uses the complete terminal in a guarded alternate screen.
 
 ## Quick start
 
@@ -64,7 +63,7 @@ bounded to preserve tmux responsiveness.
 ## Slash commands
 
 - `/help` — show the complete keyboard and command guide.
-- `/config` — open the lightweight inline settings panel.
+- `/config` — open settings.
 - `/agents` — return to the agent store and edit the saved roster.
 - `/add AGENT`, `/add agy:COMMAND`, or `/add acp:COMMAND` — append a live peer
   without restarting the current conversation.

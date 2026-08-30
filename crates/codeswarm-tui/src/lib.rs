@@ -805,7 +805,7 @@ pub struct App {
     selected_agent: Option<usize>,
 }
 
-const CONFIG_SETTING_COUNT: usize = 14;
+const CONFIG_SETTING_COUNT: usize = 13;
 
 impl Default for App {
     fn default() -> Self {
@@ -1325,7 +1325,7 @@ impl App {
                             self.terminal_title_blink = false;
                         }
                     }
-                    12..=14 => {}
+                    12 => {}
                     _ => return ConfigAction::Ignored,
                 }
                 self.status = "configuration updated".into();
@@ -3305,7 +3305,6 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
             if app.blink_title { "On" } else { "Off" },
             true,
         ),
-        ("Renderer", "Inline · tmux safe", false),
         ("Roster", "Enter toggles agents", false),
     ];
     let total_rows = rows.len().saturating_add(app.config_agents.len());
@@ -3389,7 +3388,6 @@ fn render_config(frame: &mut Frame, app: &App, area: Rect) {
                 "Sounds" => "Sound",
                 "Blink title" => "Blink",
                 "Collaboration" => "Collab",
-                "Renderer" => "Render",
                 "Roster" => "Roster",
                 other => other,
             }
@@ -5024,6 +5022,14 @@ mod tests {
             Some(LocalCommand::Agents)
         );
         assert_eq!(
+            app.handle_local_command("/pause"),
+            Some(LocalCommand::Pause)
+        );
+        assert_eq!(
+            app.handle_local_command("/resume"),
+            Some(LocalCommand::Resume)
+        );
+        assert_eq!(
             app.handle_local_command("/add acp:reviewer --acp"),
             Some(LocalCommand::Add("acp:reviewer --acp".into()))
         );
@@ -5423,7 +5429,7 @@ mod tests {
             rendered.contains("Collapse details"),
             "rendered={rendered:?}"
         );
-        assert!(rendered.contains("Renderer"), "rendered={rendered:?}");
+        assert!(rendered.contains("Roster"), "rendered={rendered:?}");
         assert!(rendered.contains("Codex CLI"), "rendered={rendered:?}");
         assert!(
             !rendered.contains("No messages yet"),
@@ -5453,6 +5459,8 @@ mod tests {
         assert!(rendered.contains("/export"), "rendered={rendered:?}");
         assert!(rendered.contains("/collab"), "rendered={rendered:?}");
         assert!(rendered.contains("/mode"), "rendered={rendered:?}");
+        assert!(rendered.contains("/resume"), "rendered={rendered:?}");
+        assert!(rendered.contains("/clear"), "rendered={rendered:?}");
     }
 
     #[test]

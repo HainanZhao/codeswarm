@@ -37,7 +37,7 @@ use crossterm::{
         EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
     },
 };
-use ratatui::{Terminal, TerminalOptions, Viewport, backend::CrosstermBackend};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
 fn terminal_capture_enabled_for(
     tmux: Option<&OsStr>,
@@ -66,16 +66,14 @@ fn terminal_capture_enabled() -> bool {
 /// defense for early-return and panic paths, which is especially important
 /// when CodeSwarm runs inside a long-lived tmux pane.
 struct TerminalSession {
-    alternate_screen: bool,
     capture_enabled: bool,
     active: bool,
 }
 
 impl TerminalSession {
-    fn enter(alternate_screen: bool) -> std::io::Result<Self> {
+    fn enter() -> std::io::Result<Self> {
         enable_raw_mode()?;
         let mut session = Self {
-            alternate_screen: false,
             // tmux owns mouse/focus routing for its client. Avoid changing
             // those modes from a nested application; keyboard input remains
             // fully available and raw mode is still restored by this guard.
@@ -89,14 +87,11 @@ impl TerminalSession {
             let _ = session.restore();
             return Err(error);
         }
-        if alternate_screen {
-            // Treat the mode as entered before writing the escape sequence so
-            // even a partial write is paired with a best-effort leave.
-            session.alternate_screen = true;
-            if let Err(error) = execute!(output, EnterAlternateScreen) {
-                let _ = session.restore();
-                return Err(error);
-            }
+        // Always use the complete terminal. Even a partial write is paired
+        // with a best-effort leave by the armed session guard.
+        if let Err(error) = execute!(output, EnterAlternateScreen) {
+            let _ = session.restore();
+            return Err(error);
         }
         Ok(session)
     }
@@ -112,11 +107,7 @@ impl TerminalSession {
         } else {
             Ok(())
         };
-        let screen_result = if self.alternate_screen {
-            execute!(output, LeaveAlternateScreen)
-        } else {
-            Ok(())
-        };
+        let screen_result = execute!(output, LeaveAlternateScreen);
         let raw_result = disable_raw_mode();
         let result = terminal_result
             .and(capture_result)
@@ -240,18 +231,6 @@ fn consume_one_shot_route(app: &App, selected: &mut Option<usize>) {
     }
 }
 
-fn alternate_screen_enabled(arguments: &[String]) -> bool {
-    !arguments.iter().any(|argument| argument == "--inline")
-}
-
-fn without_display_flags(arguments: &[String]) -> Vec<String> {
-    arguments
-        .iter()
-        .filter(|argument| argument.as_str() != "--inline" && argument.as_str() != "--alt-screen")
-        .cloned()
-        .collect()
-}
-
 enum Launch {
     Preview,
     Store,
@@ -304,35 +283,26 @@ fn main() -> std::io::Result<()> {
         validate_project_directory(&path)?;
         std::env::set_current_dir(path)?;
     }
-    let alternate_screen = alternate_screen_enabled(&arguments);
-    let launch_arguments = without_display_flags(&arguments);
-    let launch = parse_launch(&launch_arguments).or_else(|| {
-        (launch_arguments.is_empty()
-            || (launch_arguments.len() == 2 && launch_arguments.first()? == "--project-dir")
-            || (launch_arguments.len() == 1
-                && !launch_arguments[0].starts_with('-')
-                && PathBuf::from(&launch_arguments[0]).is_dir()))
+    let launch = parse_launch(&arguments).or_else(|| {
+        (arguments.is_empty()
+            || (arguments.len() == 2 && arguments.first()? == "--project-dir")
+            || (arguments.len() == 1
+                && !arguments[0].starts_with('-')
+                && PathBuf::from(&arguments[0]).is_dir()))
         .then(bare_launch)
     });
     let Some(launch) = launch else {
-        println!(
-            "CodeSwarm Rust preview. Use --demo, --agy PROMPT, --acp PROGRAM PROMPT, or repeated --roster agy:COMMAND/acp:PROGRAM PROMPT."
-        );
+        eprintln!("Unknown or incomplete command. Run `codeswarm --help`.");
         return Ok(());
     };
 
     // Ask supported terminals to report focus changes. Multiplexers retain
     // their own capture policy; the session guard restores raw/fullscreen
     // modes on normal, error, and unwind paths.
-    let mut terminal_session = TerminalSession::enter(alternate_screen)?;
+    let mut terminal_session = TerminalSession::enter()?;
     let output = stdout();
     let backend = CrosstermBackend::new(output);
-    let viewport = if alternate_screen {
-        Viewport::Fullscreen
-    } else {
-        Viewport::Inline(24)
-    };
-    let mut terminal = Terminal::with_options(backend, TerminalOptions { viewport })?;
+    let mut terminal = Terminal::new(backend)?;
     let result = match launch {
         Launch::Preview => run_preview(&mut terminal),
         Launch::Store => run_store(&mut terminal),
@@ -434,8 +404,6 @@ Options:
   --first-agent N                 Select the first named agent (one-based)
   --max-rounds N                  Limit automated relay turns
   --project-dir PATH              Use PATH as the workspace
-  --inline                        Embed a 24-row UI instead of using full screen
-  --alt-screen                    Compatibility alias for the full-screen default
   -h, --help                      Show this help
   -v, --version                   Show the version
 
@@ -542,7 +510,6 @@ fn parse_named_agent_launch(arguments: &[String]) -> Option<Launch> {
                 index += 2;
             }
             "--project-dir" => index += 2,
-            "--alt-screen" => index += 1,
             value if !value.starts_with('-') => {
                 if prompt.is_some() {
                     return None;
@@ -669,7 +636,7 @@ fn parse_roster_launch(arguments: &[String]) -> Option<Launch> {
                 index += 2;
             }
             "--project-dir" => index += 2,
-            "--alt-screen" | "--demo" => index += 1,
+            "--demo" => index += 1,
             value if !value.starts_with('-') => {
                 if prompt.is_some() {
                     return None;
@@ -3280,13 +3247,12 @@ fn notify_permission_request(agent: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdapterControl, AgentSpec, Launch, alternate_screen_enabled,
-        apply_notification_preferences, bare_launch_from_settings, consume_one_shot_route,
-        dispatch_permission_action, dispatch_queued_prompt, drain_bounded_sync,
-        normalize_arguments, normalize_selected_slot, parse_launch, prepare_launch_arguments,
-        project_dir_argument, project_prompt_history_path, reconcile_config_roster,
-        run_relay_sequence_with_controls, sanitize_direct_event, standalone_session_metadata,
-        terminal_capture_enabled_for, validate_project_directory, without_display_flags,
+        AdapterControl, AgentSpec, Launch, apply_notification_preferences,
+        bare_launch_from_settings, consume_one_shot_route, dispatch_permission_action,
+        dispatch_queued_prompt, drain_bounded_sync, normalize_arguments, normalize_selected_slot,
+        parse_launch, prepare_launch_arguments, project_dir_argument, project_prompt_history_path,
+        reconcile_config_roster, run_relay_sequence_with_controls, sanitize_direct_event,
+        standalone_session_metadata, terminal_capture_enabled_for, validate_project_directory,
     };
     use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
     use codeswarm_core::persistence::{SessionMetadata, SessionMetadataStore};
@@ -3318,14 +3284,6 @@ mod tests {
             Some(OsStr::new("xterm-256color")),
             None,
         ));
-    }
-
-    #[test]
-    fn full_screen_is_default_and_inline_is_an_explicit_opt_out() {
-        assert!(alternate_screen_enabled(&[]));
-        assert!(alternate_screen_enabled(&["--alt-screen".into()]));
-        assert!(!alternate_screen_enabled(&["--inline".into()]));
-        assert!(without_display_flags(&["--inline".into()]).is_empty());
     }
 
     #[test]
