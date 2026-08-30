@@ -3078,9 +3078,11 @@ fn rpc_id_to_string(value: &Value) -> String {
 mod tests {
     use super::{
         AcpAdapter, AdapterHost, AgentAdapter, AgyAdapter, MAX_ACP_LINE_BYTES, MAX_FILE_READ_BYTES,
-        RelayHost, ScriptedAdapter, isolate_process_group, parse_acp_notification, parse_agy_line,
-        parse_command_line, prompt_content_blocks, read_bounded_line, terminate_child,
+        RelayHost, ScriptedAdapter, parse_acp_notification, parse_agy_line, parse_command_line,
+        prompt_content_blocks, read_bounded_line,
     };
+    #[cfg(target_os = "linux")]
+    use super::{isolate_process_group, terminate_child};
     use async_trait::async_trait;
     use codeswarm_core::TerminalEvent;
     use codeswarm_core::{
