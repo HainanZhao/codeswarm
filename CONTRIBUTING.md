@@ -11,7 +11,8 @@ Run the complete gate before opening a pull request:
 make verify
 ```
 
-This runs `cargo fmt`, all workspace tests, and Clippy with warnings denied.
+This runs `cargo fmt`, all workspace tests, Clippy with warnings denied, a
+locked release build, and workspace package verification.
 
 For UI, adapter, or CLI changes, add a regression at the integration boundary
 that failed. Use Ratatui's `TestBackend` for deterministic rendering. Keep

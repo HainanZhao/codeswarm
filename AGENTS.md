@@ -52,8 +52,8 @@
   token-only response is displayed as `👍`. CodeSwarm always hides the token.
 - While work is active, the first `Ctrl+C` requests cancellation and a second
   press within three seconds quits; while idle, `Ctrl+C` quits immediately.
-  Pause/resume is available for relays through `Ctrl+Shift+P` and `/pause`;
-  queued messages remain buffered while paused.
+  `codeswarm resume [PATH]` starts the last provider-backed session saved for
+  that project; a normal launch always starts a fresh provider session.
 - The relay defaults to 100 automated turns and can be adjusted with
   `--max-rounds N`. This is a runaway-safety limit, not a per-agent budget —
   it does not scale with roster size.

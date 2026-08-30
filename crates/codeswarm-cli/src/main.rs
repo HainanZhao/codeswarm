@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     ffi::OsStr,
-    io::{Read, Write, stdout},
+    io::{Write, stdout},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     thread,
@@ -37,7 +37,7 @@ use crossterm::{
         EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode,
     },
 };
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
 
 fn terminal_capture_enabled_for(
     tmux: Option<&OsStr>,
@@ -101,7 +101,11 @@ impl TerminalSession {
             return Ok(());
         }
         let mut output = stdout();
-        let terminal_result = execute!(output, SetTitle("CodeSwarm"), Show);
+        let terminal_result = if self.capture_enabled {
+            execute!(output, SetTitle("CodeSwarm"), Show)
+        } else {
+            execute!(output, Show)
+        };
         let capture_result = if self.capture_enabled {
             execute!(output, DisableFocusChange, DisableMouseCapture)
         } else {
@@ -227,6 +231,10 @@ fn consume_one_shot_route(app: &App, selected: &mut Option<usize>) {
     if app.collaboration() != "Manual routing" {
         *selected = None;
     }
+}
+
+fn interaction_height(frame_area: Rect) -> usize {
+    usize::from(frame_area.height)
 }
 
 enum Launch {
@@ -432,7 +440,7 @@ Options:
   -v, --version                   Show the version
 
 Prompt commands include /config, /agents, /add, /mode, /collab, /reload, /drop,
-/promote, /swap, /diff, /export, /clear, /close, and !command."#
+/promote, /swap, /diff, /export, /clear, and /close."#
     );
 }
 
@@ -564,7 +572,7 @@ fn bare_launch() -> Launch {
 
 fn resume_launch() -> std::io::Result<Launch> {
     let cwd = std::env::current_dir()?;
-    let metadata = SessionMetadataStore::open(session_metadata_path())
+    let metadata = SessionMetadataStore::open(session_metadata_path_for(&cwd))
         .read()
         .map_err(|error| std::io::Error::other(error.to_string()))?
         .ok_or_else(|| {
@@ -793,28 +801,39 @@ fn resolve_live_agent_spec(value: &str) -> Option<AgentSpec> {
 }
 
 fn display_agent_name(command: &str) -> String {
-    let lower = command.to_ascii_lowercase();
-    if lower.contains("claude") {
+    let Ok((program, arguments)) = parse_command_line(command) else {
+        return "Agent".into();
+    };
+    let executable = Path::new(&program)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or(program.as_str())
+        .to_ascii_lowercase();
+    let arguments = arguments
+        .iter()
+        .map(|argument| argument.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    if executable == "claude"
+        || arguments
+            .iter()
+            .any(|argument| argument.contains("claude-agent-acp"))
+    {
         "Claude".into()
-    } else if lower.contains("codex") {
+    } else if executable == "codex"
+        || executable == "codex-acp"
+        || arguments
+            .iter()
+            .any(|argument| argument.contains("codex-acp"))
+    {
         "Codex".into()
-    } else if lower.contains("qwen") {
+    } else if executable == "qwen" {
         "Qwen".into()
-    } else if lower.contains("gemini") {
+    } else if executable == "gemini" {
         "Gemini".into()
-    } else if lower.split_whitespace().next() == Some("agy") || lower.contains("antigravity") {
+    } else if executable == "agy" || executable == "antigravity" {
         "Antigravity".into()
     } else {
-        parse_command_line(command)
-            .ok()
-            .and_then(|(program, _)| {
-                Path::new(&program)
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .map(str::to_owned)
-            })
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "Agent".into())
+        executable
     }
 }
 
@@ -1663,7 +1682,7 @@ fn run_agy_task(
             || AgyAdapter::new(0, cwd.clone(), command.clone()),
             |session_id| AgyAdapter::with_session_id(0, cwd.clone(), command.clone(), session_id),
         );
-        let metadata_writer = SessionMetadataStore::open(session_metadata_path())
+        let metadata_writer = SessionMetadataStore::open(session_metadata_path_for(&cwd))
             .buffered()
             .ok();
         if let Err(error) = adapter.start().await {
@@ -1826,7 +1845,7 @@ fn run_acp_task(
                 )
             },
         );
-        let metadata_writer = SessionMetadataStore::open(session_metadata_path())
+        let metadata_writer = SessionMetadataStore::open(session_metadata_path_for(&cwd))
             .buffered()
             .ok();
         if let Err(error) = adapter.start().await {
@@ -2140,7 +2159,7 @@ fn run_relay_task(
             .collect::<Vec<_>>();
         relay.set_roster_identities(identities);
         relay.set_session_metadata_workspace(cwd.display().to_string());
-        if let Ok(writer) = SessionMetadataStore::open(session_metadata_path()).buffered() {
+        if let Ok(writer) = SessionMetadataStore::open(session_metadata_path_for(&cwd)).buffered() {
             relay.set_session_metadata_writer(writer);
         }
         let event_sender = sender.clone();
@@ -2337,14 +2356,13 @@ fn run_terminal(
         app.set_workspace_root(root);
     }
     // Prompt history belongs to the project that opened this conversation.
-    // Keep the root captured at session start: `/cd` changes the adapter's
-    // working directory, but it does not turn the current conversation into
-    // a different project (and must not leak its prompts into that project).
+    // Keep the root captured at session start so prompt history never leaks
+    // between unrelated projects.
     let history_project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     app.load_prompt_history(load_prompt_history(&history_project_root));
     let completion_candidates = [
-        "/add", "/agents", "/cancel", "/cd", "/clear", "/close", "/collab", "/config", "/diff",
-        "/exit", "/export", "/help", "/mode", "/quit", "/reload", "/drop", "/promote", "/swap",
+        "/add", "/agents", "/cancel", "/clear", "/close", "/collab", "/config", "/diff", "/exit",
+        "/export", "/help", "/mode", "/quit", "/reload", "/drop", "/promote", "/swap",
     ]
     .into_iter()
     .map(String::from)
@@ -2352,7 +2370,6 @@ fn run_terminal(
     app.set_prompt_completions(completion_candidates);
     let mut selected_slot = selected_slot;
     let event_log = event_log().ok();
-    let (shell_sender, shell_receiver) = mpsc::channel::<AdapterResult<AgentEvent>>();
     let mut pending_permission: Option<(usize, String)> = None;
     let mut synced_mode_slots = std::collections::BTreeSet::new();
     let mut pending_adds = BTreeSet::new();
@@ -2362,6 +2379,7 @@ fn run_terminal(
     let mut cancel_requested_at: Option<Instant> = None;
     let mut title_blink_at = Instant::now();
     let mut last_terminal_title = String::new();
+    let manage_terminal_title = terminal_capture_enabled();
     loop {
         selected_slot = normalize_selected_slot(app, selected_slot);
         app.set_selected_agent(selected_slot);
@@ -2497,26 +2515,6 @@ fn run_terminal(
                 }
             }
         }
-        while let Ok(event) = shell_receiver.try_recv() {
-            match event {
-                Ok(event) => {
-                    if matches!(&event, AgentEvent::TurnComplete { .. }) {
-                        turn_active = false;
-                        cancel_requested_at = None;
-                    } else {
-                        turn_active = true;
-                    }
-                    if let Some(log) = &event_log {
-                        let _ = log.append(&event);
-                    }
-                    app.apply_event(&event);
-                }
-                Err(error) => {
-                    turn_active = false;
-                    app.set_header(app.active_agent.clone(), format!("error: {error}"));
-                }
-            }
-        }
         if app.terminal_alert_active() && app.blink_title_enabled() {
             if title_blink_at.elapsed() >= Duration::from_millis(500) {
                 app.toggle_terminal_title_blink();
@@ -2526,10 +2524,12 @@ fn run_terminal(
             app.toggle_terminal_title_blink();
             title_blink_at = Instant::now();
         }
-        let terminal_title = app.terminal_title();
-        if terminal_title != last_terminal_title {
-            execute!(terminal.backend_mut(), SetTitle(terminal_title.as_str()))?;
-            last_terminal_title = terminal_title;
+        if manage_terminal_title {
+            let terminal_title = app.terminal_title();
+            if terminal_title != last_terminal_title {
+                execute!(terminal.backend_mut(), SetTitle(terminal_title.as_str()))?;
+                last_terminal_title = terminal_title;
+            }
         }
         let frame_area = terminal.draw(|frame| render(frame, app))?.area;
         if !event::poll(Duration::from_millis(50))? {
@@ -2595,12 +2595,6 @@ fn run_terminal(
                     if let Some(config_key) = config_key {
                         let previous_collaboration = app.collaboration().to_owned();
                         let config_action = app.handle_config_key(config_key);
-                        if config_action == ConfigAction::Close && turn_active {
-                            app.reopen_config();
-                            app.status =
-                                "finish the active turn before saving configuration".into();
-                            continue;
-                        }
                         if config_action == ConfigAction::Close
                             && let Err(error) = save_ui_preferences(app)
                         {
@@ -2609,17 +2603,21 @@ fn run_terminal(
                         if config_action == ConfigAction::Close && app.config_roster_dirty() {
                             let roster = app.config_roster_identities();
                             let save_result = save_roster(&roster);
-                            let reconcile = controls.as_ref().map_or_else(
-                                || Ok(()),
-                                |controls| {
-                                    reconcile_config_roster(
-                                        app,
-                                        controls,
-                                        &mut pending_adds,
-                                        &mut pending_owner,
-                                    )
-                                },
-                            );
+                            let reconcile = if turn_active {
+                                Ok(())
+                            } else {
+                                controls.as_ref().map_or_else(
+                                    || Ok(()),
+                                    |controls| {
+                                        reconcile_config_roster(
+                                            app,
+                                            controls,
+                                            &mut pending_adds,
+                                            &mut pending_owner,
+                                        )
+                                    },
+                                )
+                            };
                             if let Err(error) = save_result {
                                 app.status = format!("unable to save roster: {error}");
                             } else if let Err(error) = reconcile {
@@ -2627,7 +2625,11 @@ fn run_terminal(
                                 app.status = format!("unable to apply roster: {error}");
                             } else {
                                 app.mark_config_roster_saved();
-                                app.status = "roster saved".into();
+                                app.status = if turn_active {
+                                    "roster saved for the next launch".into()
+                                } else {
+                                    "roster saved".into()
+                                };
                             }
                         }
                         if let Some(mode) = app.take_requested_mode()
@@ -2646,7 +2648,7 @@ fn run_terminal(
                     continue;
                 }
                 let size = terminal.size()?;
-                let interaction_height = size.height.min(24) as usize;
+                let interaction_height = interaction_height(frame_area);
                 match key.code {
                     KeyCode::Char('q') if controls.is_none() && app.prompt.is_empty() => {
                         if let Some(controls) = &controls {
@@ -2657,11 +2659,11 @@ fn run_terminal(
                     KeyCode::Esc if pending_permission.is_none() && app.path_picker_visible() => {
                         let _ = app.handle_path_picker_key(TuiKey::Esc);
                     }
+                    KeyCode::Esc if pending_permission.is_none() && app.keyboard_help_visible() => {
+                        app.toggle_keyboard_help();
+                    }
                     KeyCode::Esc if pending_permission.is_none() => {
-                        if let Some(controls) = &controls {
-                            let _ = controls.send(AdapterControl::Stop);
-                        }
-                        return Ok(());
+                        app.status.clear();
                     }
                     KeyCode::Esc if pending_permission.is_some() => {
                         let action = app.handle_permission_key(PermissionKey::Cancel);
@@ -2811,20 +2813,8 @@ fn run_terminal(
                         {
                             append_prompt_history(&prompt, &history_project_root);
                             if let Some(command) = prompt.trim().strip_prefix('!') {
-                                let command = command.trim();
-                                if command.is_empty() {
-                                    app.status = "type a command after !".into();
-                                } else {
-                                    app.record_human_message(&prompt, false);
-                                    app.transcript.append(
-                                        BlockKind::Tool,
-                                        format!("$ {command}"),
-                                        false,
-                                    );
-                                    turn_active = true;
-                                    app.status = "running local command".into();
-                                    spawn_local_shell(shell_sender.clone(), command.to_owned());
-                                }
+                                let _ = command;
+                                app.status = "local shell commands are not supported".into();
                             } else if let Some(local) = app.handle_local_command(&prompt) {
                                 match local {
                                     LocalCommand::Handled => {}
@@ -2835,10 +2825,14 @@ fn run_terminal(
                                         return Ok(());
                                     }
                                     LocalCommand::Cancel => {
-                                        if let Some(controls) = &controls {
-                                            let _ = controls.send(AdapterControl::Cancel);
+                                        if turn_active {
+                                            if let Some(controls) = &controls {
+                                                let _ = controls.send(AdapterControl::Cancel);
+                                            }
+                                            app.status = "cancelling".into();
+                                        } else {
+                                            app.status = "nothing to cancel".into();
                                         }
-                                        app.status = "cancelling".into();
                                     }
                                     LocalCommand::Mode => {
                                         if let Some(mode) = app.take_requested_mode()
@@ -2964,33 +2958,6 @@ fn run_terminal(
                                             app.status = "no crashed agent to drop".into();
                                         }
                                     }
-                                    LocalCommand::Directory(path) => {
-                                        let path = PathBuf::from(path).canonicalize();
-                                        match path {
-                                            Ok(path) if path.is_dir() => {
-                                                match std::env::set_current_dir(&path) {
-                                                    Ok(()) => {
-                                                        app.refresh_workspace_root(path.clone());
-                                                        app.status =
-                                                            format!("workspace: {}", path.display())
-                                                    }
-                                                    Err(error) => {
-                                                        app.status = format!(
-                                                            "unable to change workspace: {error}"
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                            Ok(path) => {
-                                                app.status =
-                                                    format!("not a directory: {}", path.display())
-                                            }
-                                            Err(error) => {
-                                                app.status =
-                                                    format!("unable to resolve workspace: {error}")
-                                            }
-                                        }
-                                    }
                                     LocalCommand::Export => match export_conversation(app) {
                                         Ok(path) => {
                                             app.status = format!(
@@ -3082,82 +3049,6 @@ fn export_conversation(app: &App) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-fn spawn_local_shell(sender: Sender<AdapterResult<AgentEvent>>, command: String) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    thread::spawn(move || {
-        const MAX_SHELL_OUTPUT: usize = 64 * 1024;
-        let child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&command)
-            .current_dir(cwd)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
-        match child {
-            Ok(mut child) => {
-                let stdout = child.stdout.take();
-                let stderr = child.stderr.take();
-                let stdout_reader = thread::spawn(move || {
-                    stdout.map(|pipe| drain_bounded_sync(pipe, MAX_SHELL_OUTPUT / 2))
-                });
-                let stderr_reader = thread::spawn(move || {
-                    stderr.map(|pipe| drain_bounded_sync(pipe, MAX_SHELL_OUTPUT / 2))
-                });
-                let status = child.wait();
-                let (stdout, stdout_truncated) =
-                    stdout_reader.join().ok().flatten().unwrap_or_default();
-                let (stderr, stderr_truncated) =
-                    stderr_reader.join().ok().flatten().unwrap_or_default();
-                let mut text = String::from_utf8_lossy(&stdout).into_owned();
-                if !stderr.is_empty() {
-                    text.push_str(&String::from_utf8_lossy(&stderr));
-                }
-                if stdout_truncated || stderr_truncated {
-                    text.push_str("\n[CodeSwarm truncated local command output]\n");
-                }
-                if !text.is_empty() {
-                    let _ = sender.send(Ok(AgentEvent::Terminal {
-                        slot: 0,
-                        event: codeswarm_core::TerminalEvent::Output {
-                            id: "local-shell".into(),
-                            text,
-                        },
-                    }));
-                }
-                let _ = sender.send(Ok(AgentEvent::Terminal {
-                    slot: 0,
-                    event: codeswarm_core::TerminalEvent::Exited {
-                        id: "local-shell".into(),
-                        code: status.ok().and_then(|status| status.code()).unwrap_or(-1),
-                    },
-                }));
-                let _ = sender.send(Ok(AgentEvent::TurnComplete { slot: 0 }));
-            }
-            Err(error) => {
-                let _ = sender.send(Err(AdapterError::Transport(format!(
-                    "local command failed: {error}"
-                ))));
-            }
-        }
-    });
-}
-
-fn drain_bounded_sync<R: Read>(mut reader: R, limit: usize) -> (Vec<u8>, bool) {
-    let mut retained = Vec::with_capacity(limit.min(8 * 1024));
-    let mut truncated = false;
-    let mut chunk = [0_u8; 8 * 1024];
-    while let Ok(count) = reader.read(&mut chunk) {
-        if count == 0 {
-            break;
-        }
-        let remaining = limit.saturating_sub(retained.len());
-        let keep = count.min(remaining);
-        retained.extend_from_slice(&chunk[..keep]);
-        truncated |= keep < count;
-    }
-    (retained, truncated)
-}
-
 fn state_directory() -> PathBuf {
     let root = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
@@ -3166,12 +3057,24 @@ fn state_directory() -> PathBuf {
     root.join("codeswarm")
 }
 
-fn session_metadata_path() -> PathBuf {
-    state_directory().join("session.json")
+fn project_path_key(project_root: &Path) -> String {
+    project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf())
+        .to_string_lossy()
+        .trim_start_matches('/')
+        .replace('/', "-")
+}
+
+fn session_metadata_path_for(project_root: &Path) -> PathBuf {
+    state_directory()
+        .join("sessions")
+        .join(project_path_key(project_root))
+        .join("session.json")
 }
 
 fn load_owner_session_id(cwd: &Path, owner_name: &str) -> Option<String> {
-    load_owner_session_id_from(&session_metadata_path(), cwd, owner_name)
+    load_owner_session_id_from(&session_metadata_path_for(cwd), cwd, owner_name)
 }
 
 fn load_owner_session_id_from(
@@ -3230,16 +3133,9 @@ fn project_prompt_history_path(data_home: &Path, project_root: &Path) -> PathBuf
     // Match the Python client's `paths.path_to_name`: an absolute project
     // path becomes one stable, filesystem-safe component.  This avoids a
     // global prompt history leaking commands between unrelated repositories.
-    let project_root = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
-    let project_name = project_root
-        .to_string_lossy()
-        .trim_start_matches('/')
-        .replace('/', "-");
     data_home
         .join("codeswarm")
-        .join(project_name)
+        .join(project_path_key(project_root))
         .join("prompt_history.jsonl")
 }
 
@@ -3324,11 +3220,11 @@ mod tests {
     use super::{
         AdapterControl, AgentSpec, Launch, apply_notification_preferences,
         bare_launch_from_settings, consume_one_shot_route, dispatch_permission_action,
-        dispatch_queued_prompt, drain_bounded_sync, normalize_arguments, normalize_selected_slot,
+        dispatch_queued_prompt, interaction_height, normalize_arguments, normalize_selected_slot,
         parse_launch, prepare_launch_arguments, project_dir_argument, project_prompt_history_path,
         reconcile_config_roster, resume_launch_from_metadata, run_relay_sequence_with_controls,
-        sanitize_direct_event, standalone_session_metadata, terminal_capture_enabled_for,
-        validate_project_directory,
+        sanitize_direct_event, session_metadata_path_for, standalone_session_metadata,
+        terminal_capture_enabled_for, validate_project_directory,
     };
     use codeswarm_adapters::{AdapterHost, AdapterResult, RelayHost, ScriptedAdapter};
     use codeswarm_core::persistence::{SessionMetadata, SessionMetadataStore};
@@ -3363,11 +3259,11 @@ mod tests {
     }
 
     #[test]
-    fn local_shell_drain_caps_retained_bytes_but_consumes_the_stream() {
-        let source = vec![b'x'; 128 * 1024];
-        let (retained, truncated) = drain_bounded_sync(std::io::Cursor::new(source), 1024);
-        assert_eq!(retained.len(), 1024);
-        assert!(truncated);
+    fn full_screen_interaction_uses_the_complete_frame_height() {
+        assert_eq!(
+            interaction_height(ratatui::layout::Rect::new(0, 0, 120, 48)),
+            48
+        );
     }
 
     #[test]
@@ -3409,6 +3305,10 @@ mod tests {
 
         let other = root.join("other");
         std::fs::create_dir_all(&other).expect("create other workspace");
+        assert_ne!(
+            session_metadata_path_for(&root),
+            session_metadata_path_for(&other)
+        );
         assert!(resume_launch_from_metadata(&metadata, &other, "{}").is_err());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3533,6 +3433,10 @@ mod tests {
         );
         assert_eq!(
             super::display_agent_name("/opt/company/bin/reviewer-agent --stdio"),
+            "reviewer-agent"
+        );
+        assert_eq!(
+            super::display_agent_name("/opt/codex-tools/reviewer-agent --stdio"),
             "reviewer-agent"
         );
     }

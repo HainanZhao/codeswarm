@@ -10,7 +10,7 @@ interface. It collects no telemetry.
 Build the release binary with Cargo:
 
 ```bash
-cargo build --release -p codeswarm-cli
+cargo build --release -p codeswarm --locked
 install -Dm755 target/release/codeswarm ~/.local/bin/codeswarm
 ```
 
@@ -97,7 +97,7 @@ Inside the conversation prompt:
 - `/diff split|unified` switches the lazy diff view.
 - `/mode` and `/mode chat` select or show the current mode state.
 - `/collab roster|manual|pair` selects collaboration routing.
-- `codeswarm resume [PATH]` reopens the last provider-backed session for a project.
+- `/cancel` cancels active work and reports when nothing is running.
 - `/reload` retries the most recently crashed agent in its roster slot.
 - `/drop` removes the most recently crashed peer; `/drop SLOT` removes a
   peer by zero-based roster slot (the owner is protected).
@@ -105,9 +105,7 @@ Inside the conversation prompt:
   it; the former owner remains in its stable slot and is tombstoned.
 - `/swap A B` reorders two active roster slots without restarting their
   adapters; queued work and response colors follow the agents.
-- `/cd PATH` changes the workspace for subsequent local commands and launches.
 - `/clear` clears the local transcript; `/close` exits the session.
-- `!command` runs a bounded local shell command in the selected workspace.
 
 The interface keeps streamed output coalesced and transcript rows cached, so a
 5,000-word response remains interactive in constrained terminals.
@@ -122,7 +120,8 @@ Cargo is the canonical build and test tool:
 make verify
 ```
 
-This runs formatting, workspace tests, and Clippy.
+This runs formatting, workspace tests, Clippy, a locked release build, and
+workspace package verification.
 
 ## License
 

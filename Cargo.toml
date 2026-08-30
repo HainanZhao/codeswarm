@@ -14,6 +14,7 @@ edition = "2024"
 license = "AGPL-3.0-only"
 authors = ["CodeSwarm contributors"]
 repository = "https://github.com/HainanZhao/codeswarm"
+description = "A full-screen terminal workspace for collaborating coding agents"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

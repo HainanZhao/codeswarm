@@ -22,7 +22,7 @@ redraw, and expensive details remain lazy.
 ## Build and run
 
 ```bash
-cargo build --release -p codeswarm-cli
+cargo build --release -p codeswarm
 ./target/release/codeswarm --demo
 ```
 

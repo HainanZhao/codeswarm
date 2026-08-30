@@ -52,7 +52,10 @@ impl TerminalProcess {
     async fn kill(&self) {
         if let Some(child) = self.child.lock().await.as_mut() {
             #[cfg(unix)]
-            signal_isolated_process_group(child, nix::sys::signal::Signal::SIGTERM);
+            if signal_isolated_process_group(child, nix::sys::signal::Signal::SIGTERM) {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                signal_isolated_process_group(child, nix::sys::signal::Signal::SIGKILL);
+            }
             let _ = child.start_kill();
         }
     }
@@ -220,7 +223,10 @@ pub fn parse_command_line(command: &str) -> Result<(String, Vec<String>), Comman
 /// helper before releasing the handle.
 async fn terminate_child(child: &mut Child) -> AdapterResult<()> {
     #[cfg(unix)]
-    signal_isolated_process_group(child, nix::sys::signal::Signal::SIGTERM);
+    if signal_isolated_process_group(child, nix::sys::signal::Signal::SIGTERM) {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        signal_isolated_process_group(child, nix::sys::signal::Signal::SIGKILL);
+    }
     let kill_error = child.start_kill().err();
     let wait_error = child.wait().await.err();
     if let Some(error) = kill_error.or(wait_error) {
@@ -230,14 +236,14 @@ async fn terminate_child(child: &mut Child) -> AdapterResult<()> {
 }
 
 #[cfg(unix)]
-fn signal_isolated_process_group(child: &Child, signal: nix::sys::signal::Signal) {
+fn signal_isolated_process_group(child: &Child, signal: nix::sys::signal::Signal) -> bool {
     use nix::{
         sys::signal::killpg,
         unistd::{Pid, getpgid, getpgrp},
     };
 
     let Some(raw_pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) else {
-        return;
+        return false;
     };
     let pid = Pid::from_raw(raw_pid);
     // `process_group(0)` makes the child its own group leader. Verify that
@@ -246,6 +252,9 @@ fn signal_isolated_process_group(child: &Child, signal: nix::sys::signal::Signal
     // containing shell or terminal multiplexer.
     if getpgid(Some(pid)).ok() == Some(pid) && pid != getpgrp() {
         let _ = killpg(pid, signal);
+        true
+    } else {
+        false
     }
 }
 
@@ -1291,14 +1300,15 @@ impl RelayHost {
             match &update.event {
                 AgentEvent::Text { text, .. } => response.push_str(text),
                 AgentEvent::TurnComplete { .. } => {
-                    let visible_end = response.find(STOP_TOKEN).unwrap_or(response.len());
-                    let visible_end = floor_char_boundary(&response, visible_end);
-                    if emitted_text < visible_end
+                    let visible_response = response.replace(STOP_TOKEN, "");
+                    let visible_start = emitted_text.min(visible_response.len());
+                    let visible_start = floor_char_boundary(&visible_response, visible_start);
+                    if visible_start < visible_response.len()
                         && let Some(sink) = &self.event_sink
                     {
                         sink(AgentEvent::Text {
                             slot: *slot,
-                            text: response[emitted_text..visible_end].to_owned(),
+                            text: visible_response[visible_start..].to_owned(),
                         });
                     }
                     if let Some(sink) = &self.event_sink {
@@ -1343,6 +1353,7 @@ impl RelayHost {
             }
         }
         let (response, requested_stop) = strip_stop_token(&response);
+        let response = response.replace(STOP_TOKEN, "");
         let accepted_stop = requested_stop && *can_stop;
         let response = if accepted_stop && response.is_empty() {
             DEFAULT_STOP_ACKNOWLEDGMENT.to_owned()
@@ -4331,7 +4342,7 @@ mod tests {
             [
                 AgentEvent::Text {
                     slot: 0,
-                    text: format!("visible {STOP_TOKEN}"),
+                    text: format!("visible {STOP_TOKEN} trailing"),
                 },
                 AgentEvent::TurnComplete { slot: 0 },
             ],
@@ -4359,6 +4370,14 @@ mod tests {
             AgentEvent::Text { text, .. } => !text.contains(STOP_TOKEN),
             _ => true,
         }));
+        let visible = captured
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(visible, "visible  trailing");
     }
 
     #[tokio::test]

@@ -6,7 +6,7 @@ It uses the complete terminal in a guarded alternate screen.
 ## Quick start
 
 ```bash
-cargo build --release -p codeswarm-cli
+cargo build --release -p codeswarm
 ./target/release/codeswarm
 ```
 
@@ -62,7 +62,7 @@ bounded to preserve tmux responsiveness.
 - `Tab` also completes bounded workspace paths after `@`.
 - `Ctrl+Enter` sends to the selected roster agent.
 - `Ctrl+C` cancels active work; while idle it exits.
-- `Esc` closes the config panel or exits the terminal surface.
+- `Esc` closes the active picker, help, permission, or settings surface.
 
 ## Slash commands
 
@@ -76,7 +76,6 @@ bounded to preserve tmux responsiveness.
 - `/mode` — focus mode settings; `/mode chat` selects chat mode.
 - `/collab` — focus collaboration settings;
   `/collab roster`, `/collab manual`, and `/collab pair` select a strategy.
-- `codeswarm resume [PATH]` — reopen the last provider-backed session for a project.
 - `/reload` — retry the most recently crashed adapter in place.
 - `/drop` — remove the most recently crashed peer; `/drop SLOT` removes a
   peer by zero-based roster slot (slot 0 is the owner).
@@ -84,9 +83,7 @@ bounded to preserve tmux responsiveness.
   it; the former owner remains in its stable slot and is tombstoned.
 - `/swap A B` — reorder two active roster slots without restarting their
   adapters; queued work follows the agents.
-- `/cd PATH` — change the workspace directory for subsequent launches.
 - `/clear` — clear the local transcript.
-- `!command` — run a bounded shell command in the current workspace.
 - `/cancel` — cancel the active turn when an adapter supports cancellation.
 - `/close`, `/quit`, and `/exit` — leave the session.
 

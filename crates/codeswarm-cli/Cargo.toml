@@ -1,19 +1,20 @@
 [package]
-name = "codeswarm-cli"
+name = "codeswarm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+description.workspace = true
 
 [[bin]]
 name = "codeswarm"
 path = "src/main.rs"
 
 [dependencies]
-codeswarm-adapters = { path = "../codeswarm-adapters" }
-codeswarm-core = { path = "../codeswarm-core" }
-codeswarm-transcript = { path = "../codeswarm-transcript" }
-codeswarm-tui = { path = "../codeswarm-tui" }
+codeswarm-adapters = { version = "=0.6.43", path = "../codeswarm-adapters" }
+codeswarm-core = { version = "=0.6.43", path = "../codeswarm-core" }
+codeswarm-transcript = { version = "=0.6.43", path = "../codeswarm-transcript" }
+codeswarm-tui = { version = "=0.6.43", path = "../codeswarm-tui" }
 crossterm.workspace = true
 ratatui.workspace = true
 serde_json.workspace = true

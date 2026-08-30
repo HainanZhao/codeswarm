@@ -6,7 +6,10 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     permissions:
       contents: read

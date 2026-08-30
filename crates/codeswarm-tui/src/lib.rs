@@ -94,7 +94,6 @@ pub enum LocalCommand {
     DropSlot(usize),
     Promote(usize),
     Swap(usize, usize),
-    Directory(String),
     Diff,
 }
 
@@ -978,14 +977,6 @@ impl App {
                     "diff view set to unified".into()
                 };
                 LocalCommand::Diff
-            }
-            "/cd" => {
-                if argument.is_empty() {
-                    self.status = "usage: /cd PATH".into();
-                    LocalCommand::Handled
-                } else {
-                    LocalCommand::Directory(argument)
-                }
             }
             "/help" => {
                 self.keyboard_help = true;
@@ -1903,8 +1894,8 @@ impl App {
     }
 
     /// Start a lazy workspace index for `@path` prompt references.  Starting
-    /// this index never scans synchronously; callers may invoke it when a
-    /// session starts or after `/cd` changes the workspace.
+    /// this index never scans synchronously; callers invoke it when a session
+    /// starts or before launch when the store changes workspace.
     pub fn set_workspace_root(&mut self, root: impl Into<PathBuf>) {
         let root = root.into();
         self.workspace_root = root.clone();
@@ -3215,7 +3206,7 @@ fn render_queue(buffer: &mut Buffer, area: Rect, app: &App) {
 fn render_keyboard_help(buffer: &mut Buffer, area: Rect) {
     let lines = [
         " keys: ↑/↓ scroll · End follow tail · Tab details · Ctrl+K cancel queue · ? hide help",
-        " commands: /help  /config  /agents  /add  /export  /diff  /mode  /collab  /reload  /drop  /promote  /swap  /cd",
+        " commands: /help  /cancel  /clear  /config  /agents  /add  /export  /diff  /mode  /collab  /reload  /drop  /promote  /swap",
         " /mode chat · /collab roster|manual|pair",
         " /clear clears the local transcript · /close exits the session",
         " Ctrl+Enter sends to the selected agent · Ctrl+C cancels active work",
@@ -3471,7 +3462,20 @@ fn render_store(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Green),
         ));
     }
-    for (index, agent) in app.store_agents.iter().enumerate() {
+    let row_capacity = usize::from(modal.height.saturating_sub(2))
+        .saturating_sub(lines.len())
+        .max(1);
+    let start = app
+        .store_selected
+        .saturating_sub(row_capacity.saturating_sub(1))
+        .min(app.store_agents.len().saturating_sub(row_capacity));
+    for (index, agent) in app
+        .store_agents
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(row_capacity)
+    {
         let marker = if index == app.store_selected {
             "▶"
         } else {
@@ -3494,9 +3498,13 @@ fn render_store(frame: &mut Frame, app: &App, area: Rect) {
         if compact {
             lines.push(Line::from(vec![
                 Span::styled(format!(" {marker} {checked} "), style),
-                Span::styled(compact_label(&agent.name, 18), style),
+                Span::styled(format!("{:<18}", compact_label(&agent.name, 18)), style),
                 Span::styled(
-                    if agent.available { "ready" } else { "missing" },
+                    if agent.available {
+                        " ready"
+                    } else {
+                        " missing"
+                    },
                     if agent.available {
                         Style::default().fg(Color::Green)
                     } else {
@@ -5019,10 +5027,6 @@ mod tests {
             Some(LocalCommand::Swap(0, 2))
         );
         assert_eq!(
-            app.handle_local_command("/cd /tmp"),
-            Some(LocalCommand::Directory("/tmp".into()))
-        );
-        assert_eq!(
             app.handle_local_command("/diff split"),
             Some(LocalCommand::Diff)
         );
@@ -5606,7 +5610,42 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(store.contains("Mobile Agent"), "rendered={store:?}");
+        assert!(store.contains(" ready"), "rendered={store:?}");
+        assert!(!store.contains("Agentready"), "rendered={store:?}");
         assert!(store.contains("save"), "rendered={store:?}");
+    }
+
+    #[test]
+    fn large_agent_store_keeps_the_selected_row_visible() {
+        let backend = TestBackend::new(72, 18);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut app = App::default();
+        app.show_store(
+            (0..25)
+                .map(|index| StoreAgent {
+                    identity: format!("agent-{index}.example"),
+                    name: format!("Agent {index}"),
+                    adapter: "ACP".into(),
+                    command: format!("agent-{index}"),
+                    available: true,
+                    selected: false,
+                })
+                .collect(),
+        );
+        for _ in 0..24 {
+            app.handle_store_key(StoreKey::Down);
+        }
+        terminal
+            .draw(|frame| render(frame, &mut app))
+            .expect("draw scrolled store");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Agent 24"), "rendered={rendered:?}");
     }
 
     #[test]

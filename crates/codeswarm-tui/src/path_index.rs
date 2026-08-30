@@ -46,7 +46,7 @@ pub enum PathIndexUpdate {
     /// The scan has completed.  A subsequent query is safe and cheap.
     Ready { generation: u64, total: usize },
     /// A query result.  `generation` prevents a result from an old workspace
-    /// from replacing a newer one after `/cd` or a project switch.
+    /// from replacing a newer one after a project switch.
     Matches {
         generation: u64,
         query: String,

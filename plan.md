@@ -98,23 +98,20 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 - [x] Added versioned, non-destructive event-log and legacy session-metadata
   migration/import with malformed and future-version rejection.
 - [x] Added repeated mixed roster CLI parsing with native/ACP startup,
-  selected-first routing, max-round control, pause/resume, direct prompts, and
-  live normalized event streaming.
+  selected-first routing, max-round control, direct prompts, and live
+  normalized event streaming.
 - [x] Wired saved-roster launch decisions into the Rust launcher while
   preserving explicit demo, ACP, native, and repeated-roster flags.
 - [x] Added adapter-contract normalization and equivalent ACP/native trace
   fixtures covering omitted, malformed, reordered, and replaced external state.
-- [x] Added a real tmux performance harness covering 5k-word scroll,
-  prompt-input latency, warm capture p99, and resize-storm settling.
-- [x] Visual tmux smoke coverage exercises inline layout, scroll/follow-tail,
-  keyboard help, prompt/status regions, and clean quit behavior; fixed inline
-  viewport geometry so scrolling no longer snaps back to the tail.
+- [x] Added deterministic Ratatui and transcript coverage for 5k-word scroll,
+  prompt input, resize settling, and viewport behavior.
 - [x] Coalesced streamed thought chunks into one per-turn collapsed detail,
   preventing token-level reasoning output from creating a new line/card for
   every stream event.
-- [x] Enhanced the production preview HUD with typed transcript colors,
-  conversation/prompt framing, status-state colors, and a tmux-verified
-  inline release build; styling remains on the cached viewport path.
+- [x] Enhanced the production HUD with typed transcript colors,
+  conversation/prompt framing, and status-state colors while keeping styling
+  on the cached viewport path.
 - [x] Replaced the display-only prompt with a Ratatui/tui-textarea editor:
   multiline Unicode-safe editing, bounded history, slash completion, local
   commands, and readable command/config/help feedback.
@@ -122,7 +119,7 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
   human turns, named agent response starts, per-block markers, identity-aware
   status, and robust narrow-pane fallback.
 - [x] Added terminal queue/help interaction state: queued and direct prompts,
-  target selection, cancellation, follow-tail behavior, and inline keyboard
+  target selection, cancellation, follow-tail behavior, and keyboard
   help rendering.
 - [x] Added normalized terminal lifecycle parsing for ACP/native events and a
   deterministic replay/trace comparison command for cross-protocol fixtures.
@@ -184,7 +181,7 @@ Completed on branch \`rewrite/rust-ratatui-architecture\`:
 Still required before cutover:
 
 - [x] Wire the relay host into the Rust CLI roster UX, including native/ACP
-  selection, selected-first routing, direct prompts, pause/resume, and live
+  selection, selected-first routing, direct prompts, cancellation, and live
   normalized event streaming.
 - [x] Finish the supported adapter lifecycle slice: terminal process-group
   ownership, mode replacement/synchronization, ACP session reload identity,
@@ -272,7 +269,7 @@ regression, and produces a baseline for the existing client where practical.
   partially imported sessions must remain readable by older CodeSwarm releases.
 - [ ] Translate pure relay cases from the legacy relay contract, including N>2
   rotation, queued prompts, direct turns, reviewer-only stop token handling,
-  pause/resume, and maximum-round behavior.
+  cancellation and maximum-round behavior.
 
 **Exit criterion:** Recorded event traces replay into identical state and
 translated relay tests cover every documented `AGENTS.md` relay invariant.
@@ -336,7 +333,7 @@ agent reply; no optimization may rely only on having many small messages.
 - [ ] Build the `codeswarm` CLI and Ratatui renderer. It must retain keyboard
   operation and restore terminal state on every exit path.
 - [ ] Implement a compact fixed status line: active agent, permission policy,
-  working directory, queued count, streaming/paused state, and elapsed time.
+  working directory, queued count, streaming state, and elapsed time.
 - [ ] Implement prompt editing, history, slash-command completion, submit,
   first/second `Ctrl+C` semantics, cancellation, scroll/follow-tail toggle,
   and keyboard help.
@@ -349,19 +346,19 @@ agent reply; no optimization may rely only on having many small messages.
 - [ ] Verify the complete path in tmux: prompt → ACP/native adapter → stream →
   cancel/permission → persisted session → resume.
 
-**Exit criterion:** This path passes all Phase 0 budgets and is usable without
-any advanced panel or alternate-screen implementation.
+**Exit criterion:** This path passes all Phase 0 budgets in the guarded
+full-screen implementation.
 
 ### Current implementation status (Rust rewrite)
 
-- The inline Ratatui client is the active `codeswarm` release binary and uses
+- The full-screen Ratatui client is the active `codeswarm` release binary and uses
   the existing lightweight `ratatui`/`crossterm` stack plus `tui-textarea` for
   bounded multiline editing.
-- `/help`, `/config`, `/export`, `/mode`, `/collab`, `/pause`, `/resume`,
-  `/clear`, `/cancel`, and `/close` are handled locally; local commands never
+- `/help`, `/config`, `/export`, `/mode`, `/collab`, `/clear`, `/cancel`, and
+  `/close` are handled locally; local commands never
   become adapter prompts.
-- `/config` is a keyboard-first inline modal with follow-tail and collapsed
-  detail toggles, plus read-only mode, collaboration, renderer, and keyboard
+- `/config` is a keyboard-first modal with follow-tail and collapsed detail
+  toggles, plus mode, collaboration, and keyboard
   guidance. It is rendered without touching the transcript cache.
 - Markdown export reads logical transcript blocks directly, retaining hidden
   thought/tool details without rewrapping the 5k-word viewport.
@@ -384,29 +381,27 @@ any advanced panel or alternate-screen implementation.
 - [ ] Implement CodeSwarm's shared policy mapping: default **Auto pilot**,
   native per-adapter mode resolution after catalogs arrive, roster-wide sync,
   no user-facing `Mixed` mode.
-- [ ] Implement relay pause/resume and direct/private turns. Preserve FIFO
-  steering semantics and the reviewer-only safe-word rules.
+- [x] Implement direct/private turns, FIFO steering semantics, and the
+  reviewer-only safe-word rules.
 - [ ] Add lazy, keyboard-selectable tool output, terminal output, diff, and
   thought detail views. They may be rich, but must not affect idle transcript
   rendering or scroll cost when collapsed.
-- [ ] Add optional alternate-screen mode for users who want modal pickers or
-  larger detail panes. It uses the same event store and transcript engine as
-  inline mode.
+- [x] Use one guarded full-screen alternate-screen experience.
 - [ ] Port store/launcher/settings behavior: restore last valid roster, open
   the store when none resolves, pre-select detected agents but never auto-start
   them, and retain CodeSwarm branding and no-telemetry policy.
 
 **Exit criterion:** A multi-agent session preserves the documented relay and
-failure/reload contracts while its collapsed transcript still passes the tmux
-benchmark suite.
+failure/reload contracts while its collapsed transcript passes deterministic
+viewport benchmarks.
 
 ## Phase 6 — Cutover
 
 - [ ] Run both clients against a shared scripted adapter trace corpus and
   compare normalized state, relay order, persistence results, and user-visible
   terminal decisions—not byte-for-byte rendering.
-- [ ] Run `make verify` for the Rust formatter, clippy, unit, integration, tmux,
-  and benchmark gates.
+- [x] Run `make verify` for formatting, Clippy, unit/integration tests,
+  packaging, release build, and deterministic benchmarks.
 - [ ] Dogfood with ACP and native adapters on real tmux and SSH sessions;
   capture only local benchmark diagnostics, never telemetry.
 - [x] Release the Rust frontend under the existing `codeswarm` identity with a
@@ -414,7 +409,7 @@ benchmark suite.
 
 ## Completion Checklist
 
-- [ ] `codeswarm` has a tmux-first Rust implementation and retains its binary
+- [x] `codeswarm` has a full-screen Rust implementation and retains its binary
   import, executable, branding, and no-telemetry commitments.
 - [ ] A 5,000-word single agent reply scrolls within the defined benchmark
   budget while the agent streams and the prompt remains editable.
