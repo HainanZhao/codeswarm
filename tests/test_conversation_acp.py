@@ -55,7 +55,7 @@ from codeswarm.screens.config import ConfigScreen
 from codeswarm.screens.permissions import PermissionsQuestion
 from codeswarm.answer import Answer
 from codeswarm.widgets.terminal_tool import TerminalTool
-from codeswarm.widgets.tool_call import ToolCall
+from codeswarm.widgets.tool_call import ToolCall, ToolCallHeader
 from codeswarm.widgets.user_input import UserInput
 from codeswarm.widgets.conversation_acp import is_mode_update_notice
 
@@ -2163,14 +2163,13 @@ class ConversationACPDispatchTests(unittest.TestCase):
 
                         focused = conversation.query_one(AgentThought)
                         self.assertTrue(focused.has_focus)
-                        # A left rail only, like a quote: reasoning is not a
-                        # speaker and not a destination. What must not change
-                        # is the geometry, so focusing never reflows the
-                        # conversation.
+                        # A background band, no rail: focusing must never
+                        # add a border and reflow the conversation.
                         self.assertEqual(focused.styles.border_top[0], "")
                         self.assertEqual(focused.styles.border_right[0], "")
                         self.assertEqual(focused.styles.border_bottom[0], "")
-                        self.assertEqual(focused.styles.border_left[0], "solid")
+                        self.assertEqual(focused.styles.border_left[0], "")
+                        self.assertGreater(focused.styles.background.a, 0)
                         self.assertEqual(focused.outer_size, outer_size)
 
         asyncio.run(scenario())
@@ -2441,9 +2440,20 @@ class ConversationACPDispatchTests(unittest.TestCase):
                 await pilot.pause(0.1)
 
                 turn = conversation.query_one(AgentMessage)
-                self.assertIsNotNone(turn.query_one(AgentThought))
+                thought = turn.query_one(AgentThought)
                 self.assertIsNotNone(turn.query_one(AgentToolActivity))
-                self.assertIsNotNone(turn.query_one(ToolCall))
+                tool = turn.query_one(ToolCall)
+                # Thoughts and tool rows are marked by a background band,
+                # not a prefix rail or glyph.
+                self.assertEqual(thought.styles.border_left[0], "")
+                self.assertGreater(thought.styles.background.a, 0)
+                header = tool.query_one(ToolCallHeader)
+                self.assertEqual(header.render().plain, "Inspect workspace")
+                self.assertGreater(header.styles.background.a, 0)
+                self.assertEqual(
+                    turn.tool_activity.summary.render().plain,
+                    "Inspect workspace · 1 tool",
+                )
                 self.assertIn(
                     "Claude",
                     str(turn.query_one("#agent-message-header").render()),
@@ -2999,7 +3009,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         self.assertTrue(activity.summary.display)
                         self.assertEqual(
                             activity.summary.render().plain,
-                            "▶ Run focused tests · 2 tools",
+                            "Run focused tests · 2 tools",
                         )
 
                         activity.focus()
@@ -3209,7 +3219,7 @@ class ConversationACPDispatchTests(unittest.TestCase):
                         assert summary is not None
                         self.assertEqual(
                             summary.render().plain,
-                            "▶ Run Tests · 2 tools · 14s  ✔",
+                            "Run Tests · 2 tools · 14s  ✔",
                         )
                         self.assertTrue(summary.display)
                         self.assertTrue(

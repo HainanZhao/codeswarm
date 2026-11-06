@@ -185,11 +185,9 @@ class AgentToolActivity(containers.VerticalGroup, can_focus=True):
     def refresh_preview(self) -> None:
         """Render a bounded one-line preview of the latest tool call.
 
-        Collapsed and expanded tool activity share one vocabulary: the
-        disclosure triangle says "this opens", and status is a single glyph in
-        a single position. The collapsed row used to be prefixed with a wrench
-        emoji and the expanded row with ``SYS //``, so clicking appeared to
-        replace the widget with a different one.
+        The row is marked as tool activity by its background band, not by a
+        prefix glyph, so the title starts at the left edge; status is a single
+        suffix glyph shared with the expanded header.
         """
         selected = self.selected_tool
         tool_data = getattr(selected, "tool_call", None)
@@ -200,10 +198,7 @@ class AgentToolActivity(containers.VerticalGroup, can_focus=True):
         # Assembled rather than interpolated: the Static has markup disabled
         # so agent-supplied titles are never parsed, and Content keeps that
         # guarantee while still allowing styled runs.
-        parts: list[Content | str | tuple[str, str]] = [
-            ("▶ ", "$message-meta"),
-            title,
-        ]
+        parts: list[Content | str | tuple[str, str]] = [title]
         if preview:
             parts.append((f" · {preview}", "$message-meta"))
         parts.append((f" · {len(self._tools)} {noun}", "$message-meta"))

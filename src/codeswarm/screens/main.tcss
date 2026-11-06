@@ -139,6 +139,9 @@ Conversation {
                    row so a new tool call cannot reflow the conversation. The
                    gap above it comes from the response's trailing block. */
                 margin: 0 1 0 0;
+                padding: 0 1;
+                /* The band is the tool-call marker; no prefix glyph. */
+                background: $foreground 9%;
                 color: $message-meta;
                 text-overflow: ellipsis;
             }
@@ -339,14 +342,13 @@ Conversation {
     }
 
     AgentThought {
-        /* Reasoning is not a destination and not a speaker. It recedes like a
-           quote: the teal fill made it the loudest block inside a quiet card. */
-        background: transparent;
+        /* A faint neutral band, not a prefix rail, marks reasoning: it costs
+           no columns and stays quieter than the tool band below it. */
+        background: $foreground 5%;
         color: $content-quote-foreground;
         min-height: 1;
         margin: 1 1 1 0;
         padding:  0 1 0 1;
-        border-left: solid $content-rule;
         overflow-x: auto;
         scrollbar-size-horizontal: 0;
         layout: stream;
@@ -368,8 +370,6 @@ Conversation {
 
     ToolCall {    
         margin: 0 !important;
-        padding-left: 1;
-        border-left: solid $content-rule;
 
         width: 1fr;
         layout: stream;
@@ -412,9 +412,13 @@ Conversation {
         
         ToolCallHeader {
             color: $chrome-text;
+            background: $foreground 9%;
+            &:hover {
+                background: $foreground 15%;
+            }
             pointer: pointer;       
-            width: auto;
-            max-width: 1fr;   
+            width: 1fr;
+            padding: 0 1;
             margin: 0 1 0 0;    
             text-wrap: nowrap;
             text-overflow: ellipsis;

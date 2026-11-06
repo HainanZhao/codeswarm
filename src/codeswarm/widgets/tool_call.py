@@ -154,22 +154,9 @@ class ToolCall(containers.VerticalGroup):
         title = tool_call.get("title", "title")
         status = tool_call.get("status", "pending")
 
-        expand_icon: Content = Content()
-        if self.has_content:
-            expand_icon = Content.from_markup(
-                "[$text-secondary]▼ " if self.expanded else "[$text-secondary]▶ "
-            )
-        else:
-            expand_icon = Content.from_markup(
-                "[$text-secondary 30%]▼ "
-                if self.expanded
-                else "[$text-secondary 30%]▶ "
-            )
-
-        # No "SYS // " prefix: it appeared on every tool call, said nothing
-        # that the row's presence did not already say, and sat at the front of
-        # the line where the title should be.
-        header = Content.assemble(expand_icon, title)
+        # No prefix glyph: the header's background band marks it as a tool
+        # call, and expanding reveals the content beneath it.
+        header = Content(title)
 
         # One glyph, one position, matching the collapsed summary.
         if status == "failed":
